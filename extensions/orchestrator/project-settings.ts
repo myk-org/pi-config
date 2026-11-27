@@ -997,7 +997,11 @@ const SETTINGS_CACHE_MAX = 32;
 interface CachedLayer {
   checkedAt: number;
   file: string | null;
-  mtimeMs: number;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+  size: bigint;
+  ino: bigint;
+  dev: bigint;
   parsed: ProjectSettings;
 }
 
@@ -1025,7 +1029,7 @@ export function clearSettingsCache(): void {
   layerCache.clear();
 }
 
-function readCachedLayer(scope: SettingsScope, cwd: string): CachedLayer {
+function readCachedLayer(scope: SettingsScope, cwd: string, verifyFresh = false): CachedLayer {
   const now = Date.now();
   let cacheKey: string;
   let resolveFile: () => string | null;
@@ -1052,28 +1056,51 @@ function readCachedLayer(scope: SettingsScope, cwd: string): CachedLayer {
   }
 
   const cached = layerCache.get(cacheKey);
-  if (cached && now - cached.checkedAt < SETTINGS_CACHE_TTL_MS) {
+  if (!verifyFresh && cached && now - cached.checkedAt < SETTINGS_CACHE_TTL_MS) {
     layerCache.delete(cacheKey);
     layerCache.set(cacheKey, cached);
     return cached;
   }
 
   const file = resolveFile();
-  let mtimeMs = 0;
+  let mtimeNs = 0n;
+  let ctimeNs = 0n;
+  let size = 0n;
+  let ino = 0n;
+  let dev = 0n;
   if (file) {
     try {
-      mtimeMs = statSync(file).mtimeMs;
+      const st = statSync(file, { bigint: true });
+      mtimeNs = st.mtimeNs;
+      ctimeNs = st.ctimeNs;
+      size = st.size;
+      ino = st.ino;
+      dev = st.dev;
     } catch {
-      mtimeMs = 0;
+      mtimeNs = 0n;
+      ctimeNs = 0n;
+      size = 0n;
+      ino = 0n;
+      dev = 0n;
     }
   }
-  if (cached && cached.file === file && cached.mtimeMs === mtimeMs) {
+  if (
+    cached &&
+    cached.file === file &&
+    cached.mtimeNs === mtimeNs &&
+    cached.ctimeNs === ctimeNs &&
+    cached.size === size &&
+    cached.ino === ino &&
+    cached.dev === dev
+  ) {
     cached.checkedAt = now;
+    layerCache.delete(cacheKey);
+    layerCache.set(cacheKey, cached);
     return cached;
   }
 
   const parsed = file ? parseSettingsFile(file) : {};
-  const entry: CachedLayer = { checkedAt: now, file, mtimeMs, parsed };
+  const entry: CachedLayer = { checkedAt: now, file, mtimeNs, ctimeNs, size, ino, dev, parsed };
   if (layerCache.size >= SETTINGS_CACHE_MAX) {
     const oldest = layerCache.keys().next().value;
     if (oldest !== undefined) layerCache.delete(oldest);
@@ -1084,12 +1111,19 @@ function readCachedLayer(scope: SettingsScope, cwd: string): CachedLayer {
 
 /**
  * Return parsed global and project settings through the coordinated layer cache
- * (invalidated automatically on `writeSettingsFile` / `clearSettingsCache` / TTL / mtime).
+ * (invalidated automatically on `writeSettingsFile` / `clearSettingsCache` / TTL / stat).
+ * Pass `{ verifyFresh: true }` for security-sensitive authorization paths so external
+ * file edits, replacements, or deletions are detected immediately via stat identity
+ * (`file`, `mtimeMs`, `size`, `ino`, `dev`) while keeping JSON parsing cached when unchanged.
  */
-export function getCachedSettingsLayers(cwd: string): { global: ProjectSettings; project: ProjectSettings } {
+export function getCachedSettingsLayers(
+  cwd: string,
+  options?: { verifyFresh?: boolean },
+): { global: ProjectSettings; project: ProjectSettings } {
+  const verifyFresh = options?.verifyFresh === true;
   return {
-    global: readCachedLayer("global", cwd).parsed,
-    project: readCachedLayer("project", cwd).parsed,
+    global: readCachedLayer("global", cwd, verifyFresh).parsed,
+    project: readCachedLayer("project", cwd, verifyFresh).parsed,
   };
 }
 

@@ -18,6 +18,7 @@ import {
 import { registerEnforcement } from "../../../extensions/orchestrator/enforcement.js";
 import {
   clearSettingsCache,
+  getCachedSettingsLayers,
   getSetting,
   parseSettingInput,
   SETTINGS_KEYS,
@@ -356,29 +357,29 @@ describe("empty/default tool_permissions: {} (zero behavior change)", () => {
     assert.equal(fs.existsSync(dbPath), false, "empty rules must not even open SQLite DB");
   });
 
-  it("reuses the coordinated settings cache across repeated tool calls without re-reading disk", async () => {
-    const cwd = makeTempDir("cache-reuse-");
+  it("reuses parsed layers when unchanged and immediately detects external settings edits or deletions", async () => {
+    const cwd = makeTempDir("cache-freshness-");
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
     const projFile = path.join(cwd, ".pi", "pi-config-settings.json");
     fs.writeFileSync(projFile, JSON.stringify({ dco: true }));
     clearSettingsCache();
 
-    // Prime cache on first call
+    // Unchanged files return the exact same cached parsed object references (no re-parsing)
+    const first = getCachedSettingsLayers(cwd, { verifyFresh: true });
+    const second = getCachedSettingsLayers(cwd, { verifyFresh: true });
+    assert.strictEqual(first.project, second.project, "unchanged project file should reuse cached parsed object");
+    assert.strictEqual(first.global, second.global, "unchanged global file should reuse cached parsed object");
     assert.equal(await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null }), undefined);
 
-    // Corrupt file on disk without clearing cache: within the 30s TTL window, cached layer is reused
-    // (proving evaluateToolPermissions does NOT synchronously re-read/re-parse on every tool call)
+    // External edit adding a deny rule takes effect IMMEDIATELY without clearing cache or waiting for TTL
     fs.writeFileSync(projFile, JSON.stringify({ tool_permissions: { read: "deny" } }));
-    assert.equal(
-      await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null }),
-      undefined,
-      "subsequent tool call should serve from coordinated layer cache",
-    );
+    const denied = await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null });
+    assert.ok(denied?.block, "external edit adding deny rule must take effect immediately");
 
-    // Clearing cache picks up the updated rules immediately
-    clearSettingsCache();
-    const afterClear = await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null });
-    assert.ok(afterClear?.block);
+    // External deletion of the project settings file also takes effect immediately
+    fs.unlinkSync(projFile);
+    const afterDelete = await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null });
+    assert.equal(afterDelete, undefined, "external deletion of project settings must take effect immediately");
   });
 });
 

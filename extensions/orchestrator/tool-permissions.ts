@@ -471,7 +471,9 @@ function stripAllowFromUntrustedRules(rules: ToolPermissions): { filtered: ToolP
  * `deny` (e.g. downgrading `deny` to `ask`) or grant `allow`.
  */
 export function loadToolPermissionLayers(cwd: string, log: Logger = defaultLog): ToolPermissionLayer[] {
-  const { global: globalSettings, project: projectSettings } = getCachedSettingsLayers(cwd);
+  const { global: globalSettings, project: projectSettings } = getCachedSettingsLayers(cwd, {
+    verifyFresh: true,
+  });
   const layers: ToolPermissionLayer[] = [];
   const globalRules = globalSettings.tool_permissions;
   if (globalRules && Object.keys(globalRules).length > 0) {
