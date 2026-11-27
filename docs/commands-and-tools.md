@@ -340,7 +340,7 @@ reliable notifications are not covered; there is no polling fallback or replay o
 | `ask_user` | Ask the user a question with selectable options; returns the choice or free text. Its prompt guidelines require it instead of plain-text questions | `question`, `options[]` (optional) |
 | `list_models` | List available provider/model pairs for `subagent(model=...)` | `provider` (optional filter) |
 
-More detail: [Managing Custom Agents](managing-custom-agents.html) for `subagent`, [Automating Code Reviews](automating-code-reviews.html) for `review_status`, and [Image Generation](image-generation.html) for generating images via Pi 1.6 native `codemode` `models.generateImages()`.
+More detail: [Managing Custom Agents](managing-custom-agents.html) for `subagent`, [Automating Code Reviews](automating-code-reviews.html) for `review_status`, and [Image Generation](image-generation.html) for generating images via Pi's native `codemode` `models.generateImages()` (including Pi 1.7.0+ `{ aspectRatio, size }` options and Radius support).
 
 ### trail_* (7 tools, on by default)
 
