@@ -1,12 +1,25 @@
 /**
- * Unit tests for /qa human Q&A reader overlay, 1-key section quoting,
- * configurable shortcut (qa_overlay_shortcut), and buried-answer widget (#1453).
+ * Unit and real pi-tui / SessionManager end-to-end integration tests for /qa
+ * human Q&A reader overlay, 1-key section quoting, configurable shortcut
+ * (qa_overlay_shortcut), and buried-answer widget (#1453).
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  SessionManager,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+  Editor,
+  KeybindingsManager,
+  TUI_KEYBINDINGS,
+  TuiAltScreen,
+  stripTerminalSequences,
+  type Terminal,
+} from "@earendil-works/pi-tui";
 import {
   clearSettingsCache,
   getSetting,
@@ -1217,5 +1230,288 @@ describe("qa_overlay_shortcut & buried-answer widget lifecycle", () => {
     assert.deepEqual(harness.appendedEntries, [
       { customType: CRON_USER_MESSAGE_ENTRY_TYPE, data: { command: "Expanded review prompt in session A" } },
     ]);
+  });
+});
+
+describe("real pi-tui & SessionManager end-to-end integration", () => {
+  let tempDir: string;
+  let globalFile: string;
+  let prevEnv: string | undefined;
+
+  beforeEach(() => {
+    tempDir = makeTempDir("qa-real-tui-");
+    mkdirSync(join(tempDir, ".pi"), { recursive: true });
+    globalFile = join(tempDir, "global-settings.json");
+    setGlobalSettingsPath(globalFile);
+    prevEnv = process.env.PI_QA_OVERLAY_SHORTCUT;
+    delete process.env.PI_QA_OVERLAY_SHORTCUT;
+    clearSettingsCache();
+  });
+
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env.PI_QA_OVERLAY_SHORTCUT;
+    else process.env.PI_QA_OVERLAY_SHORTCUT = prevEnv;
+    setGlobalSettingsPath(null);
+    clearSettingsCache();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function createVirtualTerminal(cols = 120, rows = 30) {
+    let onInput: ((data: string) => void) | undefined;
+    let output = "";
+    const terminal: Terminal = {
+      start(inputCb) {
+        onInput = inputCb;
+      },
+      stop() {
+        onInput = undefined;
+      },
+      async drainInput() {},
+      write(data: string) {
+        output += data;
+      },
+      get columns() {
+        return cols;
+      },
+      get rows() {
+        return rows;
+      },
+      get kittyProtocolActive() {
+        return false;
+      },
+      moveBy() {},
+      hideCursor() {},
+      showCursor() {},
+      clearLine() {},
+      clearFromCursor() {},
+      clearScreen() {},
+      setTitle() {},
+      setProgress() {},
+      setProgramStatus() {},
+    };
+    return {
+      terminal,
+      send(seq: string) {
+        onInput?.(seq);
+      },
+      readPlain() {
+        return stripTerminalSequences(output);
+      },
+      clearOutput() {
+        output = "";
+      },
+    };
+  }
+
+  function createSeededSession(cwd: string): SessionManager {
+    const sm = SessionManager.inMemory(cwd);
+    const usage = {
+      input: 10,
+      output: 10,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 20,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "Explain caching strategy" }],
+      timestamp: 1_795_788_060_000,
+    });
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "### Cache Architecture\n1. Use LRU map\n2. Cap entries at 512" }],
+      api: "openai-responses",
+      provider: "test",
+      model: "test",
+      usage,
+      stopReason: "stop",
+      timestamp: 1_795_788_065_000,
+    });
+    sm.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "Recommendation for Issue #2" }],
+      timestamp: 1_795_788_120_000,
+    });
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "### Recommendation for Issue #2\n1. Add shortcut\n2. Add buried hint" }],
+      api: "openai-responses",
+      provider: "test",
+      model: "test",
+      usage,
+      stopReason: "stop",
+      timestamp: 1_795_788_125_000,
+    });
+    sm.appendCustomMessageEntry(
+      "async-agent-result",
+      "## Async Agent Result: test-runner passed",
+      true,
+    );
+    sm.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "Background test-runner completed cleanly." }],
+      api: "openai-responses",
+      provider: "test",
+      model: "test",
+      usage,
+      stopReason: "stop",
+      timestamp: 1_795_788_185_000,
+    });
+    return sm;
+  }
+
+  function createRealTuiHarness(cwd: string) {
+    const vt = createVirtualTerminal(120, 30);
+    const tui = new TuiAltScreen(vt.terminal, false);
+    const kb = new KeybindingsManager(TUI_KEYBINDINGS);
+    const theme = fakeTheme();
+    const editor = new Editor(tui, {
+      borderColor: (s: string) => s,
+      selectList: {
+        selectedPrefix: (s: string) => s,
+        selectedText: (s: string) => s,
+        description: (s: string) => s,
+        scrollInfo: (s: string) => s,
+        noMatch: (s: string) => s,
+      },
+    });
+    tui.addChild(editor);
+    const sm = createSeededSession(cwd);
+    const mountedWidgets = new Map<string, any>();
+
+    const ctx = {
+      cwd,
+      mode: "interactive",
+      hasUI: true,
+      sessionManager: sm,
+      ui: {
+        notify() {},
+        pasteToEditor(text: string) {
+          editor.handleInput(`\x1b[200~${text}\x1b[201~`);
+          tui.requestRender(true);
+        },
+        setWidget(key: string, content: any) {
+          const prev = mountedWidgets.get(key);
+          if (prev) {
+            tui.removeChild(prev);
+            mountedWidgets.delete(key);
+          }
+          if (typeof content === "function") {
+            const comp = content(tui, theme);
+            mountedWidgets.set(key, comp);
+            tui.addChild(comp);
+          }
+          tui.requestRender(true);
+        },
+        custom<T>(factory: any, opts?: any): Promise<T> {
+          return new Promise<T>((resolve) => {
+            let overlayHandle: { hide(): void } | undefined;
+            let comp: any;
+            const done = (val: T) => {
+              overlayHandle?.hide();
+              comp?.dispose?.();
+              tui.requestRender(true);
+              resolve(val);
+            };
+            Promise.resolve(factory(tui, theme, kb, done)).then((created) => {
+              comp = created;
+              overlayHandle = tui.showOverlay(comp, opts?.overlayOptions);
+              tui.requestRender(true);
+            });
+          });
+        },
+      },
+    } as unknown as ExtensionCommandContext;
+
+    tui.start();
+    return {
+      vt,
+      tui,
+      editor,
+      ctx,
+      mountedWidgets,
+      stop() {
+        tui.stop();
+      },
+    };
+  }
+
+  async function waitForCondition(predicate: () => boolean, label: string, timeoutMs = 2_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    assert.fail(`Timed out waiting for ${label} after ${timeoutMs}ms`);
+  }
+
+  it("renders buried-answer hint widget in real TuiAltScreen after background turn", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+    const ui = createRealTuiHarness(tempDir);
+    try {
+      await harness.emit("agent_end", {}, ui.ctx);
+      await waitForCondition(
+        () => /Answer ready for "Recommendation for Issue #2" — Alt\+Q to read/.test(ui.vt.readPlain()),
+        "buried-answer hint frame",
+      );
+      assert.equal(ui.mountedWidgets.has(QA_HINT_WIDGET_KEY), true);
+    } finally {
+      ui.stop();
+    }
+  });
+
+  it("pastes section quote via Alt+Q filter in real TuiAltScreen", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+    const ui = createRealTuiHarness(tempDir);
+    try {
+      await harness.emit("agent_end", {}, ui.ctx);
+      assert.equal(ui.mountedWidgets.has(QA_HINT_WIDGET_KEY), true);
+
+      const overlayDone = harness.shortcuts.get("alt+q").handler(ui.ctx);
+      await waitForCondition(() => /Human Q&A/.test(ui.vt.readPlain()), "Human Q&A list frame");
+      assert.equal(ui.mountedWidgets.has(QA_HINT_WIDGET_KEY), false);
+
+      for (const seq of ["/", "l", "r", "u"]) {
+        ui.vt.send(seq);
+      }
+      await waitForCondition(() => /1\/2 matching/.test(ui.vt.readPlain()), "filtered match frame");
+
+      ui.vt.send("\r");
+      await waitForCondition(() => /Q&A Reader/.test(ui.vt.readPlain()), "Q&A Reader detail frame");
+
+      ui.vt.send("2");
+      await overlayDone;
+      assert.equal(ui.editor.getText(), 'Re: "Use LRU map" — ');
+    } finally {
+      ui.stop();
+    }
+  });
+
+  it("pastes whole-answer quote via /qa command in real TuiAltScreen", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+    const ui = createRealTuiHarness(tempDir);
+    try {
+      const overlayDone = harness.commands.get("qa").handler("", ui.ctx);
+      await waitForCondition(() => /Human Q&A/.test(ui.vt.readPlain()), "Human Q&A list frame");
+
+      ui.vt.send("r");
+      await overlayDone;
+      assert.equal(ui.editor.getText(), 'Re: "Recommendation for Issue #2" — ');
+    } finally {
+      ui.stop();
+    }
   });
 });
