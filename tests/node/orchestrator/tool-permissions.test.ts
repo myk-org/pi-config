@@ -357,26 +357,42 @@ describe("empty/default tool_permissions: {} (zero behavior change)", () => {
     assert.equal(fs.existsSync(dbPath), false, "empty rules must not even open SQLite DB");
   });
 
-  it("reuses parsed layers when unchanged and immediately detects external settings edits or deletions", async () => {
-    const cwd = makeTempDir("cache-freshness-");
+  it("reuses the cached parsed object when settings files are unchanged", () => {
+    const cwd = makeTempDir("cache-reuse-");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, ".pi", "pi-config-settings.json"), JSON.stringify({ dco: true }));
+    clearSettingsCache();
+
+    const first = getCachedSettingsLayers(cwd, { verifyFresh: true });
+    const second = getCachedSettingsLayers(cwd, { verifyFresh: true });
+    assert.strictEqual(first.project, second.project, "unchanged project file should reuse cached parsed object");
+    assert.strictEqual(first.global, second.global, "unchanged global file should reuse cached parsed object");
+  });
+
+  it("applies an external deny edit on the next tool call without waiting for the TTL", async () => {
+    const cwd = makeTempDir("cache-external-edit-");
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
     const projFile = path.join(cwd, ".pi", "pi-config-settings.json");
     fs.writeFileSync(projFile, JSON.stringify({ dco: true }));
     clearSettingsCache();
 
-    // Unchanged files return the exact same cached parsed object references (no re-parsing)
-    const first = getCachedSettingsLayers(cwd, { verifyFresh: true });
-    const second = getCachedSettingsLayers(cwd, { verifyFresh: true });
-    assert.strictEqual(first.project, second.project, "unchanged project file should reuse cached parsed object");
-    assert.strictEqual(first.global, second.global, "unchanged global file should reuse cached parsed object");
     assert.equal(await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null }), undefined);
 
-    // External edit adding a deny rule takes effect IMMEDIATELY without clearing cache or waiting for TTL
     fs.writeFileSync(projFile, JSON.stringify({ tool_permissions: { read: "deny" } }));
     const denied = await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null });
     assert.ok(denied?.block, "external edit adding deny rule must take effect immediately");
+  });
 
-    // External deletion of the project settings file also takes effect immediately
+  it("applies an external settings-file deletion on the next tool call", async () => {
+    const cwd = makeTempDir("cache-external-delete-");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    const projFile = path.join(cwd, ".pi", "pi-config-settings.json");
+    fs.writeFileSync(projFile, JSON.stringify({ tool_permissions: { read: "deny" } }));
+    clearSettingsCache();
+
+    const denied = await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null });
+    assert.ok(denied?.block);
+
     fs.unlinkSync(projFile);
     const afterDelete = await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null });
     assert.equal(afterDelete, undefined, "external deletion of project settings must take effect immediately");
