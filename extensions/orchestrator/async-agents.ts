@@ -904,7 +904,7 @@ export function registerAsyncAgents(
         void sendSystemNote(
           pi,
           chainStoppedNote(job, chain),
-          { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
+          { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp", details: { separateTurn: true } },
         ).catch((e: any) => log.error(`chain_recovered note failed: ${e?.message || e}`));
       }
       // Remove completed/failed jobs older than 30s — require delivered before cleanup. A job
@@ -1682,7 +1682,7 @@ export function registerAsyncAgents(
             void sendSystemNote(
               pi,
               `🚨 Async chain interrupted at step ${chain.index + 1} of ${chain.steps.length} — the extension reloaded, so the chain cannot continue. Step ${chain.index + 1} (${job.agent}) may still be running; steps ${chain.index + 2}-${chain.steps.length} were never spawned. Remaining agents: ${remaining.join(", ")}.${stepDetails ? ` Remaining steps: ${stepDetails}.` : ""} Re-run them with subagent(chain: ...).`,
-              { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp" },
+              { customType: "subagent-chain-error", triggerTurn: true, deliverAs: "followUp", details: { separateTurn: true } },
             ).catch((e: any) => log.error(`chain_interrupted note failed: ${e?.message || e}`));
             // Durable so a second reload does not repeat the note.
             chain.interruptedAt = Date.now();

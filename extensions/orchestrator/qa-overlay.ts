@@ -10,6 +10,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  KeybindingsManager,
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, KeyId, TUI } from "@earendil-works/pi-tui";
@@ -42,6 +43,7 @@ const log = createLogger("qa-overlay");
 
 export const QA_HINT_WIDGET_KEY = "qa-buried-answer";
 export const QA_SHORTCUT_SETTING_KEY = "qa_overlay_shortcut" as const;
+export const CRON_USER_MESSAGE_ENTRY_TYPE = "cron-user-message";
 
 const MAX_SESSIONS = 32;
 const MAX_QUOTABLE_SECTIONS = 9;
@@ -266,6 +268,7 @@ const PASSIVE_CUSTOM_TYPES = new Set([
   "coms-peer-left",
   "coms-welcome",
   "memory-reminder",
+  "qa-overlay",
   "snapshots",
   "worktree",
   "skill-maintenance",
@@ -279,37 +282,51 @@ const MID_TURN_CUSTOM_TYPES = new Set([
   "enforcement-violation",
   "tool-arg-rejected",
   "malformed-response-recovery",
+  "skill-maintenance-nudge",
   "subagent-taskid-error",
   "subagent-chain-error",
+]);
+
+const RECOVERY_CUSTOM_TYPES = new Set([
+  "subagent-chain-error",
+  "subagent-taskid-error",
+  "malformed-response-recovery",
 ]);
 
 /**
  * Classify a `custom_message` / `role: "custom"` entry:
  * - `"passive"`: informational/hidden notice that does not trigger its own assistant turn.
- * - `"mid-turn"`: guardrail/context injection belonging to whichever turn is already active.
- * - `"background"`: background turn trigger (async agent result, COMS inbound/response, task nudge, reload, etc.).
+ * - `"mid-turn"`: guardrail/steer/context injection belonging to whichever turn is already active.
+ * - `"background"`: background turn trigger (async agent result, COMS inbound/response, idle recovery, task nudge, reload, etc.).
  */
 export function classifyCustomMessage(
   customType: string,
   display?: boolean,
+  details?: unknown,
 ): "passive" | "mid-turn" | "background" {
   const type = (customType || "").trim();
+  const separateTurn =
+    details !== null &&
+    typeof details === "object" &&
+    (details as { separateTurn?: unknown }).separateTurn === true;
+  if (separateTurn) return "background";
   if (MID_TURN_CUSTOM_TYPES.has(type)) return "mid-turn";
   if (display === false) return "passive";
   if (PASSIVE_CUSTOM_TYPES.has(type)) return "passive";
   return "background";
 }
 
-/** Extract plain text (excluding thinking/toolCall blocks) and image presence from message content. */
-export function extractTextContent(content: unknown): { text: string; hasImage: boolean } {
+/** Extract plain text (excluding thinking/toolCall blocks) and image/toolCall presence from message content. */
+export function extractTextContent(content: unknown): { text: string; hasImage: boolean; hasToolCall: boolean } {
   if (typeof content === "string") {
-    return { text: content.trim(), hasImage: false };
+    return { text: content.trim(), hasImage: false, hasToolCall: false };
   }
   if (!Array.isArray(content)) {
-    return { text: "", hasImage: false };
+    return { text: "", hasImage: false, hasToolCall: false };
   }
   const parts: string[] = [];
   let hasImage = false;
+  let hasToolCall = false;
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
     const typed = block as { type?: unknown; text?: unknown };
@@ -318,9 +335,11 @@ export function extractTextContent(content: unknown): { text: string; hasImage: 
       if (trimmed) parts.push(trimmed);
     } else if (typed.type === "image") {
       hasImage = true;
+    } else if (typed.type === "toolCall") {
+      hasToolCall = true;
     }
   }
-  return { text: parts.join("\n\n").trim(), hasImage };
+  return { text: parts.join("\n\n").trim(), hasImage, hasToolCall };
 }
 
 interface PendingHumanTurn {
@@ -330,6 +349,8 @@ interface PendingHumanTurn {
   answerEntryId?: string;
   answer?: string;
   answerTimestamp?: string;
+  /** True once an assistant message in this turn produced text without tool calls. */
+  hasFinalTextAnswer: boolean;
 }
 
 /**
@@ -339,9 +360,12 @@ interface PendingHumanTurn {
 export function extractQaHistory(entries: readonly unknown[]): QaHistory {
   const chronological: QaPair[] = [];
   let owner: "none" | "human" | "background" = "none";
+  const getOwner = (): "none" | "human" | "background" => owner;
   let pending: PendingHumanTurn | null = null;
+  let latestHumanHasAnswer = false;
   let backgroundTurnsAfterLatest = 0;
   let backgroundTurnCountedForTrigger = false;
+  const pendingCronCommands: string[] = [];
 
   const finalizePending = (): void => {
     if (!pending || !pending.answer || !pending.answerEntryId) {
@@ -364,6 +388,26 @@ export function extractQaHistory(entries: readonly unknown[]): QaHistory {
     pending = null;
   };
 
+  const enterBackgroundTurn = (): void => {
+    finalizePending();
+    owner = "background";
+    if (latestHumanHasAnswer && chronological.length > 0) {
+      backgroundTurnsAfterLatest += 1;
+      backgroundTurnCountedForTrigger = true;
+    }
+  };
+
+  const handleCustomKind = (customType: string, display?: boolean, details?: unknown): void => {
+    const kind = classifyCustomMessage(customType, display, details);
+    const isIdleRecoveryAfterAnswer =
+      kind === "mid-turn" &&
+      RECOVERY_CUSTOM_TYPES.has((customType || "").trim()) &&
+      pending?.hasFinalTextAnswer === true;
+    if (kind === "background" || isIdleRecoveryAfterAnswer) {
+      enterBackgroundTurn();
+    }
+  };
+
   for (let i = 0; i < entries.length; i++) {
     const raw = entries[i];
     if (!raw || typeof raw !== "object") continue;
@@ -373,29 +417,36 @@ export function extractQaHistory(entries: readonly unknown[]): QaHistory {
       timestamp?: unknown;
       customType?: unknown;
       display?: unknown;
+      details?: unknown;
+      data?: unknown;
       message?: {
         role?: unknown;
         content?: unknown;
         customType?: unknown;
         display?: unknown;
+        details?: unknown;
       };
     };
     const entryId = typeof entry.id === "string" && entry.id ? entry.id : `entry-${i}`;
     const entryTimestamp = typeof entry.timestamp === "string" ? entry.timestamp : undefined;
 
+    if (entry.type === "custom" && entry.customType === CRON_USER_MESSAGE_ENTRY_TYPE) {
+      const cmd =
+        entry.data && typeof entry.data === "object"
+          ? (entry.data as { command?: unknown }).command
+          : undefined;
+      if (typeof cmd === "string" && cmd.trim()) {
+        pendingCronCommands.push(cmd.trim());
+      }
+      continue;
+    }
+
     if (entry.type === "custom_message") {
-      const kind = classifyCustomMessage(
+      handleCustomKind(
         typeof entry.customType === "string" ? entry.customType : "",
         typeof entry.display === "boolean" ? entry.display : undefined,
+        entry.details,
       );
-      if (kind === "background") {
-        finalizePending();
-        owner = "background";
-        if (chronological.length > 0) {
-          backgroundTurnsAfterLatest += 1;
-          backgroundTurnCountedForTrigger = true;
-        }
-      }
       continue;
     }
 
@@ -405,56 +456,55 @@ export function extractQaHistory(entries: readonly unknown[]): QaHistory {
 
     const role = entry.message.role;
     if (role === "custom") {
-      const kind = classifyCustomMessage(
+      handleCustomKind(
         typeof entry.message.customType === "string" ? entry.message.customType : "",
         typeof entry.message.display === "boolean" ? entry.message.display : undefined,
+        entry.message.details,
       );
-      if (kind === "background") {
-        finalizePending();
-        owner = "background";
-        if (chronological.length > 0) {
-          backgroundTurnsAfterLatest += 1;
-          backgroundTurnCountedForTrigger = true;
-        }
-      }
       continue;
     }
 
     if (role === "user") {
       const { text, hasImage } = extractTextContent(entry.message.content);
       const effectiveText = text || (hasImage ? "[Image]" : "");
+      const cronMatchIdx = effectiveText ? pendingCronCommands.indexOf(effectiveText.trim()) : -1;
+      if (cronMatchIdx >= 0) {
+        pendingCronCommands.splice(cronMatchIdx, 1);
+        enterBackgroundTurn();
+        continue;
+      }
       if (!effectiveText || (!hasImage && isAutomatedUserMessage(effectiveText))) {
-        finalizePending();
-        owner = "background";
-        if (chronological.length > 0) {
-          backgroundTurnsAfterLatest += 1;
-          backgroundTurnCountedForTrigger = true;
-        }
+        enterBackgroundTurn();
         continue;
       }
       // Real human prompt starts a new human turn and resets buried state.
       finalizePending();
       owner = "human";
+      latestHumanHasAnswer = false;
       backgroundTurnsAfterLatest = 0;
       backgroundTurnCountedForTrigger = false;
       pending = {
         promptEntryId: entryId,
         question: effectiveText,
         promptTimestamp: entryTimestamp,
+        hasFinalTextAnswer: false,
       };
       continue;
     }
 
     if (role === "assistant") {
-      const { text } = extractTextContent(entry.message.content);
-      if (owner === "human" && pending) {
+      const { text, hasToolCall } = extractTextContent(entry.message.content);
+      const currentOwner = getOwner();
+      if (currentOwner === "human" && pending) {
         if (text) {
           pending.answer = text;
           pending.answerEntryId = entryId;
           pending.answerTimestamp = entryTimestamp;
+          pending.hasFinalTextAnswer = !hasToolCall;
+          latestHumanHasAnswer = true;
         }
-      } else if (owner === "background") {
-        if (chronological.length > 0 && !backgroundTurnCountedForTrigger) {
+      } else if (currentOwner === "background") {
+        if (latestHumanHasAnswer && chronological.length > 0 && !backgroundTurnCountedForTrigger) {
           backgroundTurnsAfterLatest += 1;
           backgroundTurnCountedForTrigger = true;
         }
@@ -466,7 +516,7 @@ export function extractQaHistory(entries: readonly unknown[]): QaHistory {
 
   const pairs = chronological.reverse();
   const buriedLatest =
-    pairs.length > 0 && backgroundTurnsAfterLatest > 0 ? pairs[0] : null;
+    latestHumanHasAnswer && pairs.length > 0 && backgroundTurnsAfterLatest > 0 ? pairs[0] : null;
   return {
     pairs,
     buriedLatest,
@@ -559,6 +609,7 @@ export class QaListOverlay implements Component {
     private selection: OverlaySelection<string>,
     private done: (result: QaListResult) => void,
     initialFilterQuery = "",
+    private keybindings?: KeybindingsManager,
   ) {
     this.filterQuery = initialFilterQuery;
   }
@@ -652,7 +703,10 @@ export class QaListOverlay implements Component {
       return;
     }
 
-    if (matchesKey(data, Key.escape)) {
+    if (
+      this.keybindings?.matches(data, "tui.select.cancel") ||
+      matchesKey(data, Key.escape)
+    ) {
       if (this.filterQuery) {
         this.filterQuery = "";
         reconcileSelection(this.selection, this.visiblePairs());
@@ -663,15 +717,26 @@ export class QaListOverlay implements Component {
       this.done({ action: "close" });
       return;
     }
-    if (matchesKey(data, Key.up) || matchesOverlayKey(data, "k")) {
+    if (
+      this.keybindings?.matches(data, "tui.select.up") ||
+      matchesKey(data, Key.up) ||
+      matchesOverlayKey(data, "k")
+    ) {
       this.move(-1);
       return;
     }
-    if (matchesKey(data, Key.down) || matchesOverlayKey(data, "j")) {
+    if (
+      this.keybindings?.matches(data, "tui.select.down") ||
+      matchesKey(data, Key.down) ||
+      matchesOverlayKey(data, "j")
+    ) {
       this.move(1);
       return;
     }
-    if (matchesKey(data, Key.enter)) {
+    if (
+      this.keybindings?.matches(data, "tui.select.confirm") ||
+      matchesKey(data, Key.enter)
+    ) {
       const focused = items[this.selection.index];
       if (focused) {
         this.done({ action: "open", pair: focused, filterQuery: this.filterQuery });
@@ -851,8 +916,8 @@ export async function openQaOverlay(
 
   while (true) {
     const listResult = await ctx.ui.custom<QaListResult>(
-      (tui, theme, _kb, done) =>
-        new QaListOverlay(tui, theme, pairs, selection, done, filterQuery),
+      (tui, theme, kb, done) =>
+        new QaListOverlay(tui, theme, pairs, selection, done, filterQuery, kb),
       OVERLAY_OPTS,
     );
 
@@ -873,6 +938,8 @@ export async function openQaOverlay(
       : "↑↓/jk/PgUp/PgDn scroll · r quote answer · Esc back";
 
     let detailQuote: string | null = null;
+    let cachedDetailTheme: Theme | undefined;
+    let cachedDetailLines: string[] | undefined;
     await ctx.ui.custom<null>(
       (tui, theme, _kb, done) =>
         new OverlayScrollDetail(
@@ -883,7 +950,13 @@ export async function openQaOverlay(
             getHeader: (t) =>
               t.fg("accent", t.bold("Q&A Reader")) +
               t.fg("dim", ` · ${pair.questionPreview}`),
-            getBodyLines: (t) => buildQaDetailLines(pair, t),
+            getBodyLines: (t) => {
+              if (!cachedDetailLines || cachedDetailTheme !== t) {
+                cachedDetailTheme = t;
+                cachedDetailLines = buildQaDetailLines(pair, t);
+              }
+              return cachedDetailLines;
+            },
             onKey: (key) => {
               if (key === "r") {
                 detailQuote = formatQuotePrefix(pair.answerTitle);
@@ -990,8 +1063,23 @@ export function registerQaOverlay(
   }
 
   const sessions = new Map<string, QaSessionState>();
-  const getState = (ctx: unknown): QaSessionState => {
-    const key = resolveBridgeSessionKey(ctx as any);
+  const pendingCronDispatch: string[] = [];
+  let pendingCronInput: string | null = null;
+
+  const safeSessionKey = (ctx: unknown): string | null => {
+    try {
+      return resolveBridgeSessionKey(ctx as any);
+    } catch (err: unknown) {
+      log.debug("qa_session_key_stale", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  };
+
+  const getState = (ctx: unknown): QaSessionState | null => {
+    const key = safeSessionKey(ctx);
+    if (!key) return null;
     const existing = sessions.get(key);
     if (existing) return existing;
     if (sessions.size >= MAX_SESSIONS) {
@@ -1014,17 +1102,24 @@ export function registerQaOverlay(
     force = false,
   ): void => {
     const state = getState(ctx);
-    if (!force && !state.hintVisible) return;
-    state.hintVisible = false;
+    if (state) {
+      if (!force && !state.hintVisible) return;
+      state.hintVisible = false;
+    } else if (!force) {
+      return;
+    }
+    if (!ctx || !isLiveExtensionCtx(ctx)) return;
     try {
-      ctx?.ui?.setWidget?.(QA_HINT_WIDGET_KEY, undefined);
+      ctx.ui?.setWidget?.(QA_HINT_WIDGET_KEY, undefined);
       log.debug("qa_buried_hint_cleared");
     } catch {}
   };
 
   const syncBuriedHint = (ctx: ExtensionContext | undefined): void => {
-    if (!ctx?.hasUI || isBrowserDispatch(ctx)) return;
+    if (!ctx || !isLiveExtensionCtx(ctx)) return;
+    if (!ctx.hasUI || isBrowserDispatch(ctx)) return;
     const state = getState(ctx);
+    if (!state) return;
     const history = extractQaHistory(safeGetBranch(ctx));
     const buried = history.buriedLatest;
     if (!buried || buried.answerEntryId === state.dismissedAnswerId) {
@@ -1056,7 +1151,9 @@ export function registerQaOverlay(
   };
 
   const openForContext = async (ctx: ExtensionContext | ExtensionCommandContext): Promise<void> => {
+    if (!isLiveExtensionCtx(ctx)) return;
     const state = getState(ctx);
+    if (!state) return;
     if (state.overlayOpen) {
       log.debug("qa_overlay_already_open");
       return;
@@ -1074,17 +1171,29 @@ export function registerQaOverlay(
     }
   };
 
+  pi.events?.on?.("cron:dispatch-command", (data: unknown) => {
+    const cmd =
+      data && typeof data === "object"
+        ? (data as { command?: unknown }).command
+        : undefined;
+    if (typeof cmd === "string" && cmd.trim()) {
+      if (pendingCronDispatch.length >= 32) pendingCronDispatch.shift();
+      pendingCronDispatch.push(cmd.trim());
+    }
+  });
+
   pi.registerCommand("qa", {
     description: "Open the human Q&A reader overlay with 1-key section quoting",
     handler: async (_args, ctx) => {
-      log.debug("qa_command", { hasUI: !!ctx?.hasUI, browser: isBrowserDispatch(ctx) });
-      if (!ctx?.hasUI || isBrowserDispatch(ctx)) {
+      if (!isLiveExtensionCtx(ctx)) return;
+      log.debug("qa_command", { hasUI: !!ctx.hasUI, browser: isBrowserDispatch(ctx) });
+      if (!ctx.hasUI || isBrowserDispatch(ctx)) {
         const pairs = extractQaHistory(safeGetBranch(ctx)).pairs;
         const text = formatQaPlainText(pairs);
         try {
           pi.sendMessage({ customType: "qa-overlay", content: text, display: true }, { triggerTurn: false });
         } catch {
-          try { ctx?.ui?.notify?.(text, "info"); } catch {}
+          try { ctx.ui?.notify?.(text, "info"); } catch {}
         }
         return;
       }
@@ -1115,20 +1224,45 @@ export function registerQaOverlay(
   }
 
   pi.on("input", (event, ctx) => {
-    if (event?.source === "extension") return;
     const text = typeof event?.text === "string" ? event.text.trim() : "";
+    if (event?.source === "extension") {
+      const idx = text ? pendingCronDispatch.indexOf(text) : -1;
+      if (idx >= 0) {
+        pendingCronDispatch.splice(idx, 1);
+        pendingCronInput = text;
+      } else {
+        pendingCronInput = null;
+      }
+      return;
+    }
+    pendingCronInput = null;
     if (!text || text.startsWith("/") || isAutomatedUserMessage(text)) return;
+    if (!isLiveExtensionCtx(ctx)) return;
     const state = getState(ctx);
-    state.dismissedAnswerId = null;
+    if (state) state.dismissedAnswerId = null;
     clearHint(ctx);
   });
 
   pi.on("before_agent_start", (event, ctx) => {
     if (event?.messageType !== "user") return;
     const prompt = typeof event.prompt === "string" ? event.prompt : "";
+    if (pendingCronInput !== null) {
+      const rawCmd = pendingCronInput;
+      pendingCronInput = null;
+      const trimmed = prompt.trim();
+      if (trimmed && trimmed !== rawCmd) {
+        try {
+          if (typeof (pi as any).appendEntry === "function") {
+            (pi as any).appendEntry(CRON_USER_MESSAGE_ENTRY_TYPE, { command: trimmed });
+          }
+        } catch {}
+      }
+      return;
+    }
     if (!prompt || isAutomatedUserMessage(prompt)) return;
+    if (!isLiveExtensionCtx(ctx)) return;
     const state = getState(ctx);
-    state.dismissedAnswerId = null;
+    if (state) state.dismissedAnswerId = null;
     clearHint(ctx);
   });
 
@@ -1137,15 +1271,16 @@ export function registerQaOverlay(
   });
 
   pi.on("session_start", (_event, ctx) => {
-    const key = resolveBridgeSessionKey(ctx as any);
-    sessions.delete(key);
+    const key = safeSessionKey(ctx);
+    if (key) sessions.delete(key);
     clearHint(ctx, true);
     syncBuriedHint(ctx);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
     clearHint(ctx);
-    sessions.delete(resolveBridgeSessionKey(ctx as any));
+    const key = safeSessionKey(ctx);
+    if (key) sessions.delete(key);
   });
 
   return { registeredShortcut };

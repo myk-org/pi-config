@@ -14,6 +14,7 @@ import {
   SETTINGS_KEYS,
 } from "../../../extensions/orchestrator/project-settings.js";
 import {
+  CRON_USER_MESSAGE_ENTRY_TYPE,
   QA_HINT_WIDGET_KEY,
   QaListOverlay,
   buildQaDetailLines,
@@ -59,6 +60,7 @@ function customEntry(
   content: string,
   display = true,
   timestamp = "2026-11-27T10:01:00.000Z",
+  details?: Record<string, unknown>,
 ) {
   return {
     type: "custom_message",
@@ -67,6 +69,7 @@ function customEntry(
     customType,
     content,
     display,
+    ...(details ? { details } : {}),
   };
 }
 
@@ -74,13 +77,30 @@ function createFakePi() {
   const commands = new Map<string, any>();
   const shortcuts = new Map<string, any>();
   const handlers = new Map<string, Array<(...args: any[]) => any>>();
+  const eventListeners = new Map<string, Array<(data: unknown) => void>>();
   const sentMessages: any[] = [];
+  const appendedEntries: Array<{ customType: string; data: unknown }> = [];
 
   const pi = {
     on(event: string, fn: (...args: any[]) => any) {
       const list = handlers.get(event) ?? [];
       list.push(fn);
       handlers.set(event, list);
+    },
+    events: {
+      on(event: string, fn: (data: unknown) => void) {
+        const list = eventListeners.get(event) ?? [];
+        list.push(fn);
+        eventListeners.set(event, list);
+      },
+      emit(event: string, data: unknown) {
+        for (const fn of eventListeners.get(event) ?? []) {
+          fn(data);
+        }
+      },
+    },
+    appendEntry(customType: string, data?: unknown) {
+      appendedEntries.push({ customType, data });
     },
     registerCommand(name: string, opts: any) {
       commands.set(name, opts);
@@ -99,7 +119,7 @@ function createFakePi() {
     }
   }
 
-  return { pi, commands, shortcuts, handlers, sentMessages, emit };
+  return { pi, commands, shortcuts, handlers, sentMessages, appendedEntries, emit };
 }
 
 function createMockCtx(options: {
@@ -108,6 +128,7 @@ function createMockCtx(options: {
   hasUI?: boolean;
   sessionId?: string;
   customInputs?: string[][];
+  keybindings?: ReturnType<typeof fakeKeybindings>;
 }) {
   const notifications: Array<{ msg: string; level?: string }> = [];
   const pasted: string[] = [];
@@ -141,7 +162,12 @@ function createMockCtx(options: {
           resolved = val;
           isDone = true;
         };
-        const comp = await factory(fakeTui({ rows: 24 }), fakeTheme(), fakeKeybindings(), done);
+        const comp = await factory(
+          fakeTui({ rows: 24 }),
+          fakeTheme(),
+          options.keybindings ?? fakeKeybindings(),
+          done,
+        );
         comp.render(100);
         for (const seq of inputs) {
           if (isDone) break;
@@ -358,6 +384,130 @@ describe("extractQaHistory", () => {
 
     const history = extractQaHistory(branch);
     assert.equal(history.pairs.length, 2);
+    assert.equal(history.buriedLatest, null);
+    assert.equal(history.backgroundTurnsAfterLatest, 0);
+  });
+
+  it("excludes cron-dispatched slash commands recorded via cron-user-message", () => {
+    const branch = [
+      userEntry("u1", "What should I deploy?"),
+      assistantEntry("a1", [{ type: "text", text: "Deploy PR #1475." }]),
+      { type: "custom", id: "cm1", customType: CRON_USER_MESSAGE_ENTRY_TYPE, data: { command: "/review-local" } },
+      userEntry("u2", "/review-local"),
+      assistantEntry("a2", [{ type: "text", text: "Local review clean." }]),
+    ];
+
+    const history = extractQaHistory(branch);
+    assert.equal(history.pairs.length, 1);
+    assert.equal(history.pairs[0].question, "What should I deploy?");
+    assert.equal(history.pairs[0].answer, "Deploy PR #1475.");
+    assert.equal(history.buriedLatest?.answerEntryId, "a1");
+    assert.equal(history.backgroundTurnsAfterLatest, 1);
+  });
+
+  it("treats idle subagent-chain-error recovery with separateTurn detail as background", () => {
+    const branch = [
+      userEntry("u1", "Run the migration"),
+      assistantEntry("a1", [{ type: "text", text: "Started async chain." }]),
+      customEntry(
+        "c1",
+        "subagent-chain-error",
+        "[system message — not written by the user]\nChain stopped",
+        true,
+        "2026-11-27T10:02:00.000Z",
+        { separateTurn: true },
+      ),
+      assistantEntry("a2", [{ type: "text", text: "Chain recovery acknowledged." }]),
+    ];
+
+    const history = extractQaHistory(branch);
+    assert.equal(history.pairs.length, 1);
+    assert.equal(history.pairs[0].answer, "Started async chain.");
+    assert.equal(history.buriedLatest?.answerEntryId, "a1");
+  });
+
+  it("treats post-answer subagent-chain-error without details as background", () => {
+    const branch = [
+      userEntry("u1", "Run checks"),
+      assistantEntry("a1", [{ type: "text", text: "Checks kicked off." }]),
+      customEntry("c1", "subagent-chain-error", "[system message — not written by the user]\nChain stalled"),
+      assistantEntry("a2", [{ type: "text", text: "Recovered stalled chain." }]),
+    ];
+
+    const history = extractQaHistory(branch);
+    assert.equal(history.pairs.length, 1);
+    assert.equal(history.pairs[0].answer, "Checks kicked off.");
+    assert.equal(history.buriedLatest?.answerEntryId, "a1");
+  });
+
+  it("preserves human pairing across genuinely mid-turn subagent-chain-error retry", () => {
+    const branch = [
+      userEntry("u1", "Run build chain"),
+      assistantEntry("a1", [
+        { type: "text", text: "Spawning chain." },
+        { type: "toolCall", id: "tc1", name: "subagent", arguments: {} },
+      ]),
+      customEntry("c1", "subagent-chain-error", "[system message — not written by the user]\nMissing taskId"),
+      assistantEntry("a2", [{ type: "text", text: "Chain spawned after retry." }]),
+    ];
+
+    const history = extractQaHistory(branch);
+    assert.equal(history.pairs.length, 1);
+    assert.equal(history.pairs[0].answer, "Chain spawned after retry.");
+    assert.equal(history.buriedLatest, null);
+  });
+
+  it("preserves human pairing across mid-turn skill-maintenance-nudge steer", () => {
+    const branch = [
+      userEntry("u1", "Check PR review status"),
+      assistantEntry("a1", [
+        { type: "toolCall", id: "tc1", name: "bash", arguments: {} },
+      ]),
+      {
+        type: "message",
+        id: "tr1",
+        message: { role: "toolResult", isError: true, content: [{ type: "text", text: "failed" }] },
+      },
+      customEntry(
+        "c1",
+        "skill-maintenance-nudge",
+        "The guidance from skill `qodo-review` just failed. Fix the skill now.",
+        true,
+      ),
+      assistantEntry("a2", [{ type: "text", text: "Fixed the command; PR #1475 is clean." }]),
+    ];
+
+    const history = extractQaHistory(branch);
+    assert.equal(history.pairs.length, 1);
+    assert.equal(history.pairs[0].answer, "Fixed the command; PR #1475 is clean.");
+    assert.equal(history.buriedLatest, null);
+  });
+
+  it("does not restore buried hint for an older pair after a newer unanswered prompt", () => {
+    const branch = [
+      userEntry("u1", "Old question"),
+      assistantEntry("a1", [{ type: "text", text: "Old answer" }]),
+      userEntry("u2", "Newer unanswered question"),
+      customEntry("c1", "async-agent-result", "## Async Agent Result: job"),
+      assistantEntry("a2", [{ type: "text", text: "Async job completed." }]),
+    ];
+
+    const history = extractQaHistory(branch);
+    assert.equal(history.pairs.length, 1);
+    assert.equal(history.pairs[0].answerEntryId, "a1");
+    assert.equal(history.buriedLatest, null);
+    assert.equal(history.backgroundTurnsAfterLatest, 0);
+  });
+
+  it("treats headless qa-overlay output as passive without burying latest answer", () => {
+    const branch = [
+      userEntry("u1", "Summarize changes"),
+      assistantEntry("a1", [{ type: "text", text: "Added /qa overlay." }]),
+      customEntry("c1", "qa-overlay", "Human Q&A (1):\n1. Q: Summarize changes", true),
+    ];
+
+    const history = extractQaHistory(branch);
+    assert.equal(history.pairs.length, 1);
     assert.equal(history.buriedLatest, null);
     assert.equal(history.backgroundTurnsAfterLatest, 0);
   });
@@ -627,6 +777,104 @@ describe("QaListOverlay & openQaOverlay", () => {
     assert.equal(mock.notifications.length, 1);
     assert.match(mock.notifications[0].msg, /No human Q&A pairs/);
   });
+
+  it("honors remapped tui.select navigation keybindings in QaListOverlay", () => {
+    const pairs = extractQaHistory(sampleBranch).pairs;
+    const results: QaListResult[] = [];
+    const selection = { index: 0, id: pairs[0].id };
+    const remappedKb = fakeKeybindings((data, action) => {
+      if (action === "tui.select.down") return data === "n";
+      if (action === "tui.select.confirm") return data === "o";
+      return false;
+    });
+    const overlay = new QaListOverlay(fakeTui(), fakeTheme(), pairs, selection, (r) => {
+      results.push(r);
+    }, "", remappedKb);
+
+    overlay.handleInput("n");
+    overlay.handleInput("o");
+    const result = results[0];
+    assert.equal(result?.action, "open");
+    if (result?.action === "open") {
+      assert.equal(result.pair.question, "Explain caching");
+    }
+  });
+
+  it("honors remapped tui.select confirm keybinding in openQaOverlay", async () => {
+    const remappedKb = fakeKeybindings((data, action) => {
+      if (action === "tui.select.confirm") return data === "o";
+      if (action === "tui.select.cancel") return data === "q";
+      return false;
+    });
+    const mock = createMockCtx({
+      cwd: process.cwd(),
+      branch: sampleBranch,
+      keybindings: remappedKb,
+      customInputs: [["o"], ["1"]],
+    });
+
+    const pasted = await openQaOverlay(mock.ctx);
+    assert.equal(pasted, 'Re: "Recommendation for Issue #2" — ');
+  });
+
+  it("reuses cached body lines across repeated scroll redraws in detail reader", async () => {
+    const longAnswer = Array.from({ length: 60 }, (_, i) => `Line ${i + 1}: detail paragraph text`).join("\n");
+    const longBranch = [
+      userEntry("u1", "Give me a long answer"),
+      assistantEntry("a1", [{ type: "text", text: longAnswer }]),
+    ];
+
+    let boldCalls = 0;
+    const countingTheme = {
+      fg: (_c: string, v: string) => v,
+      bold: (v: string) => {
+        boldCalls += 1;
+        return v;
+      },
+    } as any;
+
+    let callNum = 0;
+    const ctx = {
+      cwd: process.cwd(),
+      hasUI: true,
+      sessionManager: { getBranch: () => longBranch },
+      ui: {
+        notify() {},
+        pasteToEditor() {},
+        async custom(factory: any) {
+          callNum += 1;
+          let doneVal: any;
+          let closed = false;
+          const comp = await factory(fakeTui({ rows: 14 }), countingTheme, fakeKeybindings(), (v: any) => {
+            doneVal = v;
+            closed = true;
+          });
+          if (callNum === 1) {
+            comp.render(80);
+            comp.handleInput("\r");
+          } else if (callNum === 2) {
+            boldCalls = 0;
+            comp.render(80);
+            const callsAfterFirstRender = boldCalls;
+            // Scroll 5 times: header calls bold once per render, body lines must stay cached.
+            for (let i = 0; i < 5; i++) {
+              comp.handleInput("j");
+              comp.render(80);
+            }
+            // Only the 1 header bold() call per scroll render (5 extra), NOT re-running buildQaDetailLines!
+            assert.equal(boldCalls - callsAfterFirstRender, 5);
+            comp.handleInput("\x1b");
+          } else {
+            if (!closed) comp.handleInput("\x1b");
+          }
+          comp.dispose?.();
+          return doneVal;
+        },
+      },
+    } as unknown as ExtensionCommandContext;
+
+    await openQaOverlay(ctx);
+  });
 });
 
 describe("qa_overlay_shortcut & buried-answer widget lifecycle", () => {
@@ -853,5 +1101,54 @@ describe("qa_overlay_shortcut & buried-answer widget lifecycle", () => {
       formatQaPlainText(extractQaHistory(branch).pairs),
       harness.sentMessages[0].msg.content,
     );
+  });
+
+  it("tolerates stale contexts with throwing getters during session_start", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+
+    const staleCtx = {
+      get mode() {
+        throw new Error("stale context: mode");
+      },
+      get hasUI() {
+        throw new Error("stale context: hasUI");
+      },
+      get sessionManager() {
+        throw new Error("stale context: sessionManager");
+      },
+    };
+
+    await assert.doesNotReject(async () => {
+      await harness.emit("session_start", {}, staleCtx);
+      await harness.emit("agent_end", {}, staleCtx);
+      await harness.emit("session_shutdown", {}, staleCtx);
+    });
+  });
+
+  it("records expanded cron prompt provenance across input to before_agent_start", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+
+    const mock = createMockCtx({ cwd: tempDir, branch: [] });
+    harness.pi.events.emit("cron:dispatch-command", { command: "/review-local" });
+    await harness.emit("input", { source: "extension", text: "/review-local" }, mock.ctx);
+    await harness.emit(
+      "before_agent_start",
+      { messageType: "user", prompt: "Expanded local review prompt body" },
+      mock.ctx,
+    );
+
+    assert.equal(harness.appendedEntries.length, 1);
+    assert.deepEqual(harness.appendedEntries[0], {
+      customType: CRON_USER_MESSAGE_ENTRY_TYPE,
+      data: { command: "Expanded local review prompt body" },
+    });
   });
 });
