@@ -227,26 +227,34 @@ describe("settings_set tool (#1473)", () => {
     assert.match(res.content[0].text, /<= 50/);
   });
 
-  it("rejects project writes for global_only settings", async () => {
-    const orig = SETTINGS_KEYS.dco.global_only;
-    SETTINGS_KEYS.dco.global_only = true;
-    try {
-      let prompted = false;
-      const { tools } = createToolHarness();
-      const res = await tools.get("settings_set").execute(
-        "s3",
-        { action: "set", key: "dco", scope: "project", value: true },
-        undefined,
-        undefined,
-        { cwd: projectDir, hasUI: true, mode: "tui", ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } } },
-      );
-      assert.equal(res.isError, true);
-      assert.equal(prompted, false);
-      assert.match(res.content[0].text, /global-only/);
-    } finally {
-      if (orig === undefined) delete SETTINGS_KEYS.dco.global_only;
-      else SETTINGS_KEYS.dco.global_only = orig;
-    }
+  it("rejects project writes for real global_only lsp_enabled setting", async () => {
+    let prompted = false;
+    const { tools } = createToolHarness();
+    const res = await tools.get("settings_set").execute(
+      "s3",
+      { action: "set", key: "lsp_enabled", scope: "project", value: true },
+      undefined,
+      undefined,
+      { cwd: projectDir, hasUI: true, mode: "tui", ui: { select: async () => { prompted = true; return SETTINGS_APPROVAL_APPROVE; } } },
+    );
+    assert.equal(res.isError, true);
+    assert.equal(prompted, false);
+    assert.match(res.content[0].text, /global-only/);
+  });
+
+  it("shows security banner with key-by-key diff for lsp_servers", () => {
+    const prompt = buildSettingsApprovalPrompt({
+      action: "set",
+      key: "lsp_servers",
+      scope: "global",
+      scopeFile: "/tmp/global/pi-config-settings.json",
+      def: SETTINGS_KEYS.lsp_servers,
+      hadOld: false,
+      oldValue: undefined,
+      newValue: { pyright: { command: "pyright-langserver", args: ["--stdio"] } },
+    });
+    assert.match(prompt, /SECURITY-SENSITIVE SETTING CHANGE/);
+    assert.match(prompt, /\+ "pyright":/);
   });
 
   it("fails closed when ctx.hasUI is false", async () => {

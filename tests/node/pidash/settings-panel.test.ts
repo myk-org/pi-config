@@ -62,12 +62,22 @@ describe("PiDash settings payload scope isolation (#1473)", () => {
     assert.equal(projAllowlist.source, "P");
   });
 
-  it("groups real schema keys into sidebar categories preserving tail categories", () => {
+  it("groups real schema keys into sidebar categories preserving tail LSP category", () => {
     const payload = buildSettingsPayload(projectDir, "project");
     const categories = buildSettingsCategories(payload.keys);
-    assert.ok(categories.length >= 15);
+    assert.ok(categories.length >= 18);
     assert.equal(categories[0].name, "Git");
-    assert.equal(categories[categories.length - 1].name, "Session");
+    assert.equal(categories[categories.length - 1].name, "LSP");
+  });
+
+  it("filters real schema keys across all categories when searching for lsp", () => {
+    const payload = buildSettingsPayload(projectDir, "project");
+    const matches = filterSettingsKeys(payload.keys, "lsp");
+    const keys = matches.map((m) => m.key);
+    assert.ok(keys.includes("lsp_enabled"));
+    assert.ok(keys.includes("lsp_servers"));
+    assert.equal(matches.find((m) => m.key === "lsp_enabled")?.group, "LSP");
+    assert.equal(matches.find((m) => m.key === "lsp_enabled")?.globalOnly, true);
   });
 
   it("filters real schema keys across all categories when searching for turn_snapshots", () => {

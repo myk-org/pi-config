@@ -51,5 +51,7 @@
   "pre_compaction_elision_min_chars": 2000,
   "magic_keywords": true,
   "turn_snapshots": true,
-  "qa_overlay_shortcut": "alt+q"
+  "qa_overlay_shortcut": "alt+q",
+  "lsp_enabled": false,
+  "lsp_servers": {}
 }

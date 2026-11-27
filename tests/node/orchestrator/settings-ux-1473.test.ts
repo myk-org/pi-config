@@ -252,6 +252,7 @@ describe("left category sidebar and cross-category search (#1473)", () => {
     assert.match(rendered, /Git/);
     assert.match(rendered, /Subagent/);
     assert.match(rendered, /Session/);
+    assert.match(rendered, /LSP/);
   });
 
   it("scrolls sidebar window to expose tail categories on short terminals", () => {
@@ -310,6 +311,22 @@ describe("left category sidebar and cross-category search (#1473)", () => {
     assert.match(rendered, /Search: "turn_snapshots"/);
   });
 
+  it("surfaces real LSP keys across categories when typing lsp", () => {
+    const overlay = new SettingsOverlay(
+      makeFakeTui(30),
+      stubTheme,
+      projectDir,
+      undefined,
+      "global",
+      () => {},
+      () => {},
+    );
+    for (const ch of "lsp") overlay.handleInput(ch);
+    const rendered = stripAnsi(overlay.render(120).join("\n"));
+    assert.match(rendered, /lsp_enabled \[LSP\]/);
+    assert.match(rendered, /lsp_servers \[LSP\]/);
+  });
+
   it("matches real Trail category keys via cross-category search helper", () => {
     const items = Object.entries(SETTINGS_KEYS).map(([id, def]) => ({
       id,
@@ -361,16 +378,9 @@ describe("left category sidebar and cross-category search (#1473)", () => {
     assert.equal(closed, true);
   });
 
-  it("blocks writing global_only keys to project scope in updateSetting", () => {
-    const orig = SETTINGS_KEYS.dco.global_only;
-    SETTINGS_KEYS.dco.global_only = true;
-    try {
-      const res = updateSetting(projectDir, "project", "dco", true);
-      assert.equal(res.ok, false);
-      if (!res.ok) assert.match(res.error, /global-only/);
-    } finally {
-      if (orig === undefined) delete SETTINGS_KEYS.dco.global_only;
-      else SETTINGS_KEYS.dco.global_only = orig;
-    }
+  it("blocks writing real global_only lsp_enabled key to project scope in updateSetting", () => {
+    const res = updateSetting(projectDir, "project", "lsp_enabled", true);
+    assert.equal(res.ok, false);
+    if (!res.ok) assert.match(res.error, /global-only/);
   });
 });

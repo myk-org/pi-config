@@ -68,6 +68,8 @@ export const PROTECTED_SETTING_KEYS: ReadonlySet<string> = new Set([
   "dangerous_command_allowlist",
   "restricted_folders",
   "tool_permissions",
+  "lsp_enabled",
+  "lsp_servers",
   "orchestrator_edit_write_block",
   "allow_push_to_protected_branches",
   "secret_obfuscation",
@@ -361,7 +363,7 @@ export function buildSettingsApprovalPrompt(params: {
 
   if (def.type === "string_list") {
     lines.push(...formatStringListDiffLines(action, hadOld, oldValue, newValue));
-  } else if (def.type === "agent_overrides" || def.type === "tool_permissions") {
+  } else if (def.type === "agent_overrides" || def.type === "tool_permissions" || def.type === "lsp_servers") {
     lines.push(...formatObjectDiffLines(action, hadOld, oldValue, newValue, def.type === "tool_permissions"));
   } else {
     const oldStr = formatScalarPromptValue(key, oldValue, def, hadOld);

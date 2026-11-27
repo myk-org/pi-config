@@ -1,0 +1,1704 @@
+import { after, afterEach, before, beforeEach, describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  BUILTIN_LSP_SERVERS,
+  MAX_DIAGNOSTIC_LINES,
+  LspManager,
+  detectLanguageId,
+  encodeJsonRpcMessage,
+  findExecutableOnPath,
+  formatDiagnostics,
+  registerLsp,
+  resolveServerForFile,
+  resolveTrustedLspEnabled,
+  resolveTrustedLspServers,
+  type LspDiagnostic,
+} from "../../../extensions/orchestrator/lsp.ts";
+import {
+  SETTINGS_KEYS,
+  clearSettingsCache,
+  getSetting,
+  parseSettingInput,
+  setGlobalSettingsPath,
+  validateSetting,
+} from "../../../extensions/orchestrator/project-settings.ts";
+import { registerSecretObfuscation } from "../../../extensions/orchestrator/secret-obfuscation.ts";
+import { formatValue } from "../../../extensions/orchestrator/settings-tui-helpers.ts";
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+type Handler = (event: any, ctx: any) => any;
+
+function createMockPi() {
+  const handlers = new Map<string, Handler[]>();
+  const pi: any = {
+    on(name: string, fn: Handler) {
+      const list = handlers.get(name) ?? [];
+      list.push(fn);
+      handlers.set(name, list);
+      return () => {
+        const idx = list.indexOf(fn);
+        if (idx >= 0) list.splice(idx, 1);
+      };
+    },
+  };
+  async function fire(name: string, event: any, ctx: any) {
+    let currentEvent = event;
+    let lastResult: any;
+    for (const fn of handlers.get(name) ?? []) {
+      const res = await fn(currentEvent, ctx);
+      if (res !== undefined) {
+        lastResult = res;
+        if (name === "tool_result" && res.content !== undefined) {
+          currentEvent = { ...currentEvent, content: res.content };
+        }
+      }
+    }
+    return lastResult;
+  }
+  return { pi, fire };
+}
+
+function registerDirectLsp(pi: any, opts: Record<string, any> = {}) {
+  return registerLsp(pi, { useBroker: false, ...opts });
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    return err?.code === "EPERM";
+  }
+}
+
+async function waitForPidExit(pid: number, maxWaitMs = 3000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    if (!isPidAlive(pid)) return true;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return !isPidAlive(pid);
+}
+
+/**
+ * Real Node stdio JSON-RPC 2.0 mock LSP server script.
+ * Modes: normal | hang | crash | versionless-delayed | tag=<label>
+ */
+const MOCK_LSP_SERVER_SOURCE = `#!/usr/bin/env node
+import * as fs from "node:fs";
+
+const args = process.argv.slice(2);
+const getArg = (prefix, fallback = "") => {
+  const hit = args.find((a) => a.startsWith(prefix));
+  return hit ? hit.slice(prefix.length) : fallback;
+};
+
+const mode = getArg("--mode=", "normal");
+const logFile = getArg("--log=", "");
+const tag = getArg("--tag=", "");
+const ignoreSigterm = args.includes("--ignore-sigterm");
+
+if (ignoreSigterm) {
+  process.on("SIGTERM", () => {});
+}
+
+function record(entry) {
+  if (!logFile) return;
+  fs.appendFileSync(logFile, JSON.stringify({ pid: process.pid, ...entry }) + "\\n", "utf8");
+}
+
+function send(payload) {
+  const body = Buffer.from(JSON.stringify(payload), "utf8");
+  const header = Buffer.from("Content-Length: " + body.byteLength + "\\r\\n\\r\\n", "ascii");
+  process.stdout.write(Buffer.concat([header, body]));
+}
+
+record({ event: "started", mode, tag });
+
+if (mode === "crash") {
+  process.exit(1);
+}
+
+let buf = Buffer.alloc(0);
+const delim = Buffer.from("\\r\\n\\r\\n", "ascii");
+
+function diagnosticsForText(text) {
+  const prefix = tag ? "[" + tag + "] " : "";
+  if (text.includes("MANY_ERRORS")) {
+    const diags = [];
+    for (let i = 0; i < 25; i++) {
+      diags.push({
+        range: { start: { line: i, character: 0 }, end: { line: i, character: 5 } },
+        severity: 1,
+        message: prefix + "Error number " + (i + 1),
+      });
+    }
+    return diags;
+  }
+  const diags = [];
+  if (text.includes("SECRET_LEAK")) {
+    const secretMatch = /SECRET_LEAK:(\\S+)/.exec(text);
+    const leaked = secretMatch ? secretMatch[1] : "unknown";
+    diags.push({
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 10 } },
+      severity: 1,
+      message: "Invalid literal " + leaked,
+    });
+  }
+  if (text.includes("TYPE_ERROR")) {
+    diags.push({
+      range: { start: { line: 2, character: 4 }, end: { line: 2, character: 10 } },
+      severity: 1,
+      message: prefix + "Type 'string' is not assignable\\nto type 'number'.",
+    });
+  }
+  if (text.includes("UNUSED_WARN")) {
+    diags.push({
+      range: { start: { line: 0, character: 6 }, end: { line: 0, character: 9 } },
+      severity: 2,
+      message: prefix + "'foo' is declared but never used.",
+    });
+  }
+  if (text.includes("INFO_ONLY")) {
+    diags.push({
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+      severity: 3,
+      message: "Informational note that should be ignored",
+    });
+  }
+  if (text.includes("OLD_ERR")) {
+    diags.push({
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+      severity: 1,
+      message: "STALE_EDIT_1_ERROR",
+    });
+  }
+  if (text.includes("NEW_ERR")) {
+    diags.push({
+      range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
+      severity: 1,
+      message: "FRESH_EDIT_2_ERROR",
+    });
+  }
+  return diags;
+}
+
+function handleMessage(msg) {
+  record({ event: "recv", method: msg.method ?? null, id: msg.id ?? null });
+
+  if (mode === "hang") {
+    return;
+  }
+
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: 9001, method: "workspace/configuration", params: { items: [{ section: "mock" }] } });
+    send({ jsonrpc: "2.0", id: 9002, method: "window/workDoneProgress/create", params: { token: "t1" } });
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: { capabilities: { textDocumentSync: 1 } },
+    });
+    return;
+  }
+
+  if (msg.method === "initialized") {
+    return;
+  }
+
+  if (msg.method === "textDocument/didOpen") {
+    const doc = msg.params.textDocument;
+    record({ event: "didOpen", uri: doc.uri, version: doc.version, languageId: doc.languageId });
+    if (mode === "versionless-omit-first") {
+      if (doc.text.includes("OLD_ERR")) {
+        return;
+      }
+      send({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+      });
+      return;
+    }
+    if (mode === "versionless-delayed") {
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "textDocument/publishDiagnostics",
+          params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+        });
+      }, 180);
+      return;
+    }
+    if (mode === "versionless-late-old") {
+      const delayMs = doc.text.includes("OLD_ERR") ? 280 : 20;
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "textDocument/publishDiagnostics",
+          params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+        });
+      }, delayMs);
+      return;
+    }
+    if (mode === "stale-versioned-then-unversioned") {
+      if (doc.text.includes("OLD_ERR")) {
+        // After the 120ms client timeout, send a stale versioned result followed by a stale unversioned result
+        setTimeout(() => {
+          send({
+            jsonrpc: "2.0",
+            method: "textDocument/publishDiagnostics",
+            params: { uri: doc.uri, version: doc.version, diagnostics: diagnosticsForText(doc.text) },
+          });
+        }, 160);
+        setTimeout(() => {
+          send({
+            jsonrpc: "2.0",
+            method: "textDocument/publishDiagnostics",
+            params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+          });
+        }, 230);
+        return;
+      }
+      send({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+      });
+      return;
+    }
+    if (mode === "mixed-versioned-unversioned") {
+      if (doc.uri.endsWith("/versioned.ts")) {
+        const delayMs = doc.text.includes("SLOW_VER") ? 180 : 0;
+        setTimeout(() => {
+          send({
+            jsonrpc: "2.0",
+            method: "textDocument/publishDiagnostics",
+            params: { uri: doc.uri, version: doc.version, diagnostics: diagnosticsForText(doc.text) },
+          });
+        }, delayMs);
+        return;
+      }
+      const delayMs = doc.text.includes("OLD_ERR") ? 280 : 20;
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "textDocument/publishDiagnostics",
+          params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+        });
+      }, delayMs);
+      return;
+    }
+    send({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: doc.uri,
+        version: doc.version,
+        diagnostics: diagnosticsForText(doc.text),
+      },
+    });
+    return;
+  }
+
+  if (msg.method === "textDocument/didChange") {
+    const uri = msg.params.textDocument.uri;
+    const version = msg.params.textDocument.version;
+    const text = msg.params.contentChanges?.[0]?.text ?? "";
+    record({ event: "didChange", uri, version });
+    if (mode === "versionless-delayed") {
+      setTimeout(() => {
+        send({
+          jsonrpc: "2.0",
+          method: "textDocument/publishDiagnostics",
+          params: { uri, diagnostics: diagnosticsForText(text) },
+        });
+      }, 260);
+      return;
+    }
+    send({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri,
+        version,
+        diagnostics: diagnosticsForText(text),
+      },
+    });
+    return;
+  }
+
+  if (msg.method === "shutdown") {
+    record({ event: "shutdown" });
+    send({ jsonrpc: "2.0", id: msg.id, result: null });
+    return;
+  }
+
+  if (msg.method === "exit") {
+    record({ event: "exit" });
+    process.exit(0);
+  }
+}
+
+process.stdin.on("data", (chunk) => {
+  buf = Buffer.concat([buf, chunk]);
+  for (;;) {
+    const headerEnd = buf.indexOf(delim);
+    if (headerEnd === -1) break;
+    const header = buf.subarray(0, headerEnd).toString("ascii");
+    const match = /^content-length:\\s*(\\d+)\\s*$/im.exec(header);
+    if (!match) break;
+    const len = Number.parseInt(match[1], 10);
+    const start = headerEnd + 4;
+    if (buf.byteLength < start + len) break;
+    const body = buf.subarray(start, start + len).toString("utf8");
+    buf = buf.subarray(start + len);
+    handleMessage(JSON.parse(body));
+  }
+});
+
+setInterval(() => {}, 60_000);
+`;
+
+describe("LSP diagnostics integration (#1445)", () => {
+  let suiteRoot: string;
+  let mockServerScript: string;
+  let testDir: string;
+  let globalSettingsFile: string;
+  let activeManagers: LspManager[] = [];
+  const savedEnv = new Map<string, string | undefined>();
+
+  function setEnv(key: string, val: string | undefined) {
+    if (!savedEnv.has(key)) savedEnv.set(key, process.env[key]);
+    if (val === undefined) delete process.env[key];
+    else process.env[key] = val;
+  }
+
+  before(() => {
+    suiteRoot = mkdtempSync(join(tmpdir(), "pi-lsp-suite-"));
+    mockServerScript = join(suiteRoot, "mock-lsp-server.mjs");
+    writeFileSync(mockServerScript, MOCK_LSP_SERVER_SOURCE, "utf8");
+    chmodSync(mockServerScript, 0o755);
+  });
+
+  after(() => {
+    rmSync(suiteRoot, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(suiteRoot, "case-"));
+    globalSettingsFile = join(testDir, "global-settings.json");
+    setGlobalSettingsPath(globalSettingsFile);
+    clearSettingsCache();
+    activeManagers = [];
+    setEnv("PI_LSP_ENABLED", undefined);
+    setEnv("PI_LSP_IN_SUBAGENTS", undefined);
+    setEnv("PI_SUBAGENT_CHILD", undefined);
+    setEnv("PI_SECRET_OBFUSCATION", undefined);
+  });
+
+  afterEach(async () => {
+    for (const mgr of activeManagers) {
+      await mgr.shutdownAll();
+    }
+    activeManagers = [];
+    for (const [k, v] of savedEnv) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    savedEnv.clear();
+    setGlobalSettingsPath(null);
+    clearSettingsCache();
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  function writeGlobalSettings(settings: Record<string, unknown>) {
+    writeFileSync(globalSettingsFile, JSON.stringify(settings, null, 2));
+    clearSettingsCache();
+  }
+
+  function writeProjectSettings(settings: Record<string, unknown>) {
+    mkdirSync(join(testDir, ".pi"), { recursive: true });
+    writeFileSync(join(testDir, ".pi", "pi-config-settings.json"), JSON.stringify(settings, null, 2));
+    clearSettingsCache();
+  }
+
+  // ── Settings schema & trust boundary ──────────────────────────────
+
+  describe("settings schema", () => {
+    it("declares lsp_enabled with default false in settings-keys.json", () => {
+      assert.equal(SETTINGS_KEYS.lsp_enabled?.type, "bool");
+      assert.equal(SETTINGS_KEYS.lsp_enabled?.default, false);
+      assert.equal(SETTINGS_KEYS.lsp_enabled?.env, "PI_LSP_ENABLED");
+      assert.equal(SETTINGS_KEYS.lsp_enabled?.group, "LSP");
+    });
+
+    it("declares lsp_servers with empty object default in settings-keys.json", () => {
+      assert.equal(SETTINGS_KEYS.lsp_servers?.type, "lsp_servers");
+      assert.deepEqual(SETTINGS_KEYS.lsp_servers?.default, {});
+      assert.equal(SETTINGS_KEYS.lsp_servers?.group, "LSP");
+    });
+
+    it("resolves trusted lsp_enabled from PI_LSP_ENABLED env override", () => {
+      assert.equal(resolveTrustedLspEnabled(), false);
+      setEnv("PI_LSP_ENABLED", "true");
+      clearSettingsCache();
+      assert.equal(resolveTrustedLspEnabled(), true);
+    });
+
+    it("ignores project-scoped lsp_enabled when global settings leave it unset", () => {
+      writeProjectSettings({ lsp_enabled: true });
+      assert.equal(resolveTrustedLspEnabled(), false);
+    });
+
+    it("ignores project-scoped lsp_servers entries in favor of global settings", () => {
+      writeProjectSettings({
+        lsp_servers: { evil: { command: "./evil.sh", extensions: [".ts"] } },
+      });
+      assert.deepEqual(resolveTrustedLspServers(), {});
+    });
+
+    it("ignores conflicting project lsp settings in unified getSetting resolution", () => {
+      writeGlobalSettings({
+        lsp_enabled: false,
+        lsp_servers: { go: { command: "gopls", extensions: [".go"] } },
+      });
+      writeProjectSettings({
+        lsp_enabled: true,
+        lsp_servers: { evil: { command: "./evil.sh", extensions: [".ts"] } },
+      });
+      assert.equal(getSetting(testDir, "lsp_enabled"), false);
+      assert.deepEqual(getSetting(testDir, "lsp_servers"), {
+        go: { command: "gopls", extensions: [".go"] },
+      });
+    });
+
+    it("normalizes lsp_servers extensions in strict validation", () => {
+      const valid = validateSetting("lsp_servers", {
+        rust: { command: "rust-analyzer", args: ["--stdio"], extensions: ["RS", ".toml"] },
+      });
+      assert.equal(valid.ok, true);
+      if (valid.ok) {
+        assert.deepEqual(valid.value, {
+          rust: { command: "rust-analyzer", args: ["--stdio"], extensions: [".rs", ".toml"] },
+        });
+      }
+    });
+
+    it("rejects malformed lsp_servers shapes in strict validation", () => {
+      assert.equal(validateSetting("lsp_servers", ["not-an-object"]).ok, false);
+      assert.equal(validateSetting("lsp_servers", { bad: { command: "", extensions: [".ts"] } }).ok, false);
+      assert.equal(validateSetting("lsp_servers", { bad: { command: "foo", extensions: [] } }).ok, false);
+      assert.equal(
+        validateSetting("lsp_servers", { bad: { command: "foo", args: [123], extensions: [".ts"] } }).ok,
+        false,
+      );
+    });
+
+    it("preserves valid lsp_servers siblings in lenient validation", () => {
+      const lenient = validateSetting(
+        "lsp_servers",
+        {
+          bad: { command: "", extensions: [".ts"] },
+          good: { command: "gopls", extensions: [".go"] },
+        },
+        { mode: "lenient" },
+      );
+      assert.equal(lenient.ok, true);
+      if (lenient.ok) {
+        assert.deepEqual(lenient.value, { good: { command: "gopls", extensions: [".go"] } });
+      }
+    });
+
+    it("parses JSON input for lsp_servers", () => {
+      const parsed = parseSettingInput(
+        "lsp_servers",
+        JSON.stringify({ custom: { command: "my-lsp", extensions: [".xyz"] } }),
+      );
+      assert.equal(parsed.ok, true);
+      assert.equal(parseSettingInput("lsp_servers", "not-json").ok, false);
+    });
+
+    it("formats lsp_servers counts for TUI display", () => {
+      assert.equal(formatValue("lsp_servers", {}, SETTINGS_KEYS.lsp_servers), "(none)");
+      assert.equal(
+        formatValue("lsp_servers", { a: { command: "x", extensions: [".x"] } }, SETTINGS_KEYS.lsp_servers),
+        "1 server(s)",
+      );
+    });
+  });
+
+  // ── Pure helpers ──────────────────────────────────────────────────
+
+  describe("pure helpers", () => {
+    it("encodes UTF-8 JSON-RPC Content-Length using byte length", () => {
+      const buf = encodeJsonRpcMessage({ jsonrpc: "2.0", method: "test", params: { text: "héllo 🚀" } });
+      const raw = buf.toString("utf8");
+      const [header, body] = raw.split("\r\n\r\n");
+      assert.equal(header, `Content-Length: ${Buffer.byteLength(body, "utf8")}`);
+      assert.notEqual(Buffer.byteLength(body, "utf8"), body.length);
+    });
+
+    it("detects language IDs from file extensions", () => {
+      assert.equal(detectLanguageId("src/app.ts"), "typescript");
+      assert.equal(detectLanguageId("src/view.tsx"), "typescriptreact");
+      assert.equal(detectLanguageId("src/index.js"), "javascript");
+      assert.equal(detectLanguageId("pkg/mod.py"), "python");
+      assert.equal(detectLanguageId("cmd/main.go"), "go");
+      assert.equal(detectLanguageId("lib/a.rs"), "rust");
+      assert.equal(detectLanguageId("Makefile"), "plaintext");
+    });
+
+    it("finds only executable files on PATH without spawning shells", () => {
+      const binDir = join(testDir, "bin");
+      mkdirSync(binDir, { recursive: true });
+      const execBin = join(binDir, "fake-lsp");
+      const nonExec = join(binDir, "not-exec");
+      writeFileSync(execBin, "#!/bin/sh\nexit 0\n");
+      chmodSync(execBin, 0o755);
+      writeFileSync(nonExec, "plain text");
+      chmodSync(nonExec, 0o644);
+
+      assert.equal(findExecutableOnPath("fake-lsp", binDir), execBin);
+      assert.equal(findExecutableOnPath("not-exec", binDir), null);
+      assert.equal(findExecutableOnPath("missing-bin", binDir), null);
+      assert.equal(findExecutableOnPath(execBin, ""), execBin);
+    });
+
+    it("rejects relative command paths or relative PATH entries to block repo binary hijacking", () => {
+      const repoDir = join(testDir, "repo");
+      mkdirSync(repoDir, { recursive: true });
+      const repoBin = join(repoDir, "server");
+      writeFileSync(repoBin, "#!/bin/sh\nexit 0\n");
+      chmodSync(repoBin, 0o755);
+
+      const prevCwd = process.cwd();
+      try {
+        process.chdir(repoDir);
+        assert.equal(findExecutableOnPath("./server", ""), null);
+        assert.equal(findExecutableOnPath("server", "."), null);
+        assert.equal(findExecutableOnPath("repo/server", ""), null);
+        assert.equal(findExecutableOnPath(repoBin, ""), repoBin);
+      } finally {
+        process.chdir(prevCwd);
+      }
+    });
+
+    it("resolves built-in servers by PATH candidate priority", () => {
+      const binDir = join(testDir, "bin");
+      mkdirSync(binDir, { recursive: true });
+      const fakePyright = join(binDir, "pyright-langserver");
+      const fakeRuff = join(binDir, "ruff");
+      for (const p of [fakePyright, fakeRuff]) {
+        writeFileSync(p, "#!/bin/sh\nexit 0\n");
+        chmodSync(p, 0o755);
+      }
+
+      const builtin = resolveServerForFile(join(testDir, "app.py"), {}, binDir);
+      assert.deepEqual(builtin, {
+        serverId: "python",
+        command: fakePyright,
+        args: ["--stdio"],
+      });
+      assert.equal(resolveServerForFile(join(testDir, "README.md"), {}, binDir), null);
+      assert.ok(BUILTIN_LSP_SERVERS.some((s) => s.id === "typescript"));
+      assert.ok(BUILTIN_LSP_SERVERS.some((s) => s.id === "python"));
+      assert.ok(BUILTIN_LSP_SERVERS.some((s) => s.id === "go"));
+    });
+
+    it("prioritizes lsp_servers overrides over built-in server candidates", () => {
+      const binDir = join(testDir, "bin");
+      mkdirSync(binDir, { recursive: true });
+      const fakePyright = join(binDir, "pyright-langserver");
+      const fakeCustom = join(binDir, "custom-py-lsp");
+      for (const p of [fakePyright, fakeCustom]) {
+        writeFileSync(p, "#!/bin/sh\nexit 0\n");
+        chmodSync(p, 0o755);
+      }
+
+      const overridden = resolveServerForFile(
+        join(testDir, "app.py"),
+        { python: { command: "custom-py-lsp", args: ["--fast"], extensions: [".py"] } },
+        binDir,
+      );
+      assert.deepEqual(overridden, {
+        serverId: "python",
+        command: fakeCustom,
+        args: ["--fast"],
+      });
+
+      const missingOverride = resolveServerForFile(
+        join(testDir, "app.py"),
+        { python: { command: "does-not-exist", extensions: [".py"] } },
+        binDir,
+      );
+      assert.equal(missingOverride, null);
+    });
+
+    it("formats errors before warnings while dropping info or hint diagnostics", () => {
+      const diags: LspDiagnostic[] = [
+        { range: { start: { line: 4, character: 2 } }, severity: 2, message: "Unused var" },
+        { range: { start: { line: 1, character: 0 } }, severity: 3, message: "Info ignored" },
+        { range: { start: { line: 0, character: 0 } }, severity: 4, message: "Hint ignored" },
+        { range: { start: { line: 9, character: 3 } }, severity: 1, message: "Type\n  mismatch" },
+      ];
+      const out = formatDiagnostics(diags, join(testDir, "src", "a.ts"), testDir, "typescript");
+      assert.equal(
+        out,
+        [
+          "LSP diagnostics (typescript):",
+          "src/a.ts:10:4 [error] Type mismatch",
+          "src/a.ts:5:3 [warning] Unused var",
+        ].join("\n"),
+      );
+      assert.equal(
+        formatDiagnostics(
+          [{ range: { start: { line: 0, character: 0 } }, severity: 3, message: "info" }],
+          join(testDir, "a.ts"),
+          testDir,
+          "typescript",
+        ),
+        null,
+      );
+    });
+
+    it("interprets omitted diagnostic severity as error per LSP specification", () => {
+      const diags: LspDiagnostic[] = [
+        { range: { start: { line: 3, character: 1 } }, severity: 2, message: "Minor warning" },
+        { range: { start: { line: 1, character: 2 } }, message: "Severity omitted error" },
+      ];
+      const out = formatDiagnostics(diags, join(testDir, "a.ts"), testDir, "typescript");
+      assert.equal(
+        out,
+        [
+          "LSP diagnostics (typescript):",
+          "a.ts:2:3 [error] Severity omitted error",
+          "a.ts:4:2 [warning] Minor warning",
+        ].join("\n"),
+      );
+    });
+
+    it("caps formatted diagnostics at 20 lines with an omission summary", () => {
+      const many: LspDiagnostic[] = Array.from({ length: 25 }, (_, i) => ({
+        range: { start: { line: i, character: 0 } },
+        severity: 1,
+        message: `Err ${i + 1}`,
+      }));
+      const capped = formatDiagnostics(many, join(testDir, "a.ts"), testDir, "typescript", MAX_DIAGNOSTIC_LINES)!;
+      const diagLines = capped.split("\n").filter((l) => l.includes("[error]"));
+      assert.equal(diagLines.length, 20);
+      assert.ok(capped.includes("... and 5 more diagnostic(s)"));
+    });
+  });
+
+  // ── End-to-end mock stdio LSP child server tests ──────────────────
+
+  describe("mock stdio JSON-RPC LSP lifecycle", () => {
+    it("does not spawn any server when lsp_enabled is false", async () => {
+      const logFile = join(testDir, "lsp.log");
+      writeGlobalSettings({
+        lsp_enabled: false,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", `--log=${logFile}`],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "a.ts"), "const x: number = TYPE_ERROR;\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000 });
+      activeManagers.push(manager);
+
+      const res = await fire(
+        "tool_result",
+        {
+          toolName: "write",
+          input: { path: "a.ts" },
+          isError: false,
+          content: [{ type: "text", text: "Wrote a.ts" }],
+        },
+        { cwd: testDir },
+      );
+
+      assert.equal(res, undefined);
+      assert.equal(manager.activeCount, 0);
+      assert.equal(existsSync(logFile), false);
+    });
+
+    it("leaves legacy project settings untouched when lsp_enabled is false", async () => {
+      writeGlobalSettings({ lsp_enabled: false });
+      const piDir = join(testDir, ".pi");
+      mkdirSync(piDir, { recursive: true });
+      const legacyFile = join(piDir, "pi-config-settings.jsonc");
+      const targetJson = join(piDir, "pi-config-settings.json");
+      writeFileSync(legacyFile, '{"lsp_enabled": true}\n', "utf8");
+      writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 500 });
+      activeManagers.push(manager);
+
+      const res = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+
+      assert.equal(res, undefined);
+      assert.equal(existsSync(legacyFile), true);
+      assert.equal(existsSync(targetJson), false);
+    });
+
+    it("refuses to spawn project-configured lsp_servers from an untrusted repo", async () => {
+      const logFile = join(testDir, "evil.log");
+      writeProjectSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", `--log=${logFile}`],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000, envPath: "" });
+      activeManagers.push(manager);
+
+      const res = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+
+      assert.equal(res, undefined);
+      assert.equal(manager.activeCount, 0);
+      assert.equal(existsSync(logFile), false);
+    });
+
+    it("enables LSP for editing subagents by default when lsp_enabled is true", async () => {
+      const logFile = join(testDir, "subagent.log");
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", `--log=${logFile}`],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "a.ts"), "const x = TYPE_ERROR;\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000, isSubagentChild: () => true });
+      activeManagers.push(manager);
+
+      const enabled = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(enabled?.content?.[1]?.text.includes("a.ts:3:5 [error]"));
+    });
+
+    it("skips LSP in subagent children when PI_LSP_IN_SUBAGENTS is explicitly false", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "a.ts"), "const x = TYPE_ERROR;\n");
+      setEnv("PI_LSP_IN_SUBAGENTS", "0");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000, isSubagentChild: () => true });
+      activeManagers.push(manager);
+
+      const skipped = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(skipped, undefined);
+      assert.equal(manager.activeCount, 0);
+    });
+
+    it("lazily initializes on write, reuses the server for didChange edits, caps at 20 lines", async () => {
+      const logFile = join(testDir, "normal.log");
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", `--log=${logFile}`],
+            extensions: [".ts"],
+          },
+        },
+      });
+      const file = join(testDir, "app.ts");
+      writeFileSync(file, "const foo = 1;\n// line 2\nconst x = TYPE_ERROR + UNUSED_WARN + INFO_ONLY;\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1500 });
+      activeManagers.push(manager);
+
+      // 1. First write triggers lazy start -> initialize -> didOpen
+      const res1 = await fire(
+        "tool_result",
+        {
+          toolName: "write",
+          input: { path: "app.ts" },
+          isError: false,
+          content: [{ type: "text", text: "Successfully wrote app.ts" }],
+        },
+        { cwd: testDir },
+      );
+
+      assert.equal(manager.activeCount, 1);
+      const firstPid = manager.getActivePids()[0];
+      assert.ok(firstPid && firstPid > 0);
+      assert.equal(res1.content.length, 2);
+      const diagText1: string = res1.content[1].text;
+      assert.ok(diagText1.includes("LSP diagnostics (typescript):"));
+      assert.ok(diagText1.includes("app.ts:3:5 [error] Type 'string' is not assignable to type 'number'."));
+      assert.ok(diagText1.includes("app.ts:1:7 [warning] 'foo' is declared but never used."));
+      assert.ok(!diagText1.includes("Informational note"));
+
+      // 2. Subsequent edit reuses the same server process and sends didChange (version 2)
+      writeFileSync(file, "MANY_ERRORS\n");
+      const res2 = await fire(
+        "tool_result",
+        {
+          toolName: "edit",
+          input: { path: "app.ts" },
+          isError: false,
+          content: [{ type: "text", text: "Successfully edited app.ts" }],
+        },
+        { cwd: testDir },
+      );
+
+      assert.equal(manager.activeCount, 1);
+      assert.equal(manager.getActivePids()[0], firstPid);
+      const diagText2: string = res2.content[1].text;
+      const errLines = diagText2.split("\n").filter((l) => l.includes("[error]"));
+      assert.equal(errLines.length, 20);
+      assert.ok(diagText2.includes("... and 5 more diagnostic(s)"));
+
+      // 3. Clean edit returns undefined (zero noise appended)
+      writeFileSync(file, "export const ok = 42;\n");
+      const res3 = await fire(
+        "tool_result",
+        {
+          toolName: "edit",
+          input: { path: "app.ts" },
+          isError: false,
+          content: [{ type: "text", text: "Successfully edited app.ts" }],
+        },
+        { cwd: testDir },
+      );
+      assert.equal(res3, undefined);
+
+      const events = readFileSync(logFile, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(events.filter((e) => e.event === "started").length, 1);
+      assert.equal(events.filter((e) => e.method === "initialize").length, 1);
+      assert.equal(events.filter((e) => e.method === "initialized").length, 1);
+      assert.equal(events.filter((e) => e.event === "didOpen" && e.version === 1).length, 1);
+      assert.equal(events.filter((e) => e.event === "didChange" && e.version === 2).length, 1);
+      assert.equal(events.filter((e) => e.event === "didChange" && e.version === 3).length, 1);
+    });
+
+    it("enforces bounded timeout without blocking write when a server hangs", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=hang"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "hung.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 200 });
+      activeManagers.push(manager);
+
+      const started = Date.now();
+      const res = await fire(
+        "tool_result",
+        {
+          toolName: "write",
+          input: { path: "hung.ts" },
+          isError: false,
+          content: [{ type: "text", text: "Wrote hung.ts" }],
+        },
+        { cwd: testDir },
+      );
+      const elapsed = Date.now() - started;
+
+      assert.equal(res, undefined);
+      assert.ok(elapsed >= 150 && elapsed < 1200, `expected bounded timeout around 200ms, got ${elapsed}ms`);
+    });
+
+    it("degrades fail-soft when the configured LSP binary is missing", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: "nonexistent-lsp-binary-1445",
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 500, envPath: "" });
+      activeManagers.push(manager);
+
+      const res = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(res, undefined);
+      assert.equal(manager.activeCount, 0);
+    });
+
+    it("degrades fail-soft when the LSP child process crashes immediately", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=crash"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 500 });
+      activeManagers.push(manager);
+
+      const res = await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(res, undefined);
+      assert.equal(manager.activeCount, 0);
+    });
+
+    it("replaces an active pooled client when lsp_servers override changes mid-session", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", "--tag=v1"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "swap.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1500 });
+      activeManagers.push(manager);
+
+      const res1 = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "swap.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const pid1 = manager.getActivePids()[0];
+      assert.ok(pid1);
+      assert.ok(res1.content[1].text.includes("[v1]"));
+
+      // Update override args while client is still active
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", "--tag=v2"],
+            extensions: [".ts"],
+          },
+        },
+      });
+
+      const res2 = await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "swap.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const pid2 = manager.getActivePids()[0];
+      assert.ok(pid2);
+      assert.notEqual(pid2, pid1);
+      assert.ok(res2.content[1].text.includes("[v2]"));
+      assert.equal(await waitForPidExit(pid1, 2000), true, "expected replaced LSP process to exit");
+    });
+
+    it("serializes concurrent edits across an override change without orphaning servers", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", "--tag=v1"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "a.ts"), "TYPE_ERROR\n");
+      writeFileSync(join(testDir, "b.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 2000 });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const pid1 = manager.getActivePids()[0];
+      assert.ok(pid1);
+
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", "--tag=v2"],
+            extensions: [".ts"],
+          },
+        },
+      });
+
+      const [resA, resB] = await Promise.all([
+        fire(
+          "tool_result",
+          { toolName: "edit", input: { path: "a.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+          { cwd: testDir },
+        ),
+        fire(
+          "tool_result",
+          { toolName: "write", input: { path: "b.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+          { cwd: testDir },
+        ),
+      ]);
+
+      assert.ok(resA?.content?.[1]?.text.includes("[v2]"));
+      assert.ok(resB?.content?.[1]?.text.includes("[v2]"));
+      assert.equal(manager.activeCount, 1);
+      const activePid = manager.getActivePids()[0];
+      assert.ok(activePid && activePid !== pid1);
+      assert.equal(await waitForPidExit(pid1, 2000), true);
+
+      await fire("session_shutdown", {}, { cwd: testDir });
+      assert.equal(manager.activeCount, 0);
+      assert.equal(await waitForPidExit(activePid, 2000), true);
+    });
+
+    it("recovers current edit errors when an unversioned server omits the first publication", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=versionless-omit-first"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      const file = join(testDir, "omit.ts");
+      writeFileSync(file, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 250 });
+      activeManagers.push(manager);
+
+      const res1 = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "omit.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(res1, undefined);
+
+      writeFileSync(file, "line1\nNEW_ERR\n");
+      const res2 = await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "omit.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(res2?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
+    });
+
+    it("resets an ambiguous unversioned client so a delayed prior publication cannot taint a later edit", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=versionless-late-old"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      const file = join(testDir, "late.ts");
+      writeFileSync(file, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 180 });
+      activeManagers.push(manager);
+
+      const res1 = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "late.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(res1, undefined);
+      const oldPid = manager.getActivePids()[0];
+      assert.ok(oldPid);
+
+      writeFileSync(file, "line1\nNEW_ERR\n");
+      const res2 = await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "late.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(res2?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
+      assert.ok(!res2.content[1].text.includes("STALE_EDIT_1_ERROR"));
+      assert.equal(await waitForPidExit(oldPid, 2000), true);
+    });
+
+    it("preserves timeout ambiguity even if a late versioned publication arrives before the next edit", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=stale-versioned-then-unversioned"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      const file = join(testDir, "late-ver.ts");
+      writeFileSync(file, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 120 });
+      activeManagers.push(manager);
+
+      const timedOut = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "late-ver.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(timedOut, undefined);
+
+      // Wait until the stale versioned publish (160ms) has been processed, before the stale unversioned publish (230ms)
+      await new Promise((r) => setTimeout(r, 80));
+
+      writeFileSync(file, "line1\nNEW_ERR\n");
+      const nextRes = await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "late-ver.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(nextRes?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
+      assert.ok(!nextRes.content[1].text.includes("STALE_EDIT_1_ERROR"));
+    });
+
+    it("returns diagnostics for a versioned document on a mixed-mode server", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=mixed-versioned-unversioned"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "versioned.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1000 });
+      activeManagers.push(manager);
+
+      const verRes = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "versioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(verRes?.content?.[1]?.text.includes("versioned.ts:3:5 [error]"));
+    });
+
+    it("delivers fresh diagnostics after an unversioned document timeout on a mixed-mode server", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=mixed-versioned-unversioned"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "versioned.ts"), "TYPE_ERROR\n");
+      const unversionedFile = join(testDir, "unversioned.ts");
+      writeFileSync(unversionedFile, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 180 });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "versioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const timedOut = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "unversioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(timedOut, undefined);
+
+      writeFileSync(unversionedFile, "line1\nNEW_ERR\n");
+      const recovered = await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "unversioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(recovered?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
+      assert.ok(!recovered.content[1].text.includes("STALE_EDIT_1_ERROR"));
+    });
+
+    it("terminates the replaced server process after a mixed-mode unversioned reset", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=mixed-versioned-unversioned"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "versioned.ts"), "TYPE_ERROR\n");
+      const unversionedFile = join(testDir, "unversioned.ts");
+      writeFileSync(unversionedFile, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 180 });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "versioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "unversioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const oldPid = manager.getActivePids()[0];
+      assert.ok(oldPid);
+
+      writeFileSync(unversionedFile, "line1\nNEW_ERR\n");
+      await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "unversioned.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(await waitForPidExit(oldPid, 2000), true);
+    });
+
+    it("preserves pending diagnostics for an unrelated file while resetting a timed-out unversioned file", async () => {
+      const overrides = {
+        typescript: {
+          command: process.execPath,
+          args: [mockServerScript, "--mode=mixed-versioned-unversioned"],
+          extensions: [".ts"],
+        },
+      };
+      const versionedFile = join(testDir, "versioned.ts");
+      const unversionedFile = join(testDir, "unversioned.ts");
+      writeFileSync(unversionedFile, "OLD_ERR\n");
+      writeFileSync(versionedFile, "SLOW_VER\n// line 2\nconst x = TYPE_ERROR;\n");
+
+      const sharedMgr = new LspManager({ timeoutMs: 120 });
+      activeManagers.push(sharedMgr);
+      const firstUnv = await sharedMgr.getDiagnosticsForFile(testDir, "unversioned.ts", overrides);
+      assert.equal(firstUnv, null);
+
+      (sharedMgr as any).timeoutMs = 800;
+      writeFileSync(unversionedFile, "line1\nNEW_ERR\n");
+      const versionedPromise = sharedMgr.getDiagnosticsForFile(testDir, "versioned.ts", overrides);
+      const unversionedPromise = sharedMgr.getDiagnosticsForFile(testDir, "unversioned.ts", overrides);
+
+      const [verDiag, unvDiag] = await Promise.all([versionedPromise, unversionedPromise]);
+      assert.ok(verDiag?.includes("versioned.ts:3:5 [error]"), `expected versioned.ts diagnostics to survive, got: ${verDiag}`);
+      assert.ok(unvDiag?.includes("FRESH_EDIT_2_ERROR"), `expected unversioned.ts fresh diagnostics after drain, got: ${unvDiag}`);
+    });
+
+    it("bounds overlapping unversioned reset teardown within the single per-edit timeout budget", async () => {
+      const overrides = {
+        typescript: {
+          command: process.execPath,
+          args: [mockServerScript, "--mode=hang", "--ignore-sigterm"],
+          extensions: [".ts"],
+        },
+      };
+      const file = join(testDir, "budget.ts");
+      writeFileSync(file, "OLD_ERR\n");
+
+      const manager = new LspManager({
+        timeoutMs: 250,
+        shutdownGraceMs: 500,
+        killGraceMs: 400,
+      });
+      activeManagers.push(manager);
+
+      // Start two overlapping edits simultaneously against a hung server that ignores SIGTERM
+      const started = Date.now();
+      const [r1, r2] = await Promise.all([
+        manager.getDiagnosticsForFile(testDir, "budget.ts", overrides),
+        manager.getDiagnosticsForFile(testDir, "budget.ts", overrides),
+      ]);
+      const elapsed = Date.now() - started;
+
+      assert.equal(r1, null);
+      assert.equal(r2, null);
+      assert.ok(elapsed < 600, `expected overlapping reset to stay within 250ms budget (+jitter), got ${elapsed}ms`);
+    });
+
+    it("resets an unversioned client when two edits for the same file start simultaneously", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=versionless-delayed"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      const warmup = join(testDir, "warmup.ts");
+      const target = join(testDir, "simultaneous.ts");
+      writeFileSync(warmup, "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1200 });
+      activeManagers.push(manager);
+
+      // Pre-warm the client so both simultaneous calls hit an already-active pooled client
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "warmup.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const warmPid = manager.getActivePids()[0];
+      assert.ok(warmPid);
+
+      // Start two checks for the exact same file back-to-back with zero intervening delay
+      writeFileSync(target, "OLD_ERR\n");
+      const edit1Promise = fire(
+        "tool_result",
+        { toolName: "write", input: { path: "simultaneous.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      writeFileSync(target, "line1\nNEW_ERR\n");
+      const edit2Promise = fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "simultaneous.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+
+      const [res1, res2] = await Promise.all([edit1Promise, edit2Promise]);
+      assert.equal(res1, undefined);
+      assert.ok(res2?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
+      assert.ok(!res2.content[1].text.includes("STALE_EDIT_1_ERROR"));
+      assert.equal(await waitForPidExit(warmPid, 2000), true);
+    });
+
+    it("drops stale unversioned publishDiagnostics from an earlier rapid edit", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=versionless-delayed"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      const file = join(testDir, "rapid.ts");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1200 });
+      activeManagers.push(manager);
+
+      // Edit 1 (slow 180ms versionless publish) starts first
+      writeFileSync(file, "OLD_ERR\n");
+      const edit1Promise = fire(
+        "tool_result",
+        { toolName: "write", input: { path: "rapid.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+
+      // Brief wait for initialize + didOpen, then send Edit 2 before Edit 1's publish returns
+      await new Promise((r) => setTimeout(r, 120));
+      writeFileSync(file, "line1\nNEW_ERR\n");
+      const edit2Promise = fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "rapid.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+
+      const [res1, res2] = await Promise.all([edit1Promise, edit2Promise]);
+      assert.equal(res1, undefined);
+      assert.ok(res2?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"), `expected fresh edit 2 diagnostics, got: ${res2?.content?.[1]?.text}`);
+      assert.ok(!res2.content[1].text.includes("STALE_EDIT_1_ERROR"));
+    });
+
+    it("redacts secrets quoted in LSP diagnostics via secret-obfuscation hook ordering", async () => {
+      const secretToken = "unit-test-secret-credential-value-1445"; // pragma: allowlist secret
+      writeGlobalSettings({
+        lsp_enabled: true,
+        secret_obfuscation: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "secret.ts"), `SECRET_LEAK:${secretToken}\n`);
+
+      // Verify index.ts wires registerLsp BEFORE registerSecretObfuscation
+      const indexSource = readFileSync(join(REPO_ROOT, "extensions", "orchestrator", "index.ts"), "utf8");
+      const lspCallIdx = indexSource.indexOf("registerLsp(pi)");
+      const secCallIdx = indexSource.indexOf("registerSecretObfuscation(pi)");
+      assert.ok(lspCallIdx > 0 && secCallIdx > 0 && lspCallIdx < secCallIdx, "registerLsp must run before registerSecretObfuscation");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 1500 });
+      activeManagers.push(manager);
+      registerSecretObfuscation(pi, { env: { DEMO_API_TOKEN: secretToken }, homeDir: testDir });
+
+      const res = await fire(
+        "tool_result",
+        {
+          toolName: "write",
+          input: { path: "secret.ts" },
+          isError: false,
+          content: [{ type: "text", text: "Successfully wrote secret.ts" }],
+        },
+        { cwd: testDir },
+      );
+
+      const fullText = res.content.map((c: any) => c.text ?? "").join("\n");
+      assert.ok(fullText.includes("LSP diagnostics (typescript):"));
+      assert.ok(!fullText.includes(secretToken), "secret token must be redacted from LSP diagnostics");
+      assert.ok(/\$\$[A-Za-z0-9_]+\$\$/.test(fullText), `expected redaction placeholder in LSP diagnostics, got: ${fullText}`);
+    });
+
+    it("shuts down an idle server automatically after idleTimeoutMs", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "idle.ts"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 2000, idleTimeoutMs: 250 });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "idle.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const pid = manager.getActivePids()[0];
+      assert.ok(pid && isPidAlive(pid));
+
+      const exited = await waitForPidExit(pid, 3000);
+      assert.equal(exited, true, `expected idle LSP process ${pid} to exit`);
+      assert.equal(manager.activeCount, 0);
+    });
+
+    it("prevents a racing tool_result check from leaving an orphan server during session_shutdown", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=hang"],
+            extensions: [".ts"],
+          },
+          other: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal"],
+            extensions: [".other"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "hung.ts"), "TYPE_ERROR\n");
+      writeFileSync(join(testDir, "late.other"), "TYPE_ERROR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 150 });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "hung.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      const hungPid = manager.getActivePids()[0];
+      assert.ok(hungPid);
+
+      // Start shutdown and concurrently fire a new tool_result for a different server
+      const shutdownPromise = fire("session_shutdown", {}, { cwd: testDir });
+      const lateResult = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "late.other" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      await shutdownPromise;
+
+      assert.equal(lateResult, undefined);
+      assert.equal(manager.activeCount, 0);
+      assert.equal(await waitForPidExit(hungPid, 3000), true);
+    });
+
+    it("leaves zero orphan child processes after session_shutdown", async () => {
+      const logFile = join(testDir, "shutdown.log");
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=normal", `--log=${logFile}`],
+            extensions: [".ts"],
+          },
+          hung: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=hang"],
+            extensions: [".hung"],
+          },
+        },
+      });
+      writeFileSync(join(testDir, "clean.ts"), "TYPE_ERROR\n");
+      writeFileSync(join(testDir, "stuck.hung"), "hello\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { timeoutMs: 250 });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "clean.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "stuck.hung" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+
+      const pids = manager.getActivePids();
+      assert.equal(pids.length, 2);
+      for (const pid of pids) {
+        assert.equal(isPidAlive(pid), true);
+      }
+
+      await fire("session_shutdown", {}, { cwd: testDir });
+
+      assert.equal(manager.activeCount, 0);
+      for (const pid of pids) {
+        const exited = await waitForPidExit(pid, 3000);
+        assert.equal(exited, true, `expected child process ${pid} to exit after session_shutdown`);
+      }
+
+      const events = readFileSync(logFile, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.ok(events.some((e) => e.event === "shutdown"), "expected graceful LSP shutdown request");
+      assert.ok(events.some((e) => e.event === "exit"), "expected graceful LSP exit notification");
+    });
+
+    it("terminates SIGTERM-ignoring child servers when the parent process exits abruptly", async () => {
+      const target = join(testDir, "abrupt.ts");
+      writeFileSync(target, "TYPE_ERROR\n");
+      const lspModuleUrl = new URL("../../../extensions/orchestrator/lsp.ts", import.meta.url).href;
+      const runnerScript = join(testDir, "parent-exit-runner.mjs");
+      writeFileSync(
+        runnerScript,
+        `import { LspManager } from ${JSON.stringify(lspModuleUrl)};
+const manager = new LspManager({ timeoutMs: 2000 });
+await manager.getDiagnosticsForFile(${JSON.stringify(testDir)}, "abrupt.ts", {
+  typescript: {
+    command: ${JSON.stringify(process.execPath)},
+    args: [${JSON.stringify(mockServerScript)}, "--mode=normal", "--ignore-sigterm"],
+    extensions: [".ts"],
+  },
+});
+const pid = manager.getActivePids()[0];
+process.stdout.write(String(pid) + "\\n");
+process.exit(0);
+`,
+        "utf8",
+      );
+
+      const tsxBin = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+      const out = execFileSync(tsxBin, [runnerScript], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        timeout: 15_000,
+      }).trim();
+      const childLspPid = Number.parseInt(out.split("\n").pop() ?? "", 10);
+      assert.ok(Number.isInteger(childLspPid) && childLspPid > 0, `expected valid child PID, got: ${out}`);
+      assert.equal(
+        await waitForPidExit(childLspPid, 3000),
+        true,
+        `expected SIGTERM-ignoring LSP PID ${childLspPid} to terminate on abrupt parent exit`,
+      );
+    });
+  });
+});

@@ -861,7 +861,7 @@ describe("getFilePathForScope", () => {
 
 describe("buildSettingItems integration", () => {
   it("every CATEGORIES key has a matching SETTINGS_KEYS entry with valid type", () => {
-    const validTypes = new Set(["bool", "bool_enable", "bool_or_string", "string", "int", "port", "number", "agent_overrides", "string_list", "tool_permissions"]);
+    const validTypes = new Set(["bool", "bool_enable", "bool_or_string", "string", "int", "port", "number", "agent_overrides", "string_list", "lsp_servers", "tool_permissions"]);
     for (const category of CATEGORIES) {
       for (const key of category.keys) {
         const def = SETTINGS_KEYS[key];
