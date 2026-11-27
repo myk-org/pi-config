@@ -16,6 +16,7 @@ import {
 } from "../../../extensions/orchestrator/project-settings.js";
 import { NumberInputSubmenu } from "../../../extensions/orchestrator/settings-tui-submenus.js";
 import {
+  AUTO_COMPACT_REARM_DELTA_PCT,
   registerAutoCompact,
   resolveAutoCompactUsagePercent,
   type RegisterAutoCompactOptions,
@@ -105,6 +106,7 @@ function createFakeCtx(opts: {
   sessionId?: string;
   mode?: string;
   hasUI?: boolean;
+  hasPendingMessages?: () => boolean;
   getUsage: () => any;
   compactImpl?: (call: CompactCall) => void;
   model?: { contextWindow?: number };
@@ -115,6 +117,7 @@ function createFakeCtx(opts: {
     cwd: opts.cwd,
     mode: opts.mode ?? "tui",
     hasUI: opts.hasUI ?? false,
+    hasPendingMessages: opts.hasPendingMessages ?? (() => false),
     model: opts.model,
     sessionManager: {
       getSessionId: () => opts.sessionId ?? "sess-1",
@@ -288,6 +291,25 @@ describe("resolveAutoCompactUsagePercent", () => {
     });
     assert.equal(pct, null);
   });
+
+  it("returns null without throwing when reading a stale context throws", () => {
+    const throwingUsage = resolveAutoCompactUsagePercent({
+      getContextUsage: () => {
+        throw new Error("Extension context is no longer active");
+      },
+    });
+    assert.equal(throwingUsage, null);
+
+    const staleModelCtx: any = {
+      getContextUsage: () => ({ tokens: 80_000, contextWindow: null, percent: null }),
+    };
+    Object.defineProperty(staleModelCtx, "model", {
+      get() {
+        throw new Error("Extension context is no longer active");
+      },
+    });
+    assert.equal(resolveAutoCompactUsagePercent(staleModelCtx), null);
+  });
 });
 
 describe("registerAutoCompact", () => {
@@ -299,7 +321,7 @@ describe("registerAutoCompact", () => {
       getUsage: () => ({ tokens: 95_000, contextWindow: 100_000, percent: 95 }),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 0);
   });
 
@@ -311,11 +333,11 @@ describe("registerAutoCompact", () => {
       getUsage: () => ({ tokens: 79_000, contextWindow: 100_000, percent: 79 }),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 0);
   });
 
-  it("triggers ctx.compact when context usage meets threshold", () => {
+  it("triggers ctx.compact when context usage meets threshold on agent_settled", () => {
     const cwd = createTempProject({ auto_compact_threshold_pct: 80 });
     const { logger, entries } = createFakeLogger();
     const { emit } = createHarness({ log: logger });
@@ -324,9 +346,60 @@ describe("registerAutoCompact", () => {
       getUsage: () => ({ tokens: 80_000, contextWindow: 100_000, percent: 80 }),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
     assert.ok(entries.some((e) => e.level === "info" && e.args[0] === "auto_compact_triggered"));
+  });
+
+  it("does not start compaction on agent_end while a recovery continuation is queued, waiting until agent_settled", () => {
+    const cwd = createTempProject({ auto_compact_threshold_pct: 80 });
+    const handlers = new Map<string, Handler[]>();
+    const pi = {
+      on(event: string, handler: Handler) {
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+      },
+    } as any;
+
+    let recoveryQueued = false;
+    // Earlier orchestrator handler (e.g. malformed-response-recovery) queues a follow-up on agent_end.
+    pi.on("agent_end", () => {
+      recoveryQueued = true;
+    });
+
+    registerAutoCompact(pi, { argv: ["node", "pi"], env: {} });
+
+    const { ctx, compactCalls } = createFakeCtx({
+      cwd,
+      hasPendingMessages: () => recoveryQueued,
+      getUsage: () => ({ tokens: 88_000, contextWindow: 100_000, percent: 88 }),
+    });
+
+    for (const h of handlers.get("agent_end") ?? []) h({}, ctx);
+    assert.equal(recoveryQueued, true);
+    assert.equal(compactCalls.length, 0, "compaction must not start on agent_end");
+
+    // Even if agent_settled fires while follow-ups are still pending, wait until drained.
+    for (const h of handlers.get("agent_settled") ?? []) h({ aborted: false }, ctx);
+    assert.equal(compactCalls.length, 0, "compaction must wait while pending messages exist");
+
+    // Recovery continuation completes and session settles cleanly.
+    recoveryQueued = false;
+    for (const h of handlers.get("agent_settled") ?? []) h({ aborted: false }, ctx);
+    assert.equal(compactCalls.length, 1, "compaction triggers once the session settles");
+  });
+
+  it("skips compaction when agent_settled reports an aborted run", () => {
+    const cwd = createTempProject({ auto_compact_threshold_pct: 80 });
+    const { emit } = createHarness();
+    const { ctx, compactCalls } = createFakeCtx({
+      cwd,
+      getUsage: () => ({ tokens: 90_000, contextWindow: 100_000, percent: 90 }),
+    });
+
+    emit("agent_settled", { aborted: true }, ctx);
+    assert.equal(compactCalls.length, 0);
   });
 
   it("computes usage from tokens over contextWindow when percent is null", () => {
@@ -337,7 +410,7 @@ describe("registerAutoCompact", () => {
       getUsage: () => ({ tokens: 72_000, contextWindow: 100_000, percent: null }),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
   });
 
@@ -351,7 +424,7 @@ describe("registerAutoCompact", () => {
       compactImpl: (call) => call.onComplete?.(),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(notifications.length, 2);
     assert.match(notifications[0].message, /85% >= 80%/);
     assert.equal(notifications[0].level, "info");
@@ -366,12 +439,12 @@ describe("registerAutoCompact", () => {
       getUsage: () => ({ tokens: 85_000, contextWindow: 100_000, percent: 85 }),
     });
 
-    emit("agent_end", {}, ctx);
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
   });
 
-  it("suppresses re-triggering after compaction completes without dropping below threshold", () => {
+  it("suppresses immediate re-triggering after compaction completes without dropping below threshold", () => {
     const cwd = createTempProject({ auto_compact_threshold_pct: 80 });
     const { emit } = createHarness();
     const { ctx, compactCalls } = createFakeCtx({
@@ -380,9 +453,75 @@ describe("registerAutoCompact", () => {
       compactImpl: (call) => call.onComplete?.(),
     });
 
-    emit("agent_end", {}, ctx);
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
+  });
+
+  it("re-arms after a successful compaction that stays above a low threshold once usage grows by delta", () => {
+    const cwd = createTempProject({ auto_compact_threshold_pct: 25 });
+    const { emit } = createHarness();
+    let pct = 40;
+    const { ctx, compactCalls } = createFakeCtx({
+      cwd,
+      getUsage: () => ({ tokens: pct * 1000, contextWindow: 100_000, percent: pct }),
+      compactImpl: (call) => {
+        // Compaction succeeds and reduces usage to 30%, still above threshold 25%.
+        pct = 30;
+        call.onComplete?.();
+      },
+    });
+
+    emit("agent_settled", { aborted: false }, ctx);
+    assert.equal(compactCalls.length, 1);
+
+    // Immediate next turns below 30 + AUTO_COMPACT_REARM_DELTA_PCT stay suppressed (no loop).
+    pct = 30;
+    emit("agent_settled", { aborted: false }, ctx);
+    pct = 30 + AUTO_COMPACT_REARM_DELTA_PCT - 1;
+    emit("agent_settled", { aborted: false }, ctx);
+    assert.equal(compactCalls.length, 1);
+
+    // Once usage grows by at least AUTO_COMPACT_REARM_DELTA_PCT above the 30% floor, re-triggers.
+    pct = 30 + AUTO_COMPACT_REARM_DELTA_PCT;
+    emit("agent_settled", { aborted: false }, ctx);
+    assert.equal(compactCalls.length, 2);
+  });
+
+  it("ratchets baseline down on first post-compaction turn when onComplete sees null usage", () => {
+    const cwd = createTempProject({ auto_compact_threshold_pct: 25 });
+    const { emit } = createHarness();
+    let pct: number | null = 45;
+    const { ctx, compactCalls } = createFakeCtx({
+      cwd,
+      getUsage: () =>
+        pct === null
+          ? { tokens: null, contextWindow: 100_000, percent: null }
+          : { tokens: pct * 1000, contextWindow: 100_000, percent: pct },
+      compactImpl: (call) => {
+        // Pi may clear cached usage until the next assistant turn completes.
+        pct = null;
+        call.onComplete?.();
+      },
+    });
+
+    emit("agent_settled", { aborted: false }, ctx);
+    assert.equal(compactCalls.length, 1);
+
+    // First turn after compaction reports 32% (< 45%, still >= 25%): lowers floor without looping.
+    pct = 32;
+    emit("agent_settled", { aborted: false }, ctx);
+    assert.equal(compactCalls.length, 1);
+
+    // Small growth stays suppressed.
+    pct = 38;
+    emit("agent_settled", { aborted: false }, ctx);
+    assert.equal(compactCalls.length, 1);
+
+    // Growth of >= AUTO_COMPACT_REARM_DELTA_PCT above the 32% floor re-triggers.
+    pct = 32 + AUTO_COMPACT_REARM_DELTA_PCT;
+    emit("agent_settled", { aborted: false }, ctx);
+    assert.equal(compactCalls.length, 2);
   });
 
   it("suppresses re-triggering after compaction fails via onError", () => {
@@ -396,8 +535,8 @@ describe("registerAutoCompact", () => {
       compactImpl: (call) => call.onError?.(new Error("Already compacted")),
     });
 
-    emit("agent_end", {}, ctx);
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
     assert.ok(entries.some((e) => e.level === "warn" && e.args[0] === "auto_compact_failed"));
     assert.ok(notifications.some((n) => n.level === "error" && /Already compacted/.test(n.message)));
@@ -414,8 +553,8 @@ describe("registerAutoCompact", () => {
       },
     });
 
-    emit("agent_end", {}, ctx);
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
   });
 
@@ -429,21 +568,21 @@ describe("registerAutoCompact", () => {
       compactImpl: (call) => call.onError?.(new Error("transient")),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
 
     // Still above threshold -> suppressed
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
 
     // Usage drops below threshold -> re-arms
     pct = 50;
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
 
     // Usage crosses threshold again -> triggers again
     pct = 82;
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 2);
   });
 
@@ -456,11 +595,11 @@ describe("registerAutoCompact", () => {
       compactImpl: (call) => call.onComplete?.(),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
 
     emit("session_start", {}, ctx);
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 2);
   });
 
@@ -473,11 +612,11 @@ describe("registerAutoCompact", () => {
       compactImpl: (call) => call.onComplete?.(),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
 
     emit("session_compact", {}, ctx);
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 2);
   });
 
@@ -490,12 +629,94 @@ describe("registerAutoCompact", () => {
       compactImpl: (call) => call.onError?.(new Error("failed")),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 1);
 
     emit("session_shutdown", {}, ctx);
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 2);
+  });
+
+  it("handles late onComplete without throwing when captured ctx becomes stale", () => {
+    const cwd = createTempProject({ auto_compact_threshold_pct: 50 });
+    const { logger, entries } = createFakeLogger();
+    const { emit } = createHarness({ log: logger });
+    let pendingCall: CompactCall | undefined;
+    let usageReadAfterStale = false;
+    let isStale = false;
+
+    const { ctx, compactCalls, notifications } = createFakeCtx({
+      cwd,
+      hasUI: true,
+      getUsage: () => {
+        if (isStale) {
+          usageReadAfterStale = true;
+          throw new Error("Extension context is no longer active");
+        }
+        return { tokens: 60_000, contextWindow: 100_000, percent: 60 };
+      },
+      compactImpl: (call) => {
+        pendingCall = call;
+      },
+    });
+
+    emit("agent_settled", { aborted: false }, ctx);
+    assert.equal(compactCalls.length, 1);
+    assert.ok(pendingCall?.onComplete);
+
+    // Simulate Pi invalidating the captured ctx after session replacement while compaction is pending.
+    isStale = true;
+    Object.defineProperty(ctx, "mode", {
+      get() {
+        throw new Error("Extension context is no longer active");
+      },
+      configurable: true,
+    });
+    Object.defineProperty(ctx, "hasUI", {
+      get() {
+        throw new Error("Extension context is no longer active");
+      },
+      configurable: true,
+    });
+
+    assert.doesNotThrow(() => pendingCall!.onComplete!());
+    assert.equal(usageReadAfterStale, false, "must check liveness before calling getContextUsage");
+    assert.equal(notifications.length, 1, "must not notify on stale ctx completion");
+    assert.ok(entries.some((e) => e.level === "debug" && e.args[0] === "auto_compact_completed_stale_ctx"));
+
+    // Verify inFlight was cleared by firing a fresh live ctx on the same session once growth reaches delta.
+    const fresh = createFakeCtx({
+      cwd,
+      getUsage: () => ({ tokens: 75_000, contextWindow: 100_000, percent: 75 }),
+    });
+    emit("agent_settled", { aborted: false }, fresh.ctx);
+    assert.equal(fresh.compactCalls.length, 1, "inFlight flag must have been cleared by stale onComplete");
+  });
+
+  it("handles late onError without throwing when captured ctx becomes stale", () => {
+    const cwd = createTempProject({ auto_compact_threshold_pct: 50 });
+    const { emit } = createHarness();
+    let pendingCall: CompactCall | undefined;
+
+    const { ctx, notifications } = createFakeCtx({
+      cwd,
+      hasUI: true,
+      getUsage: () => ({ tokens: 60_000, contextWindow: 100_000, percent: 60 }),
+      compactImpl: (call) => {
+        pendingCall = call;
+      },
+    });
+
+    emit("agent_settled", { aborted: false }, ctx);
+    Object.defineProperty(ctx, "mode", {
+      get() {
+        throw new Error("Extension context is no longer active");
+      },
+      configurable: true,
+    });
+
+    assert.doesNotThrow(() => pendingCall!.onError!(new Error("aborted on reload")));
+    assert.equal(notifications.length, 1);
   });
 
   it("skips oneshot invocations via argv", () => {
@@ -506,7 +727,7 @@ describe("registerAutoCompact", () => {
       getUsage: () => ({ tokens: 90_000, contextWindow: 100_000, percent: 90 }),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 0);
   });
 
@@ -518,7 +739,7 @@ describe("registerAutoCompact", () => {
       getUsage: () => ({ tokens: 90_000, contextWindow: 100_000, percent: 90 }),
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 0);
   });
 
@@ -535,7 +756,7 @@ describe("registerAutoCompact", () => {
       },
     });
 
-    emit("agent_end", {}, ctx);
+    emit("agent_settled", { aborted: false }, ctx);
     assert.equal(compactCalls.length, 0);
   });
 });

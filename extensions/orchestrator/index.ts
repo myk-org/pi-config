@@ -245,7 +245,7 @@ export default function (pi: ExtensionAPI) {
   registerSessionSpill(pi);
   // Mechanical pre-compaction elision of old bulky tool results (#1421).
   registerPreCompactionElision(pi);
-  // Opt-in percentage-based LLM auto-compaction trigger on agent_end (#1486).
+  // Opt-in percentage-based LLM auto-compaction trigger on agent_settled (#1486).
   registerAutoCompact(pi);
   // Per-turn reasoning-effort magic keywords (`ultrathink` / `chillax`) (#1418).
   registerMagicKeywords(pi);

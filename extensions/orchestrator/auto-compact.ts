@@ -1,18 +1,22 @@
 /**
  * Opt-in percentage-based LLM auto-compaction trigger (issue #1486).
  *
- * Evaluates `ctx.getContextUsage()` on `agent_end` — after mechanical
- * `pre_compaction_elision` has already run on `turn_end` and the multi-tool turn
- * has settled — and triggers `ctx.compact()` when context usage reaches
+ * Evaluates `ctx.getContextUsage()` on `agent_settled` — Pi's final settled
+ * boundary after mechanical `pre_compaction_elision` (`turn_end`), retries,
+ * malformed-response recovery continuations, and queued follow-up messages have
+ * all finished — and triggers `ctx.compact()` when context usage reaches
  * `>= auto_compact_threshold_pct` (default `0` = disabled; valid `0` or `20..99`).
  *
  * Guards:
- * - Skips when disabled (`0`), in oneshot invocations (`pi -p` / `--mode json`),
- *   in subagent children (`PI_SUBAGENT_CHILD=1`), or when `ctx` is not live.
+ * - Skips when disabled (`0`), when the settled run was aborted, when pending
+ *   messages exist, in oneshot invocations (`pi -p` / `--mode json`), in
+ *   subagent children (`PI_SUBAGENT_CHILD=1`), or when `ctx` is not live.
  * - Prevents overlapping compactions via a per-session `inFlight` flag.
- * - Prevents infinite compaction loops when compaction fails or fails to reduce
- *   usage below threshold: stays suppressed until usage drops below threshold or
- *   the session resets (`session_start`, external `session_compact`, `session_shutdown`).
+ * - Prevents infinite compaction loops when compaction fails or leaves usage
+ *   at/above a low threshold: records a `suppressedAbovePct` baseline and only
+ *   re-arms once usage drops below `thresholdPct`, grows by at least
+ *   `AUTO_COMPACT_REARM_DELTA_PCT` above the post-compaction floor, or the
+ *   session resets (`session_start`, external `session_compact`, `session_shutdown`).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -23,9 +27,18 @@ import { getSetting } from "./project-settings.js";
 
 const defaultLog = createLogger("orchestrator");
 
+/** Minimum additional percentage-point growth required to re-trigger while usage remains >= thresholdPct. */
+export const AUTO_COMPACT_REARM_DELTA_PCT = 10;
+
 interface AutoCompactSessionState {
   inFlight: boolean;
-  suppressed: boolean;
+  /**
+   * Non-null after an auto-compaction attempt while usage has not dropped below
+   * thresholdPct. Ratchets down if post-compaction usage is lower (but still >=
+   * thresholdPct), clears if usage falls below thresholdPct, and re-triggers
+   * once usage grows at least `AUTO_COMPACT_REARM_DELTA_PCT` above this baseline.
+   */
+  suppressedAbovePct: number | null;
 }
 
 export interface RegisterAutoCompactOptions {
@@ -38,11 +51,21 @@ export interface RegisterAutoCompactOptions {
  * Resolve effective context usage percentage from `ctx.getContextUsage()`.
  * Prefers a positive finite `usage.percent`, falling back to
  * `(usage.tokens / contextWindow) * 100` when both are positive finite numbers.
- * Returns `0` for explicit zero usage and `null` when usage is unavailable.
+ * Returns `0` for explicit zero usage and `null` when usage is unavailable or
+ * reading `ctx` throws (for example, a stale/replaced extension context).
  */
 export function resolveAutoCompactUsagePercent(ctx: any): number | null {
-  const usage = ctx?.getContextUsage?.();
-  if (!usage || typeof usage !== "object") return null;
+  if (!ctx || typeof ctx !== "object") return null;
+
+  let usage: any;
+  let modelContextWindow: unknown;
+  try {
+    usage = ctx.getContextUsage?.();
+    if (!usage || typeof usage !== "object") return null;
+    modelContextWindow = ctx.model?.contextWindow;
+  } catch {
+    return null;
+  }
 
   if (typeof usage.percent === "number" && Number.isFinite(usage.percent) && usage.percent > 0) {
     return usage.percent;
@@ -51,10 +74,8 @@ export function resolveAutoCompactUsagePercent(ctx: any): number | null {
   const contextWindow =
     typeof usage.contextWindow === "number" && Number.isFinite(usage.contextWindow) && usage.contextWindow > 0
       ? usage.contextWindow
-      : typeof ctx?.model?.contextWindow === "number" &&
-          Number.isFinite(ctx.model.contextWindow) &&
-          ctx.model.contextWindow > 0
-        ? ctx.model.contextWindow
+      : typeof modelContextWindow === "number" && Number.isFinite(modelContextWindow) && modelContextWindow > 0
+        ? modelContextWindow
         : 0;
 
   if (typeof usage.tokens === "number" && Number.isFinite(usage.tokens) && usage.tokens > 0 && contextWindow > 0) {
@@ -68,7 +89,7 @@ export function resolveAutoCompactUsagePercent(ctx: any): number | null {
   return null;
 }
 
-/** Register the opt-in percentage-based auto-compaction hook on `agent_end`. */
+/** Register the opt-in percentage-based auto-compaction hook on `agent_settled`. */
 export function registerAutoCompact(
   pi: ExtensionAPI,
   options: RegisterAutoCompactOptions = {},
@@ -76,13 +97,18 @@ export function registerAutoCompact(
   const log = options.log ?? defaultLog;
   const sessions = new Map<string, AutoCompactSessionState>();
 
-  const sessionKey = (ctx: any): string =>
-    ctx?.sessionManager?.getSessionId?.() || "__default__";
+  const sessionKey = (ctx: any): string => {
+    try {
+      return ctx?.sessionManager?.getSessionId?.() || "__default__";
+    } catch {
+      return "__default__";
+    }
+  };
 
   const getState = (key: string): AutoCompactSessionState => {
     let state = sessions.get(key);
     if (!state) {
-      state = { inFlight: false, suppressed: false };
+      state = { inFlight: false, suppressedAbovePct: null };
       sessions.set(key, state);
     }
     return state;
@@ -90,7 +116,7 @@ export function registerAutoCompact(
 
   pi.on("session_start", (_event, ctx) => {
     const key = sessionKey(ctx);
-    sessions.set(key, { inFlight: false, suppressed: false });
+    sessions.set(key, { inFlight: false, suppressedAbovePct: null });
     log.debug("auto_compact_session_reset", { sessionKey: key });
   });
 
@@ -98,7 +124,7 @@ export function registerAutoCompact(
     const key = sessionKey(ctx);
     const state = sessions.get(key);
     if (state && !state.inFlight) {
-      state.suppressed = false;
+      state.suppressedAbovePct = null;
       log.debug("auto_compact_cleared_after_external_compact", { sessionKey: key });
     }
   });
@@ -109,12 +135,14 @@ export function registerAutoCompact(
     log.debug("auto_compact_session_shutdown", { sessionKey: key });
   });
 
-  pi.on("agent_end", (_event, ctx) => {
+  pi.on("agent_settled", (event, ctx) => {
+    if (event?.aborted) return;
     const env = options.env ?? process.env;
     if (env.PI_SUBAGENT_CHILD === "1") return;
     if (isPiOneshotInvocation(options.argv ?? process.argv)) return;
     if (!isLiveExtensionCtx(ctx)) return;
     if ((ctx as any).mode === "print" || (ctx as any).mode === "json") return;
+    if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
     if (typeof ctx.compact !== "function" || typeof ctx.getContextUsage !== "function") return;
 
     const cwd = ctx.cwd || process.cwd();
@@ -124,7 +152,7 @@ export function registerAutoCompact(
     if (typeof thresholdPct !== "number" || !Number.isFinite(thresholdPct) || thresholdPct <= 0) {
       const existing = sessions.get(key);
       if (existing && !existing.inFlight) {
-        existing.suppressed = false;
+        existing.suppressedAbovePct = null;
       }
       return;
     }
@@ -139,8 +167,8 @@ export function registerAutoCompact(
     if (usagePct === null) return;
 
     if (usagePct < thresholdPct) {
-      if (state.suppressed) {
-        state.suppressed = false;
+      if (state.suppressedAbovePct !== null) {
+        state.suppressedAbovePct = null;
         log.debug("auto_compact_rearmed", {
           sessionKey: key,
           usagePct: Math.round(usagePct * 10) / 10,
@@ -150,18 +178,38 @@ export function registerAutoCompact(
       return;
     }
 
-    if (state.suppressed) {
-      log.debug("auto_compact_suppressed", {
+    if (state.suppressedAbovePct !== null) {
+      if (usagePct < state.suppressedAbovePct) {
+        // Compaction reduced context (reported on the first post-compaction turn)
+        // while staying >= a low threshold: ratchet down the floor without looping.
+        state.suppressedAbovePct = usagePct;
+        log.debug("auto_compact_baseline_lowered", {
+          sessionKey: key,
+          baselinePct: Math.round(usagePct * 10) / 10,
+          thresholdPct,
+        });
+        return;
+      }
+      if (usagePct < state.suppressedAbovePct + AUTO_COMPACT_REARM_DELTA_PCT) {
+        log.debug("auto_compact_suppressed", {
+          sessionKey: key,
+          usagePct: Math.round(usagePct * 10) / 10,
+          suppressedAbovePct: Math.round(state.suppressedAbovePct * 10) / 10,
+          thresholdPct,
+        });
+        return;
+      }
+      log.debug("auto_compact_rearmed_on_growth", {
         sessionKey: key,
         usagePct: Math.round(usagePct * 10) / 10,
+        previousBaselinePct: Math.round(state.suppressedAbovePct * 10) / 10,
         thresholdPct,
       });
-      return;
     }
 
     const roundedPct = Math.round(usagePct * 10) / 10;
     state.inFlight = true;
-    state.suppressed = true;
+    state.suppressedAbovePct = usagePct;
     log.info("auto_compact_triggered", {
       sessionKey: key,
       usagePct: roundedPct,
@@ -187,15 +235,24 @@ export function registerAutoCompact(
         onComplete: () => {
           if (sessions.get(key) !== state) return;
           state.inFlight = false;
+          if (!isLiveExtensionCtx(ctx)) {
+            log.debug("auto_compact_completed_stale_ctx", { sessionKey: key, thresholdPct });
+            return;
+          }
           const postPct = resolveAutoCompactUsagePercent(ctx);
-          if (postPct !== null && postPct < thresholdPct) {
-            state.suppressed = false;
+          if (postPct !== null) {
+            if (postPct < thresholdPct) {
+              state.suppressedAbovePct = null;
+            } else {
+              state.suppressedAbovePct = postPct;
+            }
           }
           log.info("auto_compact_completed", {
             sessionKey: key,
             thresholdPct,
             postPct: postPct !== null ? Math.round(postPct * 10) / 10 : null,
-            suppressed: state.suppressed,
+            suppressedAbovePct:
+              state.suppressedAbovePct !== null ? Math.round(state.suppressedAbovePct * 10) / 10 : null,
           });
           if (isLiveExtensionCtx(ctx) && ctx.hasUI) {
             ctx.ui?.notify?.("Auto-compaction completed", "info");
