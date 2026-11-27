@@ -156,6 +156,41 @@ describe("pitasks pidash bridge", () => {
     assert.equal(tasks[0].subject, "Agent task");
   });
 
+  it("task-op create persists user assignee when specified", () => {
+    env.fire("pidash:task-op", {
+      op: "create",
+      subject: "Owner approval",
+      description: "Check staging",
+      assignee: "user",
+    });
+    const tasks = tasksPayload(env.captured);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].assignee, "user");
+    assert.equal(tasks[0].description, "Check staging");
+  });
+
+  it("task-op complete includes completionNote in user follow-up notice", () => {
+    const task = taskStore.create(
+      "Review staging build",
+      "Check console logs",
+      { type: "local", origin: "user", session: "", project: "" },
+      undefined,
+      undefined,
+      "user",
+    );
+    const messages: any[] = [];
+    env.pi.sendMessage = (message: any, options: any) => messages.push({ message, options });
+    env.fire("pidash:task-op", {
+      op: "complete",
+      taskId: task.id,
+      completionNote: "Verified clean on staging",
+    });
+    assert.equal(taskStore.get(task.id)?.completionNote, "Verified clean on staging");
+    assert.equal(messages.length, 1);
+    assert.ok(messages[0].message.content.includes("Verified clean on staging"));
+    assert.equal(messages[0].message.details.note, "Verified clean on staging");
+  });
+
   it("unknown op is ignored without throwing", () => {
     env.fire("pidash:task-op", { op: "explode" });
     // No new tasks-list beyond initial ops — just verify no throw

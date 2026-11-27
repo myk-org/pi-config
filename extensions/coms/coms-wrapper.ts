@@ -10,7 +10,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import * as os from "node:os";
-import { parseFlags, persistState, syncComsActiveTools } from "./coms-shared.js";
+import { buildPidashComsPeersPayload, parseFlags, persistState, syncComsActiveTools } from "./coms-shared.js";
 import {
     createComsPeerRuntime,
     type ComsActivationOrigin,
@@ -94,6 +94,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     let cachedRegistry: ComsRegistry | null = null;
     let cachedHistoryReader: { path: string; reader: ReturnType<typeof createTailHistoryReader> } | null = null;
     let pidashUnsubscribe: (() => void) | null = null;
+    let pidashPeersScope: "project" | "all" = "project";
     /** In-flight peer revives keyed by `project::name`, tagged per launch token so an older exit never clears a newer claim. */
     const revivingPeers = new Map<string, { claimedAt: number; token: symbol }>();
     const REVIVE_CLAIM_TTL_MS = 45_000;
@@ -123,6 +124,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         allowSubagentChild: options.allowSubagentChild,
         registerSignalHandlers: options.registerSignalHandlers,
         reloadQueueTtlMs: options.reloadQueueTtlMs,
+        onPeersChanged: () => emitPidashComsSnapshot(),
     });
 
     const gatedTools = new Set<string>(runtime.gatedToolNames);
@@ -155,14 +157,92 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         setComsActive(nextActive, nextKey, nextActive ? peerName : undefined);
     };
 
+    const emitPidashComsSnapshot = (scopeOverride?: "project" | "all"): void => {
+        const scope = scopeOverride ?? pidashPeersScope;
+        try {
+            const ownProj = ownProject();
+            const records = readSupervisionRecords();
+            const supervisedKeys = supervisedPeerKeys(records);
+            const liveRows = filterRegistry(attachCreatedBy(getRegistry().readLiveRows(), records), {
+                project: scope === "all" ? undefined : ownProj,
+            });
+            const selfInfo = runtime.getSelf();
+            const payload = buildPidashComsPeersPayload({
+                rows: liveRows,
+                cards: runtime.getPeerCards(),
+                supervisedKeys,
+                self: selfInfo
+                    ? {
+                          name: selfInfo.name,
+                          purpose: String(flagValues.get("purpose") ?? ""),
+                          project: selfInfo.project,
+                          endpoint: selfInfo.endpoint,
+                      }
+                    : null,
+                scope,
+                ownProject: ownProj,
+            });
+            pi.events.emit("pidash:coms-peers", payload);
+            pi.events.emit("pidash:coms-queue", {
+                items: runtime.listLocalInboundQueue(),
+                active: runtime.isActive(),
+            });
+        } catch (err) {
+            log.debug("pidash_coms_snapshot_failed", { error: err instanceof Error ? err.message : String(err) });
+        }
+    };
+
     const ensurePidashRegistration = (): void => {
         if (pidashUnsubscribe) return;
         try {
             const registerWithPidash = () => {
                 pi.events.emit("pidash:register-command", { name: "coms", handler: comsCmdHandler });
             };
-            const unsub = pi.events.on("pidash:request-commands", registerWithPidash);
-            if (typeof unsub === "function") pidashUnsubscribe = unsub;
+            const unsubs: Array<() => void> = [];
+            const addUnsub = (u: unknown) => {
+                if (typeof u === "function") unsubs.push(u as () => void);
+            };
+            addUnsub(pi.events.on("pidash:request-commands", registerWithPidash));
+            addUnsub(
+                pi.events.on("pidash:coms-peers-request", (data: unknown) => {
+                    const req = data as { scope?: string } | undefined;
+                    pidashPeersScope = req?.scope === "all" ? "all" : "project";
+                    log.debug("pidash_coms_peers_request", { scope: pidashPeersScope });
+                    emitPidashComsSnapshot(pidashPeersScope);
+                }),
+            );
+            addUnsub(
+                pi.events.on("pidash:coms-kill", (data: unknown) => {
+                    const req = data as { requestId?: string; name?: string; project?: string; scope?: string } | undefined;
+                    const name = typeof req?.name === "string" ? req.name.trim() : "";
+                    const project = typeof req?.project === "string" && req.project.trim() ? req.project.trim() : ownProject();
+                    if (!name) {
+                        pi.events.emit("pidash:coms-kill-result", {
+                            requestId: req?.requestId,
+                            ok: false,
+                            killed: 0,
+                            message: "Peer name required.",
+                        });
+                        return;
+                    }
+                    const result = killPeers({ name, project });
+                    log.info("pidash_coms_kill", { name, project, killed: result.killed });
+                    pi.events.emit("pidash:coms-kill-result", {
+                        requestId: req?.requestId,
+                        ok: result.killed > 0,
+                        killed: result.killed,
+                        message: result.text,
+                        name,
+                        project,
+                    });
+                    emitPidashComsSnapshot(req?.scope === "all" ? "all" : pidashPeersScope);
+                }),
+            );
+            pidashUnsubscribe = () => {
+                for (const u of unsubs) {
+                    try { u(); } catch { /* ignore */ }
+                }
+            };
             registerWithPidash();
         } catch (err) {
             log.warn("pidash_command_register_failed", { error: err instanceof Error ? err.message : String(err) });

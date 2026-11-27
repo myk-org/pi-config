@@ -21,6 +21,31 @@ function sessionSortLabel(session: Pick<SessionInfo, "sessionId" | "name" | "cwd
   return project || session.model?.trim() || session.sessionId;
 }
 
+function normalizeLabelToken(value: string | undefined | null): string {
+  return (value ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+/**
+ * Primary sidebar row label for a session.
+ * Under the Coms section (`preferComsName: true`), display `comsName` when the session
+ * title is empty or just repeats the model name (e.g. "Gemini 4 Neon"), so connected
+ * peers are immediately distinguishable (#1481).
+ */
+export function sessionRowDisplayLabel(
+  session: Pick<SessionInfo, "name" | "model" | "comsName">,
+  opts: { preferComsName?: boolean } = {},
+): string {
+  const name = session.name?.trim() || "";
+  const model = session.model?.trim() || "";
+  const comsName = session.comsName?.trim() || "";
+  if (opts.preferComsName && comsName) {
+    if (!name || (model && normalizeLabelToken(name) === normalizeLabelToken(model))) {
+      return comsName;
+    }
+  }
+  return name || model || "—";
+}
+
 /** Keep at most the most recent `max` entries in insertion order. */
 export function capSessionIdSet(ids: ReadonlySet<string>, max = MAX_PERSISTED_SESSION_IDS): Set<string> {
   if (max <= 0) return new Set();

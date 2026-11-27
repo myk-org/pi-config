@@ -100,6 +100,10 @@ export interface TaskItem {
   subject: string;
   description?: string;
   status: "pending" | "in_progress" | "completed" | "deleted";
+  assignee?: "llm" | "user";
+  blockedBy?: string[];
+  completedBy?: "llm" | "user";
+  completionNote?: string;
   activeForm?: string;
   createdBy?: { origin?: string };
   statusHistory?: Record<string, string>;
@@ -107,12 +111,24 @@ export interface TaskItem {
 
 export interface ComsPeer {
   name: string;
+  project?: string;
   purpose?: string;
   model?: string;
+  cwd?: string;
   busy: boolean;
   queueDepth: number;
   contextUsedPct: number;
   tasksSummary?: string | null;
+  supervised?: boolean;
+}
+
+export interface ComsQueueItem {
+  id: string;
+  msg_id: string;
+  sender_name: string;
+  prompt: string;
+  status: "processing" | "pending";
+  receivedAt?: number;
 }
 
 export interface MemoryStatus {

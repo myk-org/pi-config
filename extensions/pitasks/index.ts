@@ -30,6 +30,7 @@ import {
 } from "../shared/session-bridge.js";
 import { openTasksOverlay } from "./tasks-ui.js";
 import {
+	COMPLETION_NOTE_MAX,
 	bulkTaskCompletionNotice,
 	formatTasksPlainText,
 	selectTaskRows,
@@ -555,17 +556,37 @@ export default function (pi: ExtensionAPI) {
 		const op = data?.op;
 		try {
 			switch (op) {
-				case "create":
+				case "create": {
 					if (!data.subject) return;
-					store.create(data.subject, data.description || "", { type: "local", origin: "user", session: "", project: process.cwd() });
-					log.info("pidash_task_created", { subject: data.subject });
+					const assignee = data.assignee === "user" ? "user" : "llm";
+					store.create(
+						data.subject,
+						data.description || "",
+						{ type: "local", origin: "user", session: "", project: process.cwd() },
+						undefined,
+						undefined,
+						assignee,
+					);
+					log.info("pidash_task_created", { subject: data.subject, assignee });
 					break;
+				}
 				case "start":
 					if (data.taskId) { store.update(data.taskId, { status: "in_progress" }); widget.setActiveTask(data.taskId, true); }
 					break;
-				case "complete":
-					if (data.taskId) { manualTaskOperations(currentUiCtx).completeTask(data.taskId, { by: "user" }); widget.setActiveTask(data.taskId, false); }
+				case "complete": {
+					if (data.taskId) {
+						const rawNote = typeof data.completionNote === "string"
+							? data.completionNote.trim().slice(0, COMPLETION_NOTE_MAX)
+							: "";
+						manualTaskOperations(currentUiCtx).completeTask(data.taskId, {
+							by: "user",
+							...(rawNote ? { note: rawNote } : {}),
+						});
+						widget.setActiveTask(data.taskId, false);
+						log.debug("pidash_task_complete", { taskId: data.taskId, hasNote: rawNote.length > 0 });
+					}
 					break;
+				}
 				case "delete":
 					if (data.taskId) { store.update(data.taskId, { status: "deleted" }); widget.setActiveTask(data.taskId, false); }
 					break;

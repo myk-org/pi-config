@@ -551,6 +551,120 @@ export function buildComsPeersPayload(
 	};
 }
 
+export interface PidashRegistryPeerRow {
+	project: string;
+	name: string;
+	cwd: string;
+	purpose: string;
+	model?: string;
+	endpoint: string;
+	busy: boolean;
+	queueDepth: number | null;
+	contextUsedPct: number | null;
+}
+
+/**
+ * Project live registry rows + local peer cards into the PiDash Coms panel payload (#1481).
+ * Preserves project scope (`"project"` vs `"all"`), marks supervised (killable) peers using
+ * the same `supervisedPeerKeys` set as `/coms` and `coms_peer_kill`, and excludes `self`.
+ */
+export function buildPidashComsPeersPayload(args: {
+	rows: readonly PidashRegistryPeerRow[];
+	cards: Iterable<ComsPeerCard>;
+	supervisedKeys: ReadonlySet<string>;
+	self: { name: string; purpose?: string; project?: string; endpoint?: string } | null;
+	scope: "project" | "all";
+	ownProject: string;
+}): {
+	self: { name: string; purpose: string; project: string } | null;
+	scope: "project" | "all";
+	ownProject: string;
+	peers: Array<{
+		name: string;
+		project: string;
+		purpose: string;
+		model: string;
+		cwd: string;
+		busy: boolean;
+		queueDepth: number;
+		contextUsedPct: number;
+		tasksSummary: unknown;
+		supervised: boolean;
+	}>;
+} {
+	const cardByKey = new Map<string, ComsPeerCard>();
+	const selfProject = args.self?.project || args.ownProject;
+	for (const card of args.cards) {
+		cardByKey.set(`${selfProject}::${card.name}`, card);
+	}
+	const peers: Array<{
+		name: string;
+		project: string;
+		purpose: string;
+		model: string;
+		cwd: string;
+		busy: boolean;
+		queueDepth: number;
+		contextUsedPct: number;
+		tasksSummary: unknown;
+		supervised: boolean;
+	}> = [];
+	const seenKeys = new Set<string>();
+	for (const row of args.rows) {
+		if (
+			args.self &&
+			((args.self.endpoint && row.endpoint === args.self.endpoint) ||
+				(row.name === args.self.name && row.project === selfProject))
+		) {
+			continue;
+		}
+		const key = `${row.project}::${row.name}`;
+		if (seenKeys.has(key)) continue;
+		seenKeys.add(key);
+		const card = cardByKey.get(key);
+		peers.push({
+			name: row.name,
+			project: row.project,
+			purpose: row.purpose || card?.purpose || "",
+			model: row.model || card?.model || "",
+			cwd: row.cwd || "",
+			busy: card?.busy ?? row.busy ?? false,
+			queueDepth: card?.queue_depth ?? row.queueDepth ?? 0,
+			contextUsedPct: card?.context_used_pct ?? row.contextUsedPct ?? 0,
+			tasksSummary: card?.tasks_summary ?? null,
+			supervised: args.supervisedKeys.has(key),
+		});
+	}
+	// Include any local peerCard not yet visible in registry rows.
+	for (const card of args.cards) {
+		const key = `${selfProject}::${card.name}`;
+		if (seenKeys.has(key)) continue;
+		if (args.self && card.name === args.self.name) continue;
+		seenKeys.add(key);
+		peers.push({
+			name: card.name,
+			project: selfProject,
+			purpose: card.purpose || "",
+			model: card.model || "",
+			cwd: "",
+			busy: card.busy ?? false,
+			queueDepth: card.queue_depth ?? 0,
+			contextUsedPct: card.context_used_pct ?? 0,
+			tasksSummary: card.tasks_summary ?? null,
+			supervised: args.supervisedKeys.has(key),
+		});
+	}
+	peers.sort((a, b) => (a.project === b.project ? a.name.localeCompare(b.name) : a.project.localeCompare(b.project)));
+	return {
+		self: args.self
+			? { name: args.self.name, purpose: args.self.purpose || "", project: selfProject }
+			: { name: "", purpose: "", project: args.ownProject },
+		scope: args.scope,
+		ownProject: args.ownProject,
+		peers,
+	};
+}
+
 /** Sanitize a coms identity name for safe embedding in header strings.
  *  Strips the origin marker, control characters (C0/C1) and brackets; whitespace → hyphens. */
 export function sanitizeComsName(name: string): string {

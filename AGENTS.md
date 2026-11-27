@@ -19,7 +19,10 @@
      `rules/10-agent-routing.md` + `rules/50-agent-bug-reporting.md`; dev workflow → `DEVELOPMENT.md`.
 3. **LLM-facing capability is TAUGHT, not just built:** document new tools, params, keys, or modes in BOTH `rules/` (injected every
    turn) and the tool/schema description (`docs/` alone is for humans).
-4. Commit as `type(scope): description`.
+4. **PiDash TUI Parity (MANDATORY):** every new user-facing feature, slash command, overlay, tool output, or TUI view change MUST
+   also be reflected in PiDash (`extensions/pidash/`) in the same PR — collapsible by default, never hiding or truncating data when
+   expanded, with a visible Copy button on every section.
+5. Commit as `type(scope): description`.
 
 ## Logging Requirements
 

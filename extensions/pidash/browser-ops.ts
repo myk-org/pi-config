@@ -186,7 +186,7 @@ export async function mcpList(cwd: string): Promise<{ servers?: unknown[]; raw?:
     }
   } catch (e: any) {
     log.warn("mcp_list_failed", { error: e?.message });
-    return { error: (e?.stderr || e?.message || String(e)).slice(0, 2000) };
+    return { error: String(e?.stderr || e?.message || e) };
   }
 }
 

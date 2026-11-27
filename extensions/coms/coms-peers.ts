@@ -25,6 +25,7 @@ export interface RegistryRow {
   pid: number | null;
   cwd: string;
   purpose: string;
+  model?: string;
   endpoint: string;
   /** Heartbeat-refreshed live state — the closest thing to "watching" a headless peer. */
   busy: boolean;
