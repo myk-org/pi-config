@@ -938,6 +938,29 @@ describe("AskPromptCard 1-9 hotkeys (#1448)", () => {
     assert.deepEqual(calls, [["ask-new-2", "B1"], ["ask-old-2", "A2"]]);
   });
 
+  it("does not answer an older search-matched select prompt while a newer unanswered prompt is filtered out", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const calls: Array<[string, string]> = [];
+    const messages: ChatMessage[] = [
+      { id: "m-old-match", role: "ask_user" as any, text: "Alpha question", className: "ask|ask-old-match|select|A1|||A2" },
+      { id: "m-new-hidden", role: "ask_user" as any, text: "Beta question", className: "ask|ask-new-hidden|select|B1|||B2" },
+    ];
+
+    await act(async () => root.render(createElement(MessageList, {
+      messages,
+      searchQuery: "Alpha",
+      onAskResponse: (id: string, value: string) => calls.push([id, value]),
+    })));
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    });
+    assert.deepEqual(calls, []);
+  });
+
   it("pauses prompt hotkeys when a mobile SidePanel drawer covers the chat", () => {
     assert.equal(
       shouldPausePromptHotkeys({

@@ -403,21 +403,22 @@ export function stripToolResultPrefix(text: string): string {
 
 /**
  * Resolve which prompt message owns global 1-9 hotkeys:
- * inspects only the newest unanswered prompt (excluding locally answered IDs)
- * and enables hotkeys only when that newest prompt is a `select` card.
+ * inspects only the newest unanswered prompt in the unfiltered transcript
+ * (excluding locally answered IDs) and enables hotkeys only when that same
+ * prompt is a visible `select` card.
  */
 export function findActiveSelectHotkeyId(
-  items: ReadonlyArray<{ call?: { id: string }; result?: { id: string } } | { id: string; className?: string }>,
+  messages: ReadonlyArray<{ id: string; className?: string }>,
+  visibleIds: ReadonlySet<string>,
   locallyAnsweredIds: ReadonlySet<string>,
   paused: boolean,
 ): string | null {
   if (paused) return null;
-  for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i];
-    if ("call" in item) continue;
-    const msg = item as { id: string; className?: string };
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
     if (!msg.className?.startsWith("ask|")) continue;
     if (locallyAnsweredIds.has(msg.id)) continue;
+    if (!visibleIds.has(msg.id)) return null;
     const method = msg.className.split("|")[2] || "select";
     return method === "select" ? msg.id : null;
   }

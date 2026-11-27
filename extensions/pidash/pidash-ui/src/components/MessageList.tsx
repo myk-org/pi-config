@@ -136,11 +136,15 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
     });
   }, []);
 
-  // Only the newest unanswered prompt owns global 1-9 hotkeys, and only when it is a select card.
-  const activeAskHotkeyId = useMemo(
-    () => findActiveSelectHotkeyId(grouped, locallyAnsweredIds, promptHotkeysPaused),
-    [grouped, locallyAnsweredIds, promptHotkeysPaused],
-  );
+  // Only the newest unanswered prompt in the unfiltered transcript owns global 1-9
+  // hotkeys, and only when that same prompt is a currently visible select card.
+  const activeAskHotkeyId = useMemo(() => {
+    const visibleIds = new Set<string>();
+    for (const item of grouped) {
+      if (!("call" in item)) visibleIds.add((item as ChatMessage).id);
+    }
+    return findActiveSelectHotkeyId(messages, visibleIds, locallyAnsweredIds, promptHotkeysPaused);
+  }, [messages, grouped, locallyAnsweredIds, promptHotkeysPaused]);
 
   const [replaying, setReplaying] = useState(false);
   const autoScrollRef = useRef(true);
