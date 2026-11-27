@@ -8,7 +8,7 @@ Commands and tools are different things: a **command** is something you type (`/
 
 | Kind | Count | Where they come from |
 |---|---|---|
-| Slash commands | 14 | `registerCommand(...)` across `extensions/` |
+| Slash commands | 16 | `registerCommand(...)` across `extensions/` |
 | Always-registered tools | 45 | `registerTool(...)` across `extensions/` |
 | Code-map tools | 7 | `trail.ts`, on by default when the `trail` binary exists (`trail_enable`) |
 
@@ -123,6 +123,18 @@ Manage the diff-viewer server (the `8-diff` status widget).
 /pidiff restart
 ```
 
+### /redo
+
+Re-apply working-tree file changes from the most recently undone turn snapshot (paired with `/undo`).
+
+- **Arguments:** none
+- **What it does:** restores the undone turn's post-mutation shadow git tree into the working tree using an ephemeral `GIT_INDEX_FILE` without touching `.git/index` or deleting gitignored files, then prints a summary of restored/removed files.
+- **Note:** cleared automatically when a subsequent turn mutates files; disabled when `turn_snapshots` is `false`.
+
+```text
+/redo
+```
+
 ### /repair
 
 Repair the current session file by fixing orphaned tool calls — assistant `toolCall` entries on the active branch that never received a matching `toolResult`. Those orphans make the provider reject the next request with an API error.
@@ -203,6 +215,18 @@ Zero-arg fullscreen task manager overlay for the current session's task list.
 
 ```text
 /tasks
+```
+
+### /undo
+
+Revert working-tree file changes made during the most recent file-mutating turn.
+
+- **Arguments:** none
+- **What it does:** before the first `write`, `edit`, or `bash` tool call in a turn inside a git repository, pi-config captures a shadow git tree using an ephemeral `GIT_INDEX_FILE` (never touching `.git/index`, `HEAD`, branches, reflog, or `git stash`). On `agent_end`, if files actually changed, the turn is pushed onto a bounded per-session stack (20 turns). `/undo` restores the pre-turn working tree and removes files added during that turn while preserving staged changes and gitignored files (`.env`, `.pi/`, `node_modules`, `.venv`), and pushes the state onto the redo stack for `/redo`.
+- **No-op:** outside git repos, in subagent children (`PI_SUBAGENT_CHILD=1`), or when `turn_snapshots` is `false`.
+
+```text
+/undo
 ```
 
 ### /worktree

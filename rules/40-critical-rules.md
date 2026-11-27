@@ -82,6 +82,16 @@ Prefer the built-in runtime tools (`runtime` namespace) over ad-hoc shell comman
 
 ---
 
+{{IF:turn_snapshots}}
+
+## Per-Turn File Snapshots (`/undo`, `/redo`)
+
+Git-backed shadow-tree snapshots are captured before mutating turns (`write`/`edit`/`bash`) without touching `.git/index`, commits, stash, or gitignored files.
+Users can run `/undo` to revert the last mutating turn's working-tree changes and `/redo` to reapply it (last 20 turns per session; configure via `turn_snapshots`).
+
+---
+{{/IF}}
+
 {{IF:use_worktrees}}
 
 ## Multi-PR / Multi-Branch Work
