@@ -114,6 +114,15 @@ If you want a background agent to remember previous work, ask Pi to persist that
 
 This is most useful for iterative review loops and repeated follow-up work. See [Automating Code Reviews](automating-code-reviews.html) for a full review workflow.
 
+### Keep Monitoring Crons Quiet When Nothing Changed
+
+Monitoring crons often run on a short interval and find nothing to report. Set `quiet_on_noop: true` on `cron_manage(action="add")` or `cron_manage(action="edit")` to avoid interrupting your main session on clean checks:
+
+- Pi appends a short instruction to the spawned worker prompt telling it to reply with a single line starting with `[NOOP]` when nothing changed or requires attention.
+- When the worker succeeds (`complete`) and its trimmed output starts with `[NOOP]` (case-insensitive), Pi records the run in cron history (`lastRun`, `runCount`, `lastOutcome: "noop"`) and skips delivering a `followUp` chat turn.
+- Any error, failure, or non-`[NOOP]` output still delivers normally so failures are never hidden.
+- `/cron` shows a `quiet` badge on quiet crons and `(noop)` / `(error)` on the last run outcome.
+
 ### Use Fire-and-Forget for Maintenance Jobs
 
 For maintenance tasks where you do not want a follow-up result injected back into chat, ask for fire-and-forget behavior:
@@ -135,7 +144,7 @@ Session-scoped tasks survive `/reload` inside the running process but are delete
 
 > **Note:** If you need to confirm what is still scheduled, run `/cron` after reconnecting instead of assuming an older schedule is still active.
 
-> **Tip:** The LLM manages crons via `cron_manage` (`add`, `list`, `edit`, `pause`, `resume`, `remove`). Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour` (or alone when editing an existing daily schedule). `model` accepts `provider/model-id` or a bare `model-id`; leaving it out uses the worker's normal model resolution, and passing `model: ""` on `edit` clears a pinned model back to inherited. Use `edit` to update a cron in place (preserving its ID, run history, and paused state) and `pause`/`resume` to toggle execution without deleting it.
+> **Tip:** The LLM manages crons via `cron_manage` (`add`, `list`, `edit`, `pause`, `resume`, `remove`). Schedules must have an `interval_seconds` of at least 10, and `at_minute` is only valid together with `at_hour` (or alone when editing an existing daily schedule). `model` accepts `provider/model-id` or a bare `model-id`; leaving it out uses the worker's normal model resolution, and passing `model: ""` on `edit` clears a pinned model back to inherited. Pass `quiet_on_noop: true` on `add` or `edit` so monitoring crons stay silent on successful `[NOOP]` replies while still delivering errors and findings. Use `edit` to update a cron in place (preserving its ID, run history, and paused state) and `pause`/`resume` to toggle execution without deleting it.
 
 ## Troubleshooting
 
