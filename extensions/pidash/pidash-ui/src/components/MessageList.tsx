@@ -104,7 +104,8 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
     return out;
   }, [messages, searchQuery, searchType]);
 
-  // Only the latest unanswered option prompt responds to global 1-9 hotkeys.
+  // Only the latest unanswered select prompt responds to global 1-9 hotkeys
+  // (confirm prompts require explicit focus inside the card so a stray "1" never approves them).
   const activeAskHotkeyId = useMemo(() => {
     if (promptHotkeysPaused) return null;
     for (let i = grouped.length - 1; i >= 0; i--) {
@@ -113,7 +114,7 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
       const m = item as ChatMessage;
       if (!m.className?.startsWith("ask|")) continue;
       const method = m.className.split("|")[2] || "select";
-      if (method === "select" || method === "confirm") return m.id;
+      if (method === "select") return m.id;
     }
     return null;
   }, [grouped, promptHotkeysPaused]);
@@ -339,7 +340,8 @@ export function AskPromptCard({
   );
   const [answered, setAnswered] = useState(isAnswered);
   const [selectedOpt, setSelectedOpt] = useState("");
-  const [customAnswer, setCustomAnswer] = useState("");
+  const cardRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isDone = answered || isAnswered;
 
   const submitOption = useCallback((opt: string) => {
@@ -354,16 +356,18 @@ export function AskPromptCard({
   }, [askId, method, onAskResponse]);
 
   const submitCustomAnswer = useCallback(() => {
-    const val = customAnswer.trim();
-    if (!val) return;
+    const raw = textareaRef.current?.value ?? "";
+    if (!raw.trim()) return;
     setAnswered(true);
-    setSelectedOpt(val);
-    log.debug("prompt custom answer submitted", { askId, lines: val.split("\n").length });
-    onAskResponse?.(askId, val);
-  }, [askId, customAnswer, onAskResponse]);
+    setSelectedOpt(raw);
+    log.debug("prompt custom answer submitted", { askId, lines: raw.split("\n").length });
+    onAskResponse?.(askId, raw);
+  }, [askId, onAskResponse]);
 
+  // Global 1-9 hotkeys apply only to select prompts; confirm prompts handle
+  // 1/2 only when focus is explicitly inside the card container.
   useEffect(() => {
-    if (isDone || !hotkeyEnabled || (method !== "select" && method !== "confirm") || options.length === 0) {
+    if (isDone || !hotkeyEnabled || method !== "select" || options.length === 0) {
       return;
     }
     const onKeyDown = (e: KeyboardEvent) => {
@@ -379,13 +383,40 @@ export function AskPromptCard({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [isDone, hotkeyEnabled, method, options, submitOption]);
 
+  const handleConfirmCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isDone || method !== "confirm" || options.length === 0) return;
+    const activeEl = typeof document !== "undefined" ? document.activeElement : null;
+    if (!cardRef.current?.contains(activeEl as Node | null)) return;
+    if (isEditableTarget(e.target, activeEl)) return;
+    const idx = resolvePromptOptionIndex(
+      {
+        key: e.key,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        altKey: e.altKey,
+        shiftKey: e.shiftKey,
+        repeat: e.repeat,
+        defaultPrevented: e.defaultPrevented,
+      },
+      options.length,
+    );
+    if (idx === null) return;
+    e.preventDefault();
+    submitOption(options[idx]);
+  };
+
   return (
     <div>
       <div className={cn("text-[10px] font-bold uppercase tracking-wider mb-0.5", getRoleColor("ask_user"))}>
         {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
         action required
       </div>
-      <div className="rounded-md bg-card p-3 text-[13px] whitespace-pre-wrap break-words border-l-2 border-cyan-400">
+      <div
+        ref={cardRef}
+        tabIndex={method === "confirm" && !isDone ? -1 : undefined}
+        onKeyDown={method === "confirm" ? handleConfirmCardKeyDown : undefined}
+        className="rounded-md bg-card p-3 text-[13px] whitespace-pre-wrap break-words border-l-2 border-cyan-400 outline-none"
+      >
         <div className="mb-2">{msg.text}</div>
         {isDone ? (
           <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words">✓ Answered: {selectedOpt || "dismissed"}</div>
@@ -398,12 +429,18 @@ export function AskPromptCard({
             }}
           >
             <textarea
+              ref={textareaRef}
               name="answer"
               rows={2}
-              value={customAnswer}
-              onChange={(e) => setCustomAnswer(e.target.value)}
               onKeyDown={(e) => {
-                if (shouldSubmitMultilineAnswer(e)) {
+                if (
+                  shouldSubmitMultilineAnswer({
+                    key: e.key,
+                    shiftKey: e.shiftKey,
+                    isComposing: Boolean(e.nativeEvent?.isComposing || e.keyCode === 229),
+                    keyCode: e.keyCode,
+                  })
+                ) {
                   e.preventDefault();
                   submitCustomAnswer();
                 }

@@ -281,10 +281,10 @@ export function SessionSidebar({
   };
 
 
-  // ── Coms projects present among the sessions we can see ──────────────
+  // ── Coms projects present among non-archived sessions ──────────────
   const comsProjects = new Map<string, { sessions: SessionInfo[]; busy: number }>();
   for (const s of sessions) {
-    if (!s.comsProject) continue;
+    if (!s.comsProject || archivedSessionIds?.has(s.sessionId)) continue;
     if (!comsProjects.has(s.comsProject)) comsProjects.set(s.comsProject, { sessions: [], busy: 0 });
     const entry = comsProjects.get(s.comsProject)!;
     entry.sessions.push(s);

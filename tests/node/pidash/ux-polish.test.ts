@@ -1,9 +1,9 @@
 /**
  * #1448 — Unit and component tests for PiDash UX polish:
  * 1. Browser tab title formatting (`document.title`)
- * 2. Sidebar Needs Attention, Pin, Archived (closed by default), auto-unarchive, and localStorage persistence
- * 3. Keyboard-first `1`–`9` prompt option selection and multi-line custom answer `<textarea>`
- * 4. One-click Copy output button on bash/shell tool cards
+ * 2. Sidebar Needs Attention, Pin, Archived (closed by default), auto-unarchive, cross-tab sync, 200-ID cap
+ * 3. Keyboard-first `1`–`9` prompt option selection (with confirm focus guard & mobile drawer pause) and multi-line custom answer `<textarea>`
+ * 4. One-click Copy output button on bash/shell tool cards and logger diagnostics
  */
 import { after, afterEach, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -12,9 +12,10 @@ import * as rootReact from "react";
 import { createServer, type ViteDevServer } from "vite";
 import * as pidashReact from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
-import { createRoot, type Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
+import type { Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
 import {
   ARCHIVED_SESSIONS_STORAGE_KEY,
+  MAX_PERSISTED_SESSION_IDS,
   PINNED_SESSIONS_STORAGE_KEY,
   flattenSidebarSessions,
   formatDocumentTitle,
@@ -22,21 +23,35 @@ import {
   loadSessionIdSet,
   partitionSidebarSessions,
   saveSessionIdSet,
+  shouldPausePromptHotkeys,
   stripToolResultPrefix,
   toggleArchivedSession,
   togglePinnedSession,
   unarchiveSessionId,
 } from "../../../extensions/pidash/pidash-ui/src/lib/pidash-ux-helpers.ts";
+import { useSidebarSessionFlags } from "../../../extensions/pidash/pidash-ui/src/hooks/useSidebarSessionFlags.ts";
 import type { ChatMessage, SessionInfo } from "../../../extensions/shared/types.ts";
 import { elements, installReactDomShim } from "./react-dom-shim.mjs";
 
+type LogRecord = { name: string; level: string; msg: string };
+type LogBag = { __pidashUiLogs?: LogRecord[]; __PIDASH_DEBUG?: boolean };
+
+function logBag(): LogBag {
+  return globalThis as LogBag;
+}
+
 let vite: ViteDevServer;
+let createRoot: (container: Element) => Root;
 let SessionSidebar: any;
 let MessageList: any;
 let MessageItem: any;
 let ToolGroup: any;
 
 before(async () => {
+  // Install the DOM shim before loading react-dom/client so React detects native
+  // `oninput` support instead of activating its legacy IE9 keydown polyfill.
+  installReactDomShim();
+  ({ createRoot } = await import("../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js"));
   vite = await createServer({
     root: path.resolve("extensions/pidash/pidash-ui"),
     server: { middlewareMode: true, hmr: false },
@@ -63,6 +78,8 @@ const originalClipboard = Object.getOwnPropertyDescriptor(globalThis.navigator ?
 
 afterEach(async () => {
   while (mounted.length) await act(async () => mounted.pop()!.unmount());
+  logBag().__pidashUiLogs = [];
+  logBag().__PIDASH_DEBUG = false;
   if (originalLocalStorage === undefined) {
     delete (globalThis as any).localStorage;
   } else {
@@ -107,92 +124,112 @@ function makeSession(sessionId: string, overrides: Partial<SessionInfo> = {}): S
 }
 
 describe("formatDocumentTitle (#1448)", () => {
-  it("reverts to 'pidash' when no session is selected", () => {
+  it("returns 'pidash' when no session is selected", () => {
     assert.equal(formatDocumentTitle(null), "pidash");
     assert.equal(formatDocumentTitle(undefined), "pidash");
   });
 
-  it("uses session name when idle or working", () => {
+  it("formats an idle named session title", () => {
     const idle = makeSession("s1", { name: "Auth Refactor", activity: "idle" });
-    const working = makeSession("s2", { name: "Build Fix", activity: "working" });
     assert.equal(formatDocumentTitle(idle), "Auth Refactor — pidash");
+  });
+
+  it("formats a working named session title", () => {
+    const working = makeSession("s2", { name: "Build Fix", activity: "working" });
     assert.equal(formatDocumentTitle(working), "Build Fix — pidash");
   });
 
-  it("falls back to project directory name when unnamed", () => {
+  it("falls back to the project directory name for an unnamed session", () => {
     const unnamed = makeSession("s1", { name: "", cwd: "/home/dev/pi-config/" });
     assert.equal(formatDocumentTitle(unnamed), "pi-config — pidash");
   });
 
-  it("prefixes [!] when active session is waiting_for_input", () => {
+  it("prefixes [!] when an active session is waiting_for_input", () => {
     const waiting = makeSession("s1", { name: "Deploy", activity: "waiting_for_input", active: true });
     assert.equal(formatDocumentTitle(waiting), "[!] Deploy — pidash");
   });
 
-  it("prefixes [!] when active session has a pending prompt even if activity is idle", () => {
+  it("prefixes [!] when an active session has a pending prompt", () => {
     const active = makeSession("s1", { name: "Review", activity: "idle", active: true });
     assert.equal(formatDocumentTitle(active, true), "[!] Review — pidash");
   });
 
-  it("omits [!] when session is offline", () => {
+  it("omits [!] when the session is offline", () => {
     const offline = makeSession("s1", { name: "Old", activity: "waiting_for_input", active: false });
     assert.equal(formatDocumentTitle(offline, true), "Old — pidash");
   });
 });
 
-describe("sidebar state helpers & persistence (#1448)", () => {
-  it("toggles pin and unarchives an archived session when pinned", () => {
-    const pinned = new Set<string>();
-    const archived = new Set<string>(["s1"]);
-
-    const afterPin = togglePinnedSession(pinned, archived, "s1");
-    assert.equal(afterPin.isPinned, true);
-    assert.equal(afterPin.pinned.has("s1"), true);
-    assert.equal(afterPin.archived.has("s1"), false);
-
-    const afterUnpin = togglePinnedSession(afterPin.pinned, afterPin.archived, "s1");
-    assert.equal(afterUnpin.isPinned, false);
-    assert.equal(afterUnpin.pinned.has("s1"), false);
+describe("sidebar state helpers (#1448)", () => {
+  it("adds an unpinned session on togglePinnedSession", () => {
+    const next = togglePinnedSession(new Set(), new Set(), "s1");
+    assert.equal(next.isPinned, true);
+    assert.equal(next.pinned.has("s1"), true);
   });
 
-  it("toggles archive and unpins a pinned session when archived", () => {
-    const pinned = new Set<string>(["s1"]);
-    const archived = new Set<string>();
-
-    const afterArchive = toggleArchivedSession(pinned, archived, "s1");
-    assert.equal(afterArchive.isArchived, true);
-    assert.equal(afterArchive.archived.has("s1"), true);
-    assert.equal(afterArchive.pinned.has("s1"), false);
-
-    const afterUnarchive = toggleArchivedSession(afterArchive.pinned, afterArchive.archived, "s1");
-    assert.equal(afterUnarchive.isArchived, false);
-    assert.equal(afterUnarchive.archived.has("s1"), false);
+  it("removes an already pinned session on togglePinnedSession", () => {
+    const next = togglePinnedSession(new Set(["s1"]), new Set(), "s1");
+    assert.equal(next.isPinned, false);
+    assert.equal(next.pinned.has("s1"), false);
   });
 
-  it("auto-unarchives an archived session on send and no-ops otherwise", () => {
-    const archived = new Set<string>(["s1"]);
-    const unchanged = unarchiveSessionId(archived, "s2");
-    assert.equal(unchanged.changed, false);
-    assert.equal(unchanged.archived.has("s1"), true);
+  it("unarchives an archived session when it is pinned", () => {
+    const next = togglePinnedSession(new Set(), new Set(["s1"]), "s1");
+    assert.equal(next.pinned.has("s1"), true);
+    assert.equal(next.archived.has("s1"), false);
+  });
 
-    const updated = unarchiveSessionId(archived, "s1");
+  it("unpins a pinned session when it is archived", () => {
+    const next = toggleArchivedSession(new Set(["s1"]), new Set(), "s1");
+    assert.equal(next.isArchived, true);
+    assert.equal(next.archived.has("s1"), true);
+    assert.equal(next.pinned.has("s1"), false);
+  });
+
+  it("removes an archived session on toggleArchivedSession", () => {
+    const next = toggleArchivedSession(new Set(), new Set(["s1"]), "s1");
+    assert.equal(next.isArchived, false);
+    assert.equal(next.archived.has("s1"), false);
+  });
+
+  it("removes an archived session on unarchiveSessionId", () => {
+    const updated = unarchiveSessionId(new Set(["s1"]), "s1");
     assert.equal(updated.changed, true);
     assert.equal(updated.archived.has("s1"), false);
   });
 
-  it("persists and reloads session ID sets in localStorage and tolerates invalid JSON", () => {
-    const { map } = installMockStorage();
+  it("no-ops on unarchiveSessionId for a non-archived session", () => {
+    const unchanged = unarchiveSessionId(new Set(["s1"]), "s2");
+    assert.equal(unchanged.changed, false);
+    assert.equal(unchanged.archived.has("s1"), true);
+  });
+
+  it("round-trips persisted session ID sets through localStorage", () => {
+    installMockStorage();
     saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, new Set(["a", "b"]));
-    saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, new Set(["c"]));
-
     assert.deepEqual([...loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY)], ["a", "b"]);
-    assert.deepEqual([...loadSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY)], ["c"]);
+  });
 
+  it("recovers with an empty set when localStorage holds invalid JSON", () => {
+    const { map } = installMockStorage();
     map.set(PINNED_SESSIONS_STORAGE_KEY, "{not valid json");
     assert.deepEqual([...loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY)], []);
   });
 
-  it("surfaces archived waiting_for_input sessions in Needs attention while keeping them archived", () => {
+  it("caps persisted session ID sets to the most recent 200 entries", () => {
+    installMockStorage();
+    const many = new Set<string>();
+    for (let i = 0; i < MAX_PERSISTED_SESSION_IDS + 25; i++) {
+      many.add(`s-${i}`);
+    }
+    saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, many);
+    const reloaded = [...loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY)];
+    assert.equal(reloaded.length, MAX_PERSISTED_SESSION_IDS);
+    assert.equal(reloaded[0], "s-25");
+    assert.equal(reloaded.at(-1), `s-${MAX_PERSISTED_SESSION_IDS + 24}`);
+  });
+
+  it("surfaces archived waiting_for_input sessions in Needs attention", () => {
     const sAttention = makeSession("s-attn", { name: "Needs Input", activity: "waiting_for_input" });
     const sArchivedWaiting = makeSession("s-arch-wait", { name: "Archived Prompt", activity: "waiting_for_input" });
     const sPinned = makeSession("s-pin", { name: "Pinned Work", activity: "working" });
@@ -211,27 +248,110 @@ describe("sidebar state helpers & persistence (#1448)", () => {
     assert.deepEqual(parts.pinned.map((s) => s.sessionId), ["s-pin"]);
     assert.deepEqual(parts.groups.flatMap((g) => g.sessions.map((s) => s.sessionId)), ["s-reg"]);
     assert.deepEqual(parts.archived.map((s) => s.sessionId), ["s-arch", "s-arch-wait"]);
+  });
 
-    // Flattened list matches visual order without duplicating s-arch-wait.
+  it("deduplicates archived attention sessions in flattenSidebarSessions", () => {
+    const sArchivedWaiting = makeSession("s-arch-wait", { name: "Archived Prompt", activity: "waiting_for_input" });
+    const sRegular = makeSession("s-reg", { name: "Regular", cwd: "/work/app" });
+    const parts = partitionSidebarSessions([sRegular, sArchivedWaiting], {
+      pinnedIds: new Set(),
+      archivedIds: new Set(["s-arch-wait"]),
+    });
     assert.deepEqual(
       flattenSidebarSessions(parts).map((s) => s.sessionId),
-      ["s-arch-wait", "s-attn", "s-pin", "s-reg", "s-arch"],
+      ["s-arch-wait", "s-reg"],
     );
   });
 });
 
-describe("SessionSidebar UI sections & row actions (#1448)", () => {
-  it("renders Needs attention at top, Pinned next, and Archived collapsed by default with count", async () => {
+describe("useSidebarSessionFlags hook (#1448)", () => {
+  async function mountFlagsHook() {
+    const { container } = installReactDomShim();
+    let api!: ReturnType<typeof useSidebarSessionFlags>;
+    function Probe() {
+      api = useSidebarSessionFlags();
+      return null;
+    }
+    const root = createRoot(container);
+    mounted.push(root);
+    await act(async () => root.render(createElement(Probe)));
+    return { getApi: () => api };
+  }
+
+  it("persists pin toggles to localStorage", async () => {
+    installMockStorage();
+    const { getApi } = await mountFlagsHook();
+
+    await act(async () => getApi().togglePin("s-1"));
+    assert.equal(getApi().pinned.has("s-1"), true);
+    assert.deepEqual([...loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY)], ["s-1"]);
+  });
+
+  it("persists archive toggles to localStorage", async () => {
+    installMockStorage();
+    const { getApi } = await mountFlagsHook();
+
+    await act(async () => getApi().toggleArchive("s-2"));
+    assert.equal(getApi().archived.has("s-2"), true);
+    assert.deepEqual([...loadSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY)], ["s-2"]);
+  });
+
+  it("auto-unarchives an archived session on send", async () => {
+    installMockStorage();
+    saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, new Set(["s-3"]));
+    logBag().__pidashUiLogs = [];
+
+    const { getApi } = await mountFlagsHook();
+    assert.equal(getApi().archived.has("s-3"), true);
+
+    await act(async () => getApi().unarchive("s-3"));
+    assert.equal(getApi().archived.has("s-3"), false);
+    assert.deepEqual([...loadSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY)], []);
+    assert.ok(
+      (logBag().__pidashUiLogs ?? []).some(
+        (entry) => entry.name === "SidebarFlags" && entry.level === "info" && entry.msg.includes("auto-unarchived"),
+      ),
+    );
+  });
+
+  it("preserves alternating pin updates made across two tabs", async () => {
+    installMockStorage();
+    const tabA = await mountFlagsHook();
+    const tabB = await mountFlagsHook();
+
+    await act(async () => tabA.getApi().togglePin("s-tab-a"));
+    // Tab B toggles a different session before receiving a storage event
+    await act(async () => tabB.getApi().togglePin("s-tab-b"));
+
+    assert.deepEqual([...loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY)], ["s-tab-a", "s-tab-b"]);
+    assert.deepEqual([...tabB.getApi().pinned], ["s-tab-a", "s-tab-b"]);
+  });
+
+  it("syncs state when another tab dispatches a storage event", async () => {
+    installMockStorage();
+    const { getApi } = await mountFlagsHook();
+    assert.equal(getApi().pinned.has("s-remote"), false);
+
+    saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, new Set(["s-remote"]));
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent("storage", { key: PINNED_SESSIONS_STORAGE_KEY }));
+    });
+    assert.equal(getApi().pinned.has("s-remote"), true);
+  });
+});
+
+describe("SessionSidebar UI sections (#1448)", () => {
+  it("orders Needs attention, Pinned, project groups, then Archived", async () => {
     installMockStorage();
     const { container } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);
 
     const sessions = [
-      makeSession("s-wait", { name: "Waiting Archived", activity: "waiting_for_input" }),
+      makeSession("s-wait", { name: "Waiting Session", activity: "waiting_for_input" }),
       makeSession("s-pin", { name: "Pinned Session" }),
       makeSession("s-reg", { name: "Regular Session", cwd: "/work/repo" }),
-      makeSession("s-arch", { name: "Hidden Archived" }),
+      makeSession("s-arch", { name: "Hidden Session" }),
     ];
 
     await act(async () => root.render(createElement(SessionSidebar, {
@@ -251,29 +371,99 @@ describe("SessionSidebar UI sections & row actions (#1448)", () => {
       .map((el) => el.getAttribute("data-section"))
       .filter((s): s is string => Boolean(s));
     assert.deepEqual(sections, ["needs-attention", "pinned", "archived"]);
+  });
 
-    const text = container.textContent ?? "";
-    const attnIdx = text.indexOf("Needs attention");
-    const pinIdx = text.indexOf("Pinned");
-    const repoIdx = text.indexOf("repo");
-    const archIdx = text.lastIndexOf("Archived");
-    assert.ok(attnIdx >= 0 && pinIdx > attnIdx && repoIdx > pinIdx && archIdx > repoIdx, "section order is Needs attention → Pinned → project → Archived");
-    assert.match(text, /Waiting Archived/);
-    assert.equal(text.includes("Hidden Archived"), false, "Archived section starts collapsed");
+  it("keeps the Archived section collapsed by default with its count", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
 
-    // Expand Archived section and verify archived session appears
+    const sessions = [
+      makeSession("s-wait", { name: "Waiting Session", activity: "waiting_for_input" }),
+      makeSession("s-arch", { name: "Hidden Session" }),
+    ];
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions,
+      activeSessionId: null,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(["s-arch", "s-wait"]),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    assert.equal((container.textContent ?? "").includes("Hidden Session"), false);
     const archHeader = elements(container, "div").find(
       (el) => el.getAttribute("role") === "button" && (el.textContent ?? "").includes("Archived"),
     );
     assert.ok(archHeader);
     assert.equal(archHeader.getAttribute("aria-expanded"), "false");
     assert.match(archHeader.textContent ?? "", /2/);
-    await act(async () => archHeader.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    assert.equal(archHeader.getAttribute("aria-expanded"), "true");
-    assert.match(container.textContent ?? "", /Hidden Archived/);
   });
 
-  it("triggers pin and archive row buttons without selecting the session", async () => {
+  it("reveals archived sessions when the Archived header is clicked", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions: [makeSession("s-arch", { name: "Hidden Session" })],
+      activeSessionId: null,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(["s-arch"]),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    const archHeader = elements(container, "div").find(
+      (el) => el.getAttribute("role") === "button" && (el.textContent ?? "").includes("Archived"),
+    );
+    assert.ok(archHeader);
+    await act(async () => archHeader.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    assert.equal(archHeader.getAttribute("aria-expanded"), "true");
+    assert.match(container.textContent ?? "", /Hidden Session/);
+  });
+
+  it("excludes archived Coms members from the Coms section", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-coms-live", { name: "Live Peer", comsProject: "team-proj", comsName: "peer-live" }),
+      makeSession("s-coms-arch", { name: "Archived Peer", comsProject: "team-proj", comsName: "peer-arch" }),
+    ];
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions,
+      activeSessionId: null,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(["s-coms-arch"]),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    const text = container.textContent ?? "";
+    assert.match(text, /Live Peer/);
+    assert.equal(text.includes("Archived Peer"), false);
+  });
+
+  it("invokes onTogglePin without selecting the row", async () => {
     installMockStorage();
     const { container } = installReactDomShim();
     const root = createRoot(container);
@@ -281,7 +471,6 @@ describe("SessionSidebar UI sections & row actions (#1448)", () => {
 
     const selected: string[] = [];
     const pinnedCalls: string[] = [];
-    const archivedCalls: string[] = [];
 
     await act(async () => root.render(createElement(SessionSidebar, {
       sessions: [makeSession("s-1", { name: "Alpha" })],
@@ -293,24 +482,66 @@ describe("SessionSidebar UI sections & row actions (#1448)", () => {
       pinnedSessionIds: new Set(),
       archivedSessionIds: new Set(),
       onTogglePin: (id: string) => pinnedCalls.push(id),
-      onToggleArchive: (id: string) => archivedCalls.push(id),
+      onToggleArchive: () => {},
     })));
 
     const pinBtn = elements(container, "button").find((b) => b.getAttribute("aria-label") === "Pin session");
-    const archiveBtn = elements(container, "button").find((b) => b.getAttribute("aria-label") === "Archive session");
-    assert.ok(pinBtn && archiveBtn);
-
+    assert.ok(pinBtn);
     await act(async () => pinBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    await act(async () => archiveBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
     assert.deepEqual(pinnedCalls, ["s-1"]);
+    assert.deepEqual(selected, []);
+  });
+
+  it("invokes onToggleArchive without selecting the row", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const selected: string[] = [];
+    const archivedCalls: string[] = [];
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions: [makeSession("s-1", { name: "Alpha" })],
+      activeSessionId: null,
+      connected: true,
+      onSelect: (s: SessionInfo) => selected.push(s.sessionId),
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(),
+      onTogglePin: () => {},
+      onToggleArchive: (id: string) => archivedCalls.push(id),
+    })));
+
+    const archiveBtn = elements(container, "button").find((b) => b.getAttribute("aria-label") === "Archive session");
+    assert.ok(archiveBtn);
+    await act(async () => archiveBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
     assert.deepEqual(archivedCalls, ["s-1"]);
     assert.deepEqual(selected, []);
   });
 });
 
-describe("AskPromptCard 1-9 hotkeys & multi-line custom answer (#1448)", () => {
-  it("renders 1..9 badges and selects option N when pressing keys 1-9", async () => {
+describe("AskPromptCard 1-9 hotkeys (#1448)", () => {
+  it("renders 1..9 keycap badges on option buttons", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const msg: ChatMessage = {
+      id: "m-ask-badges",
+      role: "ask_user" as any,
+      text: "Choose target",
+      className: "ask|ask-b|select|Dev|||Staging|||Prod",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, { msg })));
+    assert.deepEqual(elements(container, "kbd").map((k) => k.textContent), ["1", "2", "3"]);
+  });
+
+  it("selects option N on an unmodified number keypress for select prompts", async () => {
     const { container, document } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);
@@ -328,9 +559,6 @@ describe("AskPromptCard 1-9 hotkeys & multi-line custom answer (#1448)", () => {
       onAskResponse: (id: string, value: string) => { chosen = [id, value]; },
     })));
 
-    const kbds = elements(container, "kbd").map((k) => k.textContent);
-    assert.deepEqual(kbds, ["1", "2", "3"]);
-
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true }));
     });
@@ -338,7 +566,7 @@ describe("AskPromptCard 1-9 hotkeys & multi-line custom answer (#1448)", () => {
     assert.match(container.textContent ?? "", /✓ Answered: Staging/);
   });
 
-  it("maps confirm prompt hotkeys 1 and 2 to __confirmed__ and __denied__", async () => {
+  it("ignores global number keys for confirm prompts when focus is outside the card", async () => {
     const { container, document } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);
@@ -347,7 +575,7 @@ describe("AskPromptCard 1-9 hotkeys & multi-line custom answer (#1448)", () => {
     const msg: ChatMessage = {
       id: "m-confirm-1",
       role: "ask_user" as any,
-      text: "Continue?",
+      text: "Run rm -rf?",
       className: "ask|ask-c1|confirm|Yes|||No",
     };
 
@@ -357,22 +585,22 @@ describe("AskPromptCard 1-9 hotkeys & multi-line custom answer (#1448)", () => {
     })));
 
     await act(async () => {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
     });
-    assert.deepEqual(chosen, ["ask-c1", "__denied__"]);
+    assert.equal(chosen, null);
   });
 
-  it("ignores 1-9 hotkeys when focus is inside an input, textarea, or contenteditable, or when modifiers are held", async () => {
-    const { container, document } = installReactDomShim();
+  it("accepts number keys for confirm prompts when focus is inside the card", async () => {
+    const { container } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);
 
     let chosen: [string, string] | null = null;
     const msg: ChatMessage = {
-      id: "m-ask-2",
+      id: "m-confirm-2",
       role: "ask_user" as any,
-      text: "Pick one",
-      className: "ask|ask-2|select|One|||Two",
+      text: "Continue?",
+      className: "ask|ask-c2|confirm|Yes|||No",
     };
 
     await act(async () => root.render(createElement(MessageItem, {
@@ -380,23 +608,109 @@ describe("AskPromptCard 1-9 hotkeys & multi-line custom answer (#1448)", () => {
       onAskResponse: (id: string, value: string) => { chosen = [id, value]; },
     })));
 
-    // Focused <input>
+    const yesBtn = elements(container, "button").find((b) => b.textContent?.includes("Yes"));
+    assert.ok(yesBtn);
+    yesBtn.focus();
+    await act(async () => {
+      yesBtn.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true }));
+    });
+    assert.deepEqual(chosen, ["ask-c2", "__denied__"]);
+  });
+
+  it("ignores repeated keydown events on select prompts", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let chosen: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-ask-rep",
+      role: "ask_user" as any,
+      text: "Pick one",
+      className: "ask|ask-rep|select|One|||Two",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { chosen = [id, value]; },
+    })));
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", repeat: true, bubbles: true }));
+    });
+    assert.equal(chosen, null);
+  });
+
+  it("ignores number keys when an input element is focused", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let chosen: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-ask-in",
+      role: "ask_user" as any,
+      text: "Pick one",
+      className: "ask|ask-in|select|One|||Two",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { chosen = [id, value]; },
+    })));
+
     const input = document.createElement("input");
     input.focus();
     await act(async () => {
-      input.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
     });
     assert.equal(chosen, null);
+  });
 
-    // Focused <textarea>
+  it("ignores number keys when a textarea element is focused", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let chosen: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-ask-ta",
+      role: "ask_user" as any,
+      text: "Pick one",
+      className: "ask|ask-ta|select|One|||Two",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { chosen = [id, value]; },
+    })));
+
     const area = document.createElement("textarea");
     area.focus();
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
     });
     assert.equal(chosen, null);
+  });
 
-    // Focused contenteditable div
+  it("ignores number keys when a contenteditable element is focused", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let chosen: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-ask-ce",
+      role: "ask_user" as any,
+      text: "Pick one",
+      className: "ask|ask-ce|select|One|||Two",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { chosen = [id, value]; },
+    })));
+
     const editable = document.createElement("div");
     editable.setAttribute("contenteditable", "true");
     editable.focus();
@@ -404,23 +718,59 @@ describe("AskPromptCard 1-9 hotkeys & multi-line custom answer (#1448)", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
     });
     assert.equal(chosen, null);
+  });
 
-    // Clear focus; test Ctrl+1 modifier & out-of-range key "9"
-    (document as any).activeElement = null;
+  it("ignores number keys when modifier keys are held", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let chosen: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-ask-mod",
+      role: "ask_user" as any,
+      text: "Pick one",
+      className: "ask|ask-mod|select|One|||Two",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { chosen = [id, value]; },
+    })));
+
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", ctrlKey: true, bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", metaKey: true, bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", altKey: true, bubbles: true }));
+    });
+    assert.equal(chosen, null);
+  });
+
+  it("ignores out-of-range digit keys", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let chosen: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-ask-range",
+      role: "ask_user" as any,
+      text: "Pick one",
+      className: "ask|ask-range|select|One|||Two",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { chosen = [id, value]; },
+    })));
+
+    await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "9", bubbles: true }));
     });
     assert.equal(chosen, null);
-
-    // Now unmodified "1" selects option 1
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
-    });
-    assert.deepEqual(chosen, ["ask-2", "One"]);
   });
 
-  it("routes 1-9 hotkeys only to the latest active prompt card in MessageList", async () => {
+  it("routes number keys only to the latest active select prompt in MessageList", async () => {
     const { container, document } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);
@@ -442,17 +792,68 @@ describe("AskPromptCard 1-9 hotkeys & multi-line custom answer (#1448)", () => {
     assert.deepEqual(calls, [["ask-new", "B1"]]);
   });
 
-  it("supports multi-line custom answer textarea (Shift+Enter newline, Enter submits)", async () => {
+  it("pauses prompt hotkeys when a mobile SidePanel drawer covers the chat", () => {
+    assert.equal(
+      shouldPausePromptHotkeys({
+        showSwitcher: false,
+        showSettings: false,
+        showNewSession: false,
+        hasActivePanel: true,
+        sidebarOpen: false,
+        isMobileViewport: true,
+      }),
+      true,
+    );
+    assert.equal(
+      shouldPausePromptHotkeys({
+        showSwitcher: false,
+        showSettings: false,
+        showNewSession: false,
+        hasActivePanel: true,
+        sidebarOpen: false,
+        isMobileViewport: false,
+      }),
+      false,
+    );
+  });
+
+  it("suppresses number keys in MessageList while promptHotkeysPaused is true", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const calls: Array<[string, string]> = [];
+    const messages: ChatMessage[] = [
+      { id: "m-hidden", role: "ask_user" as any, text: "Hidden", className: "ask|ask-hidden|select|Yes|||No" },
+    ];
+
+    await act(async () => root.render(createElement(MessageList, {
+      messages,
+      promptHotkeysPaused: true,
+      onAskResponse: (id: string, value: string) => calls.push([id, value]),
+    })));
+
+    const drawerButton = document.createElement("button");
+    drawerButton.focus();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    });
+    assert.deepEqual(calls, []);
+  });
+});
+
+describe("AskPromptCard multi-line custom answer textarea (#1448)", () => {
+  it("does not submit on Shift+Enter so a newline can be inserted", async () => {
     const { container } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);
 
     let submitted: [string, string] | null = null;
     const msg: ChatMessage = {
-      id: "m-input-1",
+      id: "m-input-shift",
       role: "ask_user" as any,
       text: "Describe changes",
-      className: "ask|ask-in-1|input|",
+      className: "ask|ask-in-shift|input|",
     };
 
     await act(async () => root.render(createElement(MessageItem, {
@@ -460,47 +861,168 @@ describe("AskPromptCard 1-9 hotkeys & multi-line custom answer (#1448)", () => {
       onAskResponse: (id: string, value: string) => { submitted = [id, value]; },
     })));
 
-    const textarea = elements(container, "textarea")[0] as any;
-    assert.ok(textarea, "renders a textarea for custom answers");
+    const textarea = elements(container, "textarea")[0] as HTMLTextAreaElement;
+    assert.ok(textarea);
+    textarea.value = "line one";
 
-    // Simulate typing multi-line text via React's controlled onChange handler
-    const propsKey = Object.keys(textarea).find((k) => k.startsWith("__reactProps$"));
-    assert.ok(propsKey);
+    const shiftEnter = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true });
+    await act(async () => { textarea.dispatchEvent(shiftEnter); });
+    assert.equal(shiftEnter.defaultPrevented, false);
+    assert.equal(submitted, null);
+  });
+
+  it("submits multi-line text on unmodified Enter through public DOM events", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let submitted: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-input-enter",
+      role: "ask_user" as any,
+      text: "Describe changes",
+      className: "ask|ask-in-enter|input|",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { submitted = [id, value]; },
+    })));
+
+    const textarea = elements(container, "textarea")[0] as HTMLTextAreaElement;
+    textarea.value = "line one\nline two";
+
+    const enter = new KeyboardEvent("keydown", { key: "Enter", shiftKey: false, bubbles: true });
+    await act(async () => { textarea.dispatchEvent(enter); });
+    assert.equal(enter.defaultPrevented, true);
+    assert.deepEqual(submitted, ["ask-in-enter", "line one\nline two"]);
+  });
+
+  it("preserves outer indentation plus trailing newline in multi-line answers", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let submitted: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-input-ws",
+      role: "ask_user" as any,
+      text: "Paste snippet",
+      className: "ask|ask-in-ws|input|",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { submitted = [id, value]; },
+    })));
+
+    const textarea = elements(container, "textarea")[0] as HTMLTextAreaElement;
+    const raw = "  const x = 1;\n  return x;\n";
+    textarea.value = raw;
+
     await act(async () => {
-      textarea.value = "line one\nline two";
-      textarea[propsKey].onChange({ target: textarea });
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
+    assert.deepEqual(submitted, ["ask-in-ws", raw]);
+  });
 
-    // Shift+Enter must NOT submit
+  it("ignores whitespace-only custom answers", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let submitted: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-input-blank",
+      role: "ask_user" as any,
+      text: "Enter value",
+      className: "ask|ask-in-blank|input|",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { submitted = [id, value]; },
+    })));
+
+    const textarea = elements(container, "textarea")[0] as HTMLTextAreaElement;
+    textarea.value = "   \n\t  ";
+
     await act(async () => {
-      const shiftEnter = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true });
-      textarea[propsKey].onKeyDown(shiftEnter);
-      assert.equal(shiftEnter.defaultPrevented, false);
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
     assert.equal(submitted, null);
+  });
 
-    // Enter (without Shift) submits the multi-line answer verbatim
-    await act(async () => {
-      const enter = new KeyboardEvent("keydown", { key: "Enter", shiftKey: false, bubbles: true });
-      textarea[propsKey].onKeyDown(enter);
-      assert.equal(enter.defaultPrevented, true);
-    });
-    assert.deepEqual(submitted, ["ask-in-1", "line one\nline two"]);
+  it("does not submit on Enter while IME isComposing is true", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let submitted: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-input-ime",
+      role: "ask_user" as any,
+      text: "Enter Japanese text",
+      className: "ask|ask-in-ime|input|",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { submitted = [id, value]; },
+    })));
+
+    const textarea = elements(container, "textarea")[0] as HTMLTextAreaElement;
+    textarea.value = "にほんご";
+
+    const imeEnter = new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true } as any);
+    await act(async () => { textarea.dispatchEvent(imeEnter); });
+    assert.equal(imeEnter.defaultPrevented, false);
+    assert.equal(submitted, null);
+  });
+
+  it("does not submit on Enter when IME keyCode is 229", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    let submitted: [string, string] | null = null;
+    const msg: ChatMessage = {
+      id: "m-input-ime229",
+      role: "ask_user" as any,
+      text: "Enter CJK text",
+      className: "ask|ask-in-ime229|input|",
+    };
+
+    await act(async () => root.render(createElement(MessageItem, {
+      msg,
+      onAskResponse: (id: string, value: string) => { submitted = [id, value]; },
+    })));
+
+    const textarea = elements(container, "textarea")[0] as HTMLTextAreaElement;
+    textarea.value = "中文";
+
+    const imeEnter = new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true } as any);
+    await act(async () => { textarea.dispatchEvent(imeEnter); });
+    assert.equal(imeEnter.defaultPrevented, false);
+    assert.equal(submitted, null);
   });
 });
 
-describe("bash tool card one-click Copy output button (#1448)", () => {
-  it("detects bash/shell tool roles and strips synthetic status prefixes", () => {
+describe("bash tool card Copy output button (#1448)", () => {
+  it("recognizes bash or shell tool roles case-insensitively", () => {
     assert.equal(isBashToolRole("bash"), true);
     assert.equal(isBashToolRole("shell"), true);
     assert.equal(isBashToolRole("BASH"), true);
     assert.equal(isBashToolRole("read"), false);
+  });
+
+  it("strips synthetic status prefixes from tool output", () => {
     assert.equal(stripToolResultPrefix("✓ hello\nworld"), "hello\nworld");
     assert.equal(stripToolResultPrefix("✗ exit 1"), "exit 1");
     assert.equal(stripToolResultPrefix("plain output"), "plain output");
   });
 
-  it("renders a one-click Copy output button on collapsed bash ToolGroup and shows Copied feedback", async () => {
+  it("copies raw bash output from a collapsed ToolGroup with Copied feedback", async () => {
     const { container } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);
@@ -517,7 +1039,7 @@ describe("bash tool card one-click Copy output button (#1448)", () => {
     await act(async () => root.render(createElement(ToolGroup, { call, result })));
 
     const copyBtn = elements(container, "button").find((b) => b.getAttribute("aria-label") === "Copy output");
-    assert.ok(copyBtn, "Copy output button is visible on collapsed bash card");
+    assert.ok(copyBtn);
     assert.match(copyBtn.textContent ?? "", /Copy/);
 
     await act(async () => {
@@ -528,7 +1050,68 @@ describe("bash tool card one-click Copy output button (#1448)", () => {
     assert.match(copyBtn.textContent ?? "", /Copied/);
   });
 
-  it("does not render header Copy output button on non-bash tool cards", async () => {
+  it("logs a debug entry when bash output copy succeeds", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    logBag().__PIDASH_DEBUG = true;
+    logBag().__pidashUiLogs = [];
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: { writeText: async () => {} },
+      configurable: true,
+    });
+
+    const call: ChatMessage = { id: "c-log-ok", role: "bash" as any, text: "pwd", className: "tool-call", meta: { callId: "k-log-ok" } };
+    const result: ChatMessage = { id: "r-log-ok", role: "bash" as any, text: "✓ /repo", className: "tool-result", meta: { callId: "k-log-ok" } };
+
+    await act(async () => root.render(createElement(ToolGroup, { call, result })));
+
+    const copyBtn = elements(container, "button").find((b) => b.getAttribute("aria-label") === "Copy output");
+    assert.ok(copyBtn);
+    await act(async () => {
+      copyBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    assert.ok(
+      (logBag().__pidashUiLogs ?? []).some(
+        (entry) => entry.name === "MessageList" && entry.level === "debug" && entry.msg.includes("copied bash tool output"),
+      ),
+    );
+  });
+
+  it("logs a warning when clipboard write rejects", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    logBag().__pidashUiLogs = [];
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      value: { writeText: async () => { throw new Error("clipboard denied"); } },
+      configurable: true,
+    });
+
+    const call: ChatMessage = { id: "c-log-err", role: "bash" as any, text: "pwd", className: "tool-call", meta: { callId: "k-log-err" } };
+    const result: ChatMessage = { id: "r-log-err", role: "bash" as any, text: "✓ /repo", className: "tool-result", meta: { callId: "k-log-err" } };
+
+    await act(async () => root.render(createElement(ToolGroup, { call, result })));
+
+    const copyBtn = elements(container, "button").find((b) => b.getAttribute("aria-label") === "Copy output");
+    assert.ok(copyBtn);
+    await act(async () => {
+      copyBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    assert.ok(
+      (logBag().__pidashUiLogs ?? []).some(
+        (entry) => entry.name === "MessageList" && entry.level === "warn" && entry.msg.includes("failed to copy bash tool output"),
+      ),
+    );
+  });
+
+  it("omits the header Copy output button on non-bash tool cards", async () => {
     const { container } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);

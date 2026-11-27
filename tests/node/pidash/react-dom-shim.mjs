@@ -8,6 +8,8 @@ class FakeEvent {
     this.altKey = Boolean(init.altKey);
     this.shiftKey = Boolean(init.shiftKey);
     this.isComposing = Boolean(init.isComposing);
+    this.repeat = Boolean(init.repeat);
+    this.keyCode = init.keyCode ?? 0;
     this.defaultPrevented = false;
     this.cancelBubble = false;
   }
@@ -74,6 +76,8 @@ class FakeElement extends FakeNode {
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   removeAttribute(name) { this.attributes.delete(name); }
   focus() { this.ownerDocument.activeElement = this; }
+  matches() { return false; }
+  getAnimations() { return []; }
   getBoundingClientRect() { return { top: 0, right: 0, bottom: 0, left: 0, width: 0, height: 0 }; }
 }
 
@@ -81,6 +85,7 @@ export function installReactDomShim() {
   const document = new FakeNode(9, "#document", null);
   document.ownerDocument = document;
   document.activeElement = null;
+  document.oninput = null;
   document.createElement = (tag) => new FakeElement(tag, document);
   document.createElementNS = (_ns, tag) => document.createElement(tag);
   document.createTextNode = (text) => {
@@ -96,6 +101,27 @@ export function installReactDomShim() {
   document.documentElement.parentNode = document;
   document.defaultView = globalThis;
 
+  const windowListeners = new Map();
+  globalThis.addEventListener = (type, listener) => {
+    const list = windowListeners.get(type) || [];
+    list.push(listener);
+    windowListeners.set(type, list);
+  };
+  globalThis.removeEventListener = (type, listener) => {
+    windowListeners.set(type, (windowListeners.get(type) || []).filter((item) => item !== listener));
+  };
+  globalThis.dispatchEvent = (event) => {
+    for (const listener of [...(windowListeners.get(event.type) || [])]) listener.call(globalThis, event);
+    return !event.defaultPrevented;
+  };
+  globalThis.StorageEvent = class StorageEvent extends FakeEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.key = init.key ?? null;
+      this.newValue = init.newValue ?? null;
+      this.oldValue = init.oldValue ?? null;
+    }
+  };
   globalThis.window = globalThis;
   globalThis.document = document;
   globalThis.Node = FakeNode;
@@ -118,6 +144,7 @@ export function installReactDomShim() {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   globalThis.innerWidth = 1200;
   globalThis.innerHeight = 800;
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "", direction: "ltr" });
   globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
 
   const container = document.createElement("div");

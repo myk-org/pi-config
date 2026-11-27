@@ -6,6 +6,12 @@ const log = createLogger("pidash-ux");
 
 export const PINNED_SESSIONS_STORAGE_KEY = "pidash-pinned-sessions";
 export const ARCHIVED_SESSIONS_STORAGE_KEY = "pidash-archived-sessions";
+export const MAX_PERSISTED_SESSION_IDS = 200;
+
+export interface SidebarFlags {
+  pinned: Set<string>;
+  archived: Set<string>;
+}
 
 function sessionSortLabel(session: Pick<SessionInfo, "sessionId" | "name" | "cwd" | "model">): string {
   const name = session.name?.trim();
@@ -13,6 +19,13 @@ function sessionSortLabel(session: Pick<SessionInfo, "sessionId" | "name" | "cwd
   const cwd = (session.cwd || "").replace(/\/+$/, "");
   const project = cwd.split("/").pop() || cwd;
   return project || session.model?.trim() || session.sessionId;
+}
+
+/** Keep at most the most recent `max` entries in insertion order. */
+export function capSessionIdSet(ids: ReadonlySet<string>, max = MAX_PERSISTED_SESSION_IDS): Set<string> {
+  if (max <= 0) return new Set();
+  const list = [...ids];
+  return new Set(list.length > max ? list.slice(-max) : list);
 }
 
 /** True when an active session is blocked on user input (ask_user / bridged prompt). */
@@ -40,27 +53,40 @@ export function formatDocumentTitle(
   return `${waiting ? "[!] " : ""}${label} — pidash`;
 }
 
-export function loadSessionIdSet(key: string): Set<string> {
+export function loadSessionIdSet(key: string, max = MAX_PERSISTED_SESSION_IDS): Set<string> {
   if (typeof localStorage === "undefined") return new Set();
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return new Set();
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((id): id is string => typeof id === "string" && id.length > 0));
+    const valid = parsed.filter((id): id is string => typeof id === "string" && id.length > 0);
+    return capSessionIdSet(new Set(valid), max);
   } catch (err) {
     log.debug("failed to load persisted session id set", { key, error: String(err) });
     return new Set();
   }
 }
 
-export function saveSessionIdSet(key: string, ids: ReadonlySet<string>): void {
+export function saveSessionIdSet(
+  key: string,
+  ids: ReadonlySet<string>,
+  max = MAX_PERSISTED_SESSION_IDS,
+): void {
   if (typeof localStorage === "undefined") return;
   try {
-    localStorage.setItem(key, JSON.stringify([...ids]));
+    const capped = capSessionIdSet(ids, max);
+    localStorage.setItem(key, JSON.stringify([...capped]));
   } catch (err) {
     log.debug("failed to save persisted session id set", { key, error: String(err) });
   }
+}
+
+export function loadPersistedSidebarFlags(): SidebarFlags {
+  return {
+    pinned: loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY),
+    archived: loadSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY),
+  };
 }
 
 /** Toggle pin state; pinning an archived session also unarchives it. */
@@ -68,16 +94,18 @@ export function togglePinnedSession(
   pinned: ReadonlySet<string>,
   archived: ReadonlySet<string>,
   sessionId: string,
+  max = MAX_PERSISTED_SESSION_IDS,
 ): { pinned: Set<string>; archived: Set<string>; isPinned: boolean } {
   const nextPinned = new Set(pinned);
   const nextArchived = new Set(archived);
   if (nextPinned.has(sessionId)) {
     nextPinned.delete(sessionId);
-    return { pinned: nextPinned, archived: nextArchived, isPinned: false };
+    return { pinned: capSessionIdSet(nextPinned, max), archived: capSessionIdSet(nextArchived, max), isPinned: false };
   }
+  nextPinned.delete(sessionId);
   nextPinned.add(sessionId);
   nextArchived.delete(sessionId);
-  return { pinned: nextPinned, archived: nextArchived, isPinned: true };
+  return { pinned: capSessionIdSet(nextPinned, max), archived: capSessionIdSet(nextArchived, max), isPinned: true };
 }
 
 /** Toggle archive state; archiving a pinned session also unpins it. */
@@ -85,16 +113,18 @@ export function toggleArchivedSession(
   pinned: ReadonlySet<string>,
   archived: ReadonlySet<string>,
   sessionId: string,
+  max = MAX_PERSISTED_SESSION_IDS,
 ): { pinned: Set<string>; archived: Set<string>; isArchived: boolean } {
   const nextPinned = new Set(pinned);
   const nextArchived = new Set(archived);
   if (nextArchived.has(sessionId)) {
     nextArchived.delete(sessionId);
-    return { pinned: nextPinned, archived: nextArchived, isArchived: false };
+    return { pinned: capSessionIdSet(nextPinned, max), archived: capSessionIdSet(nextArchived, max), isArchived: false };
   }
+  nextArchived.delete(sessionId);
   nextArchived.add(sessionId);
   nextPinned.delete(sessionId);
-  return { pinned: nextPinned, archived: nextArchived, isArchived: true };
+  return { pinned: capSessionIdSet(nextPinned, max), archived: capSessionIdSet(nextArchived, max), isArchived: true };
 }
 
 /** Remove a session from the archived set (used when sending a message/command). */
@@ -108,6 +138,43 @@ export function unarchiveSessionId(
   const next = new Set(archived);
   next.delete(sessionId);
   return { archived: next, changed: true };
+}
+
+/** Read latest storage before toggling pin so concurrent tabs do not clobber each other. */
+export function reconcileAndTogglePin(
+  fallback: SidebarFlags,
+  sessionId: string,
+): { pinned: Set<string>; archived: Set<string>; isPinned: boolean } {
+  const base = typeof localStorage !== "undefined" ? loadPersistedSidebarFlags() : fallback;
+  const next = togglePinnedSession(base.pinned, base.archived, sessionId);
+  saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, next.pinned);
+  saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, next.archived);
+  return next;
+}
+
+/** Read latest storage before toggling archive so concurrent tabs do not clobber each other. */
+export function reconcileAndToggleArchive(
+  fallback: SidebarFlags,
+  sessionId: string,
+): { pinned: Set<string>; archived: Set<string>; isArchived: boolean } {
+  const base = typeof localStorage !== "undefined" ? loadPersistedSidebarFlags() : fallback;
+  const next = toggleArchivedSession(base.pinned, base.archived, sessionId);
+  saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, next.pinned);
+  saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, next.archived);
+  return next;
+}
+
+/** Read latest storage before auto-unarchiving on send; writes only if the session was archived. */
+export function reconcileAndUnarchive(
+  fallback: SidebarFlags,
+  sessionId: string,
+): { pinned: Set<string>; archived: Set<string>; changed: boolean } {
+  const base = typeof localStorage !== "undefined" ? loadPersistedSidebarFlags() : fallback;
+  const { archived, changed } = unarchiveSessionId(base.archived, sessionId);
+  if (changed) {
+    saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, archived);
+  }
+  return { pinned: base.pinned, archived, changed };
 }
 
 export interface SidebarSessionPartitions {
@@ -202,6 +269,20 @@ export function flattenSidebarSessions(partitions: SidebarSessionPartitions): Se
   return out;
 }
 
+/** Pause document-level prompt number hotkeys when a modal or mobile overlay covers the chat. */
+export function shouldPausePromptHotkeys(opts: {
+  showSwitcher: boolean;
+  showSettings: boolean;
+  showNewSession: boolean;
+  hasActivePanel: boolean;
+  sidebarOpen: boolean;
+  isMobileViewport: boolean;
+}): boolean {
+  if (opts.showSwitcher || opts.showSettings || opts.showNewSession) return true;
+  if (opts.isMobileViewport && (opts.hasActivePanel || opts.sidebarOpen)) return true;
+  return false;
+}
+
 function isEditableElement(el: unknown): boolean {
   if (!el || typeof el !== "object") return false;
   const node = el as {
@@ -226,7 +307,7 @@ export function isEditableTarget(target: EventTarget | null, activeElement?: unk
   return isEditableElement(target) || isEditableElement(activeElement);
 }
 
-/** Map unmodified `1`–`9` keypresses to a 0-based option index (or `null` if ineligible). */
+/** Map unmodified non-repeating `1`–`9` keypresses to a 0-based option index (or `null` if ineligible). */
 export function resolvePromptOptionIndex(
   e: {
     key?: string;
@@ -234,22 +315,23 @@ export function resolvePromptOptionIndex(
     metaKey?: boolean;
     altKey?: boolean;
     shiftKey?: boolean;
+    repeat?: boolean;
     defaultPrevented?: boolean;
   },
   optionCount: number,
 ): number | null {
   if (optionCount <= 0) return null;
-  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return null;
+  if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return null;
   if (!e.key || !/^[1-9]$/.test(e.key)) return null;
   const idx = Number(e.key) - 1;
   return idx < Math.min(optionCount, 9) ? idx : null;
 }
 
-/** Enter submits a multi-line custom answer; Shift+Enter inserts a newline. */
+/** Enter submits a multi-line custom answer; Shift+Enter inserts a newline and IME composition is ignored. */
 export function shouldSubmitMultilineAnswer(
-  e: { key?: string; shiftKey?: boolean; isComposing?: boolean },
+  e: { key?: string; shiftKey?: boolean; isComposing?: boolean; keyCode?: number },
 ): boolean {
-  return e.key === "Enter" && !e.shiftKey && !e.isComposing;
+  return e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229;
 }
 
 /** True for bash/shell tool cards that expose a one-click Copy output button. */

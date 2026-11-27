@@ -10,22 +10,17 @@ import { useNotifications } from "@/hooks/useNotifications";
 import { useKeybindings } from "@/hooks/useKeybindings";
 import { useMessageHandler, nextId } from "@/hooks/useMessageHandler";
 import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation";
+import { useSidebarSessionFlags } from "@/hooks/useSidebarSessionFlags";
 import { SessionSwitcher } from "@/components/SessionSwitcher";
 import { KeybindingSettings } from "@/components/KeybindingSettings";
 import { SidePanel, type PanelTab } from "@/components/SidePanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { createLogger } from "@/lib/create-logger";
 import {
-  ARCHIVED_SESSIONS_STORAGE_KEY,
-  PINNED_SESSIONS_STORAGE_KEY,
   flattenSidebarSessions,
   formatDocumentTitle,
-  loadSessionIdSet,
   partitionSidebarSessions,
-  saveSessionIdSet,
-  toggleArchivedSession,
-  togglePinnedSession,
-  unarchiveSessionId,
+  shouldPausePromptHotkeys,
 } from "@/lib/pidash-ux-helpers";
 import type { SessionInfo } from "@/types";
 
@@ -66,14 +61,24 @@ export function App() {
     const savedPanel = saved.current.activePanel;
     return savedPanel === "tasks" || savedPanel === "worktrees" || savedPanel === "coms" || savedPanel === "memory" || savedPanel === "mcp" || savedPanel === "settings" ? savedPanel : null;
   });
-  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobile ? true : saved.current.sidebarCollapsed);
+  const [isMobileViewport, setIsMobileViewport] = useState(() => typeof window !== "undefined" && window.innerWidth <= 768);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(isMobileViewport ? true : saved.current.sidebarCollapsed);
   const [sidebarWidth, setSidebarWidth] = useState(saved.current.sidebarWidth);
-  const [sidebarFlags, setSidebarFlags] = useState(() => ({
-    pinned: loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY),
-    archived: loadSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY),
-  }));
+  const {
+    pinned: pinnedSessionIds,
+    archived: archivedSessionIds,
+    togglePin: handleTogglePin,
+    toggleArchive: handleToggleArchive,
+    unarchive: unarchiveSession,
+  } = useSidebarSessionFlags();
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    const onResize = () => setIsMobileViewport(window.innerWidth <= 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const restoredRef = useRef(false);
   const messageCacheRef = useRef(new Map<string, { messages: any[]; model: string; tokens: any }>());
   const MAX_CACHED_SESSIONS = 5;
@@ -145,27 +150,6 @@ export function App() {
   const renameSession = useCallback((sessionId: string, name: string) => {
     send({ type: "pidash-command", command: "rename-session", sessionId, name });
   }, [send]);
-
-  const handleTogglePin = useCallback((sessionId: string) => {
-    setSidebarFlags((prev) => {
-      const next = togglePinnedSession(prev.pinned, prev.archived, sessionId);
-      log.debug("session pin toggled", { sessionId, pinned: next.isPinned });
-      return { pinned: next.pinned, archived: next.archived };
-    });
-  }, []);
-
-  const handleToggleArchive = useCallback((sessionId: string) => {
-    setSidebarFlags((prev) => {
-      const next = toggleArchivedSession(prev.pinned, prev.archived, sessionId);
-      log.debug("session archive toggled", { sessionId, archived: next.isArchived });
-      return { pinned: next.pinned, archived: next.archived };
-    });
-  }, []);
-
-  useEffect(() => {
-    saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, sidebarFlags.pinned);
-    saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, sidebarFlags.archived);
-  }, [sidebarFlags]);
 
   const hasPendingPrompt = useMemo(
     () => messages.some((m) => Boolean(m.className?.startsWith("ask|"))),
@@ -271,11 +255,11 @@ export function App() {
   // Flatten sessions matching sidebar visual order: Needs attention → Pinned → project groups → Archived
   const flatSessions = useMemo(
     () => flattenSidebarSessions(partitionSidebarSessions(sessions, {
-      pinnedIds: sidebarFlags.pinned,
-      archivedIds: sidebarFlags.archived,
+      pinnedIds: pinnedSessionIds,
+      archivedIds: archivedSessionIds,
       extraAttentionIds,
     })),
-    [sessions, sidebarFlags.pinned, sidebarFlags.archived, extraAttentionIds],
+    [sessions, pinnedSessionIds, archivedSessionIds, extraAttentionIds],
   );
 
   useKeyboardNavigation({
@@ -287,16 +271,11 @@ export function App() {
 
   const handleSend = useCallback((text: string, images?: Array<{ data: string; mimeType: string; filename: string }>) => {
     if (!session) return;
-    setSidebarFlags((prev) => {
-      const { archived, changed } = unarchiveSessionId(prev.archived, session.sessionId);
-      if (!changed) return prev;
-      log.info("auto-unarchived session on send", { sessionId: session.sessionId });
-      return { ...prev, archived };
-    });
+    unarchiveSession(session.sessionId);
     setLastUserText(text);
     addMsg("user", text + (images ? ` [+${images.length} file(s)]` : ""));
     send({ type: "prompt", sessionId: session.sessionId, text, images: images || undefined });
-  }, [session, send, addMsg, setLastUserText]);
+  }, [session, send, addMsg, setLastUserText, unarchiveSession]);
 
   return (
     <div className="flex w-screen overflow-hidden" style={{ height: '100dvh' }}>
@@ -323,8 +302,8 @@ export function App() {
             onToggle={() => setSidebarCollapsed(true)}
             notifications={notifications}
             onSettings={() => setShowSettings(prev => !prev)}
-            pinnedSessionIds={sidebarFlags.pinned}
-            archivedSessionIds={sidebarFlags.archived}
+            pinnedSessionIds={pinnedSessionIds}
+            archivedSessionIds={archivedSessionIds}
             extraAttentionIds={extraAttentionIds}
             onTogglePin={handleTogglePin}
             onToggleArchive={handleToggleArchive}
@@ -381,7 +360,14 @@ export function App() {
               streaming={streaming}
               scrollKey={scrollKey}
               onAskResponse={handleAskResponse}
-              promptHotkeysPaused={showSwitcher || showSettings || showNewSession}
+              promptHotkeysPaused={shouldPausePromptHotkeys({
+                showSwitcher,
+                showSettings,
+                showNewSession,
+                hasActivePanel: Boolean(activePanel),
+                sidebarOpen: !sidebarCollapsed,
+                isMobileViewport,
+              })}
             />
             {queuedCount > 0 && (
               <div className="px-3 py-1.5 bg-yellow-500/10 border-t border-yellow-500/20 text-xs text-yellow-500 flex items-center gap-1.5">
