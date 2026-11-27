@@ -9,15 +9,22 @@ import {
   BUILTIN_LSP_SERVERS,
   MAX_DIAGNOSTIC_LINES,
   LspManager,
+  clearPendingLspInstallRequest,
   detectLanguageId,
+  dismissLspInstallPermanently,
   encodeJsonRpcMessage,
   findExecutableOnPath,
   formatDiagnostics,
+  isInteractiveTuiForLspPrompt,
+  isLspInstallDismissed,
+  listPendingLspInstallRequests,
+  recordPendingLspInstallRequest,
   registerLsp,
   resolveServerForFile,
   resolveTrustedLspEnabled,
   resolveTrustedLspServers,
   type LspDiagnostic,
+  type RegisterLspOptions,
 } from "../../../extensions/orchestrator/lsp.ts";
 import {
   SETTINGS_KEYS,
@@ -29,6 +36,7 @@ import {
 } from "../../../extensions/orchestrator/project-settings.ts";
 import { registerSecretObfuscation } from "../../../extensions/orchestrator/secret-obfuscation.ts";
 import { formatValue } from "../../../extensions/orchestrator/settings-tui-helpers.ts";
+import { closeStateDb } from "../../../extensions/orchestrator/state-db.ts";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -64,7 +72,7 @@ function createMockPi() {
   return { pi, fire };
 }
 
-function registerDirectLsp(pi: any, opts: Record<string, any> = {}) {
+function registerDirectLsp(pi: any, opts: RegisterLspOptions = {}) {
   return registerLsp(pi, { useBroker: false, ...opts });
 }
 
@@ -1184,6 +1192,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       const oldPid = manager.getActivePids()[0];
       assert.ok(oldPid);
 
+      (manager as any).timeoutMs = 800;
       writeFileSync(file, "line1\nNEW_ERR\n");
       const res2 = await fire(
         "tool_result",
@@ -1289,6 +1298,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       );
       assert.equal(timedOut, undefined);
 
+      (manager as any).timeoutMs = 800;
       writeFileSync(unversionedFile, "line1\nNEW_ERR\n");
       const recovered = await fire(
         "tool_result",
@@ -1699,6 +1709,463 @@ process.exit(0);
         true,
         `expected SIGTERM-ignoring LSP PID ${childLspPid} to terminate on abrupt parent exit`,
       );
+    });
+  });
+
+  // ── Lazy missing-LSP RPC guard & cross-process TUI prompt forwarding (#1496) ──
+
+  describe("lazy missing-LSP RPC guard and TUI prompt forwarding (#1496)", () => {
+    let prefsDbPath: string;
+    let prevComsSupervisedPeer: string | undefined;
+
+    beforeEach(() => {
+      prefsDbPath = join(testDir, "lsp-prefs.db");
+      prevComsSupervisedPeer = process.env.PI_COMS_SUPERVISED_PEER;
+      delete process.env.PI_COMS_SUPERVISED_PEER;
+    });
+
+    afterEach(() => {
+      if (prevComsSupervisedPeer === undefined) delete process.env.PI_COMS_SUPERVISED_PEER;
+      else process.env.PI_COMS_SUPERVISED_PEER = prevComsSupervisedPeer;
+      closeStateDb(prefsDbPath);
+    });
+
+    it("returns false from isInteractiveTuiForLspPrompt when ctx.mode is rpc despite hasUI true", () => {
+      const ctx = { hasUI: true, mode: "rpc", ui: { select: async () => undefined } };
+      assert.equal(isInteractiveTuiForLspPrompt(ctx, false, {}), false);
+    });
+
+    it("returns false from isInteractiveTuiForLspPrompt when PI_COMS_SUPERVISED_PEER is 1", () => {
+      const ctx = { hasUI: true, mode: "tui", ui: { select: async () => undefined } };
+      assert.equal(isInteractiveTuiForLspPrompt(ctx, false, { PI_COMS_SUPERVISED_PEER: "1" }), false);
+    });
+
+    it("returns false from isInteractiveTuiForLspPrompt for subagent children", () => {
+      const ctx = { hasUI: true, mode: "tui", ui: { select: async () => undefined } };
+      assert.equal(isInteractiveTuiForLspPrompt(ctx, true, {}), false);
+    });
+
+    it("returns true from isInteractiveTuiForLspPrompt for interactive tui sessions", () => {
+      const ctx = { hasUI: true, mode: "tui", ui: { select: async () => undefined } };
+      assert.equal(isInteractiveTuiForLspPrompt(ctx, false, {}), true);
+    });
+
+    it("never calls ctx.ui.select in rpc mode on a missing LSP server", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      writeFileSync(join(testDir, "main.go"), "package main\n");
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      const res = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "main.go" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "rpc",
+          ui: {
+            select: async () => {
+              selectCalls++;
+              return "Not now";
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 0);
+      assert.ok(res?.content?.[1]?.text.includes("[LSP] gopls not found on PATH"));
+    });
+
+    it("queues a deduplicated pending install request in SQLite for a missing server in rpc mode", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      writeFileSync(join(testDir, "a.go"), "package main\n");
+      writeFileSync(join(testDir, "b.go"), "package main\n");
+
+      const rpcCtx = {
+        cwd: testDir,
+        hasUI: true,
+        mode: "rpc",
+        ui: { select: async () => "Not now" },
+      };
+
+      const peer1 = createMockPi();
+      const { manager: m1 } = registerDirectLsp(peer1.pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(m1);
+      await peer1.fire(
+        "tool_result",
+        { toolName: "write", input: { path: "a.go" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        rpcCtx,
+      );
+
+      const peer2 = createMockPi();
+      const { manager: m2 } = registerDirectLsp(peer2.pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(m2);
+      await peer2.fire(
+        "tool_result",
+        { toolName: "write", input: { path: "b.go" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        rpcCtx,
+      );
+
+      const pending = listPendingLspInstallRequests(prefsDbPath);
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].serverId, "go");
+      assert.equal(pending[0].sourceRole, "rpc");
+      assert.equal(pending[0].sourceCwd, testDir);
+    });
+
+    it("never calls ctx.ui.select in a supervised COMS peer on a missing LSP server", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      writeFileSync(join(testDir, "app.py"), "x = 1\n");
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      const res = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "app.py" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        {
+          cwd: testDir,
+          hasUI: true,
+          ui: {
+            select: async () => {
+              selectCalls++;
+              return "Not now";
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 0);
+      assert.ok(res?.content?.[1]?.text.includes("[LSP] basedpyright not found on PATH"));
+    });
+
+    it("records a pending install request with sourceRole coms-peer for a supervised COMS peer", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      writeFileSync(join(testDir, "app.py"), "x = 1\n");
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "app.py" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        {
+          cwd: testDir,
+          hasUI: true,
+          ui: { select: async () => "Not now" },
+        },
+      );
+
+      const pending = listPendingLspInstallRequests(prefsDbPath);
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].serverId, "python");
+      assert.equal(pending[0].sourceRole, "coms-peer");
+    });
+
+    it("records a pending install request with sourceRole subagent without blocking", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      writeFileSync(join(testDir, "worker.py"), "x = 1\n");
+      setEnv("PI_SUBAGENT_CHILD", "1");
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      const res = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "worker.py" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async () => {
+              selectCalls++;
+              return "Not now";
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 0);
+      assert.ok(res?.content?.[1]?.text.includes("[LSP] basedpyright not found on PATH"));
+      const pending = listPendingLspInstallRequests(prefsDbPath);
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].serverId, "python");
+      assert.equal(pending[0].sourceRole, "subagent");
+    });
+
+    it("drains a deduplicated pending request from multiple peers on agent_end calling ctx.ui.select once", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("go", { sourceCwd: join(testDir, "peer-a"), sourceRole: "coms-peer" }, prefsDbPath);
+      recordPendingLspInstallRequest("go", { sourceCwd: join(testDir, "peer-b"), sourceRole: "rpc" }, prefsDbPath);
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      await fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async (_title: string, choices: string[]) => {
+              selectCalls++;
+              return choices[1];
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 1);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("drains a pending install request after a subagent tool_result", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("python", { sourceCwd: testDir, sourceRole: "subagent" }, prefsDbPath);
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      await fire(
+        "tool_result",
+        { toolName: "subagent", isError: false, content: [{ type: "text", text: "done" }] },
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async (_title: string, choices: string[]) => {
+              selectCalls++;
+              return choices[1];
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 1);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("clears a drained pending request from SQLite after choosing Install", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      const binDir = join(testDir, "bin");
+      mkdirSync(binDir, { recursive: true });
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "coms-peer" }, prefsDbPath);
+
+      let selectCalls = 0;
+      let installCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, {
+        envPath: binDir,
+        installPrefsDbPath: prefsDbPath,
+        installRunner: async (recipe) => {
+          installCalls++;
+          assert.equal(recipe.serverId, "go");
+          const fakeGopls = join(binDir, "gopls");
+          writeFileSync(fakeGopls, "#!/bin/sh\nexit 0\n", "utf8");
+          chmodSync(fakeGopls, 0o755);
+          return { ok: true };
+        },
+      });
+      activeManagers.push(manager);
+
+      await fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async (_title: string, choices: string[]) => {
+              selectCalls++;
+              return choices[0];
+            },
+            notify: () => {},
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 1);
+      assert.equal(installCalls, 1);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("clears a drained pending request from SQLite after choosing Not now", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "coms-peer" }, prefsDbPath);
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      await fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async (_title: string, choices: string[]) => {
+              selectCalls++;
+              return choices[1];
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 1);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+      assert.equal(isLspInstallDismissed("go", prefsDbPath), false);
+    });
+
+    it("clears a drained pending request from SQLite after choosing Don't ask again", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "coms-peer" }, prefsDbPath);
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      await fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async (_title: string, choices: string[]) => {
+              selectCalls++;
+              return choices[2];
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 1);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+      assert.equal(isLspInstallDismissed("go", prefsDbPath), true);
+    });
+
+    it("skips ctx.ui.select for a drained pending request when the binary is already on PATH", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      const binDir = join(testDir, "installed-bin");
+      mkdirSync(binDir, { recursive: true });
+      const fakeGopls = join(binDir, "gopls");
+      writeFileSync(fakeGopls, "#!/bin/sh\nexit 0\n", "utf8");
+      chmodSync(fakeGopls, 0o755);
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: binDir, installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      await fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async () => {
+              selectCalls++;
+              return "Not now";
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 0);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("skips ctx.ui.select for a drained pending request when previously dismissed", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      dismissLspInstallPermanently("go", prefsDbPath);
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      await fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async () => {
+              selectCalls++;
+              return "Not now";
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 0);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("removes a pending install request via clearPendingLspInstallRequest", () => {
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+      assert.equal(listPendingLspInstallRequests(prefsDbPath).length, 1);
+      clearPendingLspInstallRequest("go", prefsDbPath);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("ignores pending install requests in interactive TUI when lsp_enabled is false", async () => {
+      writeGlobalSettings({ lsp_enabled: false });
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+
+      let selectCalls = 0;
+      const { pi, fire } = createMockPi();
+      const { manager } = registerDirectLsp(pi, { envPath: "", installPrefsDbPath: prefsDbPath });
+      activeManagers.push(manager);
+
+      await fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async () => {
+              selectCalls++;
+              return "Not now";
+            },
+          },
+        },
+      );
+
+      assert.equal(selectCalls, 0);
+      assert.equal(listPendingLspInstallRequests(prefsDbPath).length, 1);
     });
   });
 });

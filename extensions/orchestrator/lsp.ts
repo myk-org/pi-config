@@ -291,9 +291,29 @@ export function getManagedLspBinDir(managedDir: string = getManagedLspDir()): st
 }
 
 function getDefaultLspSearchPath(): string {
-  const sysPath = process.env.PATH ?? "";
-  const managedBin = getManagedLspBinDir();
-  return sysPath ? `${sysPath}${path.delimiter}${managedBin}` : managedBin;
+  const sysParts = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const home = os.homedir();
+  const candidates = [
+    ...sysParts,
+    getManagedLspBinDir(),
+    path.join(home, ".local", "bin"),
+    path.join(home, "go", "bin"),
+  ];
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const dir of candidates) {
+    if (!dir || seen.has(dir)) continue;
+    seen.add(dir);
+    deduped.push(dir);
+  }
+  return deduped.join(path.delimiter);
+}
+
+function isBuiltinServerInstalled(serverId: string, envPath?: string): boolean {
+  const spec = BUILTIN_LSP_SERVERS.find((s) => s.id === serverId);
+  if (!spec) return false;
+  const searchPath = envPath === undefined ? getDefaultLspSearchPath() : envPath;
+  return spec.candidates.some((c) => findExecutableOnPath(c.command, searchPath) !== null);
 }
 
 /**
@@ -415,6 +435,27 @@ export function findMissingBuiltinServerId(
   return null;
 }
 
+/**
+ * Return `true` only when `ctx` represents a real interactive TUI session that
+ * can safely prompt with `ctx.ui.select()`.
+ *
+ * Pi `--mode rpc` (used by `scripts/coms-peer-supervisor.mjs`) sets `ctx.hasUI = true`
+ * while `ctx.mode === "rpc"` and `PI_COMS_SUPERVISED_PEER === "1"`; calling
+ * `ctx.ui.select()` there deadlocks indefinitely because the supervisor never answers
+ * `extension_ui_request`.
+ */
+export function isInteractiveTuiForLspPrompt(
+  ctx: any,
+  isSubagent: boolean = process.env.PI_SUBAGENT_CHILD === "1",
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (isSubagent) return false;
+  if (env.PI_COMS_SUPERVISED_PEER === "1") return false;
+  if (ctx?.hasUI !== true || typeof ctx?.ui?.select !== "function") return false;
+  const mode = ctx?.mode;
+  return mode === undefined || mode === "tui";
+}
+
 // ── Missing-server install prompt persistence (SQLite kv_state) ──────
 
 export function getDefaultLspPrefsDbPath(): string {
@@ -461,6 +502,97 @@ export function dismissLspInstallPermanently(serverId: string, dbPath: string = 
     });
   } catch (err: any) {
     defaultLog.warn("lsp_persist_dismissed_failed", { serverId, error: err?.message ?? String(err) });
+  }
+}
+
+export interface PendingLspInstallRequest {
+  serverId: string;
+  requestedAt: string;
+  sourceCwd: string;
+  sourceRole: string;
+}
+
+const LSP_PENDING_INSTALL_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS lsp_pending_install_requests (
+    server_id TEXT PRIMARY KEY,
+    requested_at TEXT NOT NULL,
+    source_cwd TEXT NOT NULL DEFAULT '',
+    source_role TEXT NOT NULL DEFAULT ''
+  )
+`;
+
+export function recordPendingLspInstallRequest(
+  serverId: string,
+  meta: { sourceCwd?: string; sourceRole?: string } = {},
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): void {
+  if (!BUILTIN_INSTALL_RECIPES[serverId]) return;
+  try {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
+    withTransaction(dbPath, (db) => {
+      db.exec(LSP_PENDING_INSTALL_TABLE_SQL);
+      db.prepare(
+        `INSERT INTO lsp_pending_install_requests (server_id, requested_at, source_cwd, source_role)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(server_id) DO UPDATE SET
+           requested_at = excluded.requested_at,
+           source_cwd = excluded.source_cwd,
+           source_role = excluded.source_role`,
+      ).run(serverId, new Date().toISOString(), meta.sourceCwd ?? "", meta.sourceRole ?? "");
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_record_pending_install_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+  }
+}
+
+export function listPendingLspInstallRequests(
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): PendingLspInstallRequest[] {
+  if (!fs.existsSync(dbPath)) return [];
+  try {
+    const db = openStateDb(dbPath);
+    const rows = db
+      .prepare(
+        "SELECT server_id, requested_at, source_cwd, source_role FROM lsp_pending_install_requests ORDER BY requested_at ASC",
+      )
+      .all() as Array<{
+      server_id: string;
+      requested_at: string;
+      source_cwd: string;
+      source_role: string;
+    }>;
+    return rows.map((row) => ({
+      serverId: row.server_id,
+      requestedAt: row.requested_at,
+      sourceCwd: row.source_cwd ?? "",
+      sourceRole: row.source_role ?? "",
+    }));
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (msg.includes("no such table")) return [];
+    defaultLog.debug("lsp_list_pending_install_failed", { dbPath, error: msg });
+    return [];
+  }
+}
+
+export function clearPendingLspInstallRequest(
+  serverId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): void {
+  if (!fs.existsSync(dbPath)) return;
+  try {
+    withTransaction(dbPath, (db) => {
+      db.exec(LSP_PENDING_INSTALL_TABLE_SQL);
+      db.prepare("DELETE FROM lsp_pending_install_requests WHERE server_id = ?").run(serverId);
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_clear_pending_install_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
   }
 }
 
@@ -1862,7 +1994,101 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
   const verifyInstalled = options.verifyInstalled ?? ((binary, envPath) => findExecutableOnPath(binary, envPath));
   const warnedUntrustedProject = new Set<string>();
   const promptedThisSession = new Set<string>();
-  const promptInFlight = new Map<string, Promise<string | null>>();
+  const promptInFlight = new Map<string, Promise<boolean>>();
+  let shuttingDown = false;
+  let drainingPendingPrompts = false;
+
+  const promptAndInstallMissingServer = async (
+    serverId: string,
+    ctx: any,
+    prefsDbPath: string,
+    sourceRole?: string,
+  ): Promise<boolean> => {
+    const recipe = BUILTIN_INSTALL_RECIPES[serverId];
+    if (!recipe) return false;
+
+    if (promptedThisSession.has(serverId) || isLspInstallDismissed(serverId, prefsDbPath)) {
+      return false;
+    }
+
+    const existingPrompt = promptInFlight.get(serverId);
+    if (existingPrompt) {
+      return existingPrompt;
+    }
+
+    const runPrompt = (async (): Promise<boolean> => {
+      if (promptedThisSession.has(serverId) || isLspInstallDismissed(serverId, prefsDbPath)) {
+        return false;
+      }
+
+      const installChoice = `Install ${recipe.label}`;
+      const notNowChoice = "Not now";
+      const dismissChoice = `Don't ask again for ${recipe.label}`;
+      const title =
+        `LSP server "${recipe.label}" is not installed on PATH.\n` +
+        `Command: ${recipe.displayCmd}`;
+
+      let choice: string | undefined;
+      try {
+        choice = await ctx.ui.select(title, [installChoice, notNowChoice, dismissChoice]);
+      } catch (err: any) {
+        log.debug("lsp_install_prompt_failed", { serverId, error: err?.message });
+        promptedThisSession.add(serverId);
+        clearPendingLspInstallRequest(serverId, prefsDbPath);
+        return false;
+      }
+
+      promptedThisSession.add(serverId);
+      clearPendingLspInstallRequest(serverId, prefsDbPath);
+
+      if (choice === dismissChoice) {
+        dismissLspInstallPermanently(serverId, prefsDbPath);
+        log.info("lsp_install_prompt_dismissed_permanently", { serverId });
+        return false;
+      }
+
+      if (choice !== installChoice) {
+        log.info("lsp_install_prompt_skipped_session", { serverId });
+        return false;
+      }
+
+      ctx.ui?.notify?.(`Installing ${recipe.label}...`, "info");
+      log.info("lsp_install_started", { serverId, command: recipe.displayCmd });
+      const result = await installRunner(recipe);
+      if (!result.ok) {
+        log.warn("lsp_install_failed", { serverId, error: result.error });
+        ctx.ui?.notify?.(`Failed to install ${recipe.label}: ${result.error || "unknown error"}`, "warning");
+        return false;
+      }
+
+      const verified = verifyInstalled(recipe.binary, options.envPath ?? getDefaultLspSearchPath());
+      if (!verified) {
+        log.warn("lsp_install_binary_not_on_path", { serverId, binary: recipe.binary });
+        ctx.ui?.notify?.(
+          `Installed ${recipe.label}, but "${recipe.binary}" is not yet on PATH.`,
+          "warning",
+        );
+        return false;
+      }
+
+      log.info("lsp_install_verified", {
+        serverId,
+        binary: verified,
+        ...(sourceRole ? { sourceRole } : {}),
+      });
+      ctx.ui?.notify?.(`Installed ${recipe.label} — LSP diagnostics active.`, "info");
+      return true;
+    })();
+
+    promptInFlight.set(serverId, runPrompt);
+    try {
+      return await runPrompt;
+    } finally {
+      if (promptInFlight.get(serverId) === runPrompt) {
+        promptInFlight.delete(serverId);
+      }
+    }
+  };
 
   const handleMissingServer = async (
     missingId: string,
@@ -1879,91 +2105,78 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
       return null;
     }
 
-    const existingPrompt = promptInFlight.get(missingId);
-    if (existingPrompt) {
-      await existingPrompt;
-      return null;
+    // Interactive TUI: ask user once with 3 clear choices
+    if (isInteractiveTuiForLspPrompt(ctx, checkSubagent())) {
+      const installed = await promptAndInstallMissingServer(missingId, ctx, prefsDbPath);
+      return installed ? manager.getDiagnosticsForFile(cwd, filePath, overrides) : null;
     }
 
-    const runPrompt = (async (): Promise<string | null> => {
-      if (promptedThisSession.has(missingId) || isLspInstallDismissed(missingId, prefsDbPath)) {
-        return null;
-      }
+    // Headless / RPC / supervised peer / subagent: never block; record pending
+    // request for the interactive TUI and emit a concise 1-line hint once per server.
+    const sourceRole = checkSubagent()
+      ? "subagent"
+      : process.env.PI_COMS_SUPERVISED_PEER === "1"
+        ? "coms-peer"
+        : typeof ctx?.mode === "string"
+          ? ctx.mode
+          : "headless";
+    recordPendingLspInstallRequest(missingId, { sourceCwd: cwd, sourceRole }, prefsDbPath);
+    promptedThisSession.add(missingId);
+    log.info("lsp_missing_server_hint", { serverId: missingId, binary: recipe.binary, sourceRole });
+    return `[LSP] ${recipe.label} not found on PATH; run \`uv run scripts/install.py\` or edit in TUI to install (${recipe.displayCmd}).`;
+  };
 
-      // Interactive TUI: ask user once with 3 clear choices
-      if (ctx?.hasUI === true && typeof ctx.ui?.select === "function") {
-        const installChoice = `Install ${recipe.label}`;
-        const notNowChoice = "Not now";
-        const dismissChoice = `Don't ask again for ${recipe.label}`;
-        const title =
-          `LSP server "${recipe.label}" is not installed on PATH.\n` +
-          `Command: ${recipe.displayCmd}`;
+  const drainPendingLspInstallPrompts = async (ctx: any): Promise<void> => {
+    if (
+      shuttingDown ||
+      drainingPendingPrompts ||
+      !isInteractiveTuiForLspPrompt(ctx, checkSubagent()) ||
+      !resolveTrustedLspEnabled()
+    ) {
+      return;
+    }
 
-        let choice: string | undefined;
-        try {
-          choice = await ctx.ui.select(title, [installChoice, notNowChoice, dismissChoice]);
-        } catch (err: any) {
-          log.debug("lsp_install_prompt_failed", { serverId: missingId, error: err?.message });
-          promptedThisSession.add(missingId);
-          return null;
-        }
-
-        promptedThisSession.add(missingId);
-
-        if (choice === dismissChoice) {
-          dismissLspInstallPermanently(missingId, prefsDbPath);
-          log.info("lsp_install_prompt_dismissed_permanently", { serverId: missingId });
-          return null;
-        }
-
-        if (choice !== installChoice) {
-          log.info("lsp_install_prompt_skipped_session", { serverId: missingId });
-          return null;
-        }
-
-        ctx.ui?.notify?.(`Installing ${recipe.label}...`, "info");
-        log.info("lsp_install_started", { serverId: missingId, command: recipe.displayCmd });
-        const result = await installRunner(recipe);
-        if (!result.ok) {
-          log.warn("lsp_install_failed", { serverId: missingId, error: result.error });
-          ctx.ui?.notify?.(`Failed to install ${recipe.label}: ${result.error || "unknown error"}`, "warning");
-          return null;
-        }
-
-        const verified = verifyInstalled(recipe.binary, options.envPath ?? getDefaultLspSearchPath());
-        if (!verified) {
-          log.warn("lsp_install_binary_not_on_path", { serverId: missingId, binary: recipe.binary });
-          ctx.ui?.notify?.(
-            `Installed ${recipe.label}, but "${recipe.binary}" is not yet on PATH.`,
-            "warning",
-          );
-          return null;
-        }
-
-        log.info("lsp_install_verified", { serverId: missingId, binary: verified });
-        ctx.ui?.notify?.(`Installed ${recipe.label} — LSP diagnostics active.`, "info");
-        return manager.getDiagnosticsForFile(cwd, filePath, overrides);
-      }
-
-      // Headless COMS peer / subagent: never block; emit a concise 1-line hint once per server
-      promptedThisSession.add(missingId);
-      log.info("lsp_missing_server_hint", { serverId: missingId, binary: recipe.binary });
-      return `[LSP] ${recipe.label} not found on PATH; run \`uv run scripts/install.py\` or edit in TUI to install (${recipe.displayCmd}).`;
-    })();
-
-    promptInFlight.set(missingId, runPrompt);
+    drainingPendingPrompts = true;
     try {
-      return await runPrompt;
-    } finally {
-      if (promptInFlight.get(missingId) === runPrompt) {
-        promptInFlight.delete(missingId);
+      const prefsDbPath = options.installPrefsDbPath ?? getDefaultLspPrefsDbPath();
+      const pending = listPendingLspInstallRequests(prefsDbPath);
+      if (pending.length === 0) return;
+
+      const overrides = resolveTrustedLspServers();
+      for (const req of pending) {
+        if (shuttingDown) break;
+        if (
+          !BUILTIN_INSTALL_RECIPES[req.serverId] ||
+          req.serverId in overrides ||
+          isLspInstallDismissed(req.serverId, prefsDbPath) ||
+          isBuiltinServerInstalled(req.serverId, options.envPath) ||
+          promptedThisSession.has(req.serverId)
+        ) {
+          clearPendingLspInstallRequest(req.serverId, prefsDbPath);
+          continue;
+        }
+
+        log.info("lsp_pending_install_prompt_draining", {
+          serverId: req.serverId,
+          sourceRole: req.sourceRole,
+          sourceCwd: req.sourceCwd,
+        });
+        await promptAndInstallMissingServer(req.serverId, ctx, prefsDbPath, req.sourceRole);
       }
+    } catch (err: any) {
+      log.warn("lsp_pending_install_drain_error", { error: err?.message ?? String(err) });
+    } finally {
+      drainingPendingPrompts = false;
     }
   };
 
   pi.on("tool_result", async (event, ctx): Promise<ToolResultEventResult | undefined> => {
     try {
       const toolName = (event as any).toolName as string;
+      if (toolName === "subagent") {
+        await drainPendingLspInstallPrompts(ctx);
+        return undefined;
+      }
       if (toolName !== "write" && toolName !== "edit") return undefined;
       if ((event as any).isError === true) return undefined;
 
@@ -2017,7 +2230,16 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
     }
   });
 
+  pi.on("turn_end", async (_event, ctx) => {
+    await drainPendingLspInstallPrompts(ctx);
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    await drainPendingLspInstallPrompts(ctx);
+  });
+
   pi.on("session_shutdown", async () => {
+    shuttingDown = true;
     log.debug("lsp_session_shutdown", { active: manager.activeCount });
     await manager.shutdownAll();
   });
