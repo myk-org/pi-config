@@ -212,16 +212,44 @@ def _validate_npm_prefix(raw: str) -> tuple[Path, bool]:
     return resolved, os.access(writable_parent, os.W_OK)
 
 
+def _validate_safe_tool_bin_dir(raw: str | Path) -> Path | None:
+    """Return resolved absolute bin dir if safe (not relative, not root, not inside cwd)."""
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+        candidate = Path(raw)
+    else:
+        candidate = raw
+    if not candidate.is_absolute():
+        log.warning("unsafe relative tool bin dir rejected value=%r", str(candidate))
+        return None
+    try:
+        resolved = candidate.resolve()
+        cwd = Path.cwd().resolve()
+    except OSError:
+        return None
+    if resolved == Path(resolved.anchor) or resolved == cwd or cwd in resolved.parents:
+        log.warning("unsafe checkout tool bin dir rejected path=%s", resolved)
+        return None
+    if resolved.exists() and not resolved.is_dir():
+        return None
+    return resolved
+
+
 def _prepend_to_path(bin_dir: Path) -> None:
     global _NPM_GLOBAL_BIN_NOTICE
-    bin_str = str(bin_dir)
+    safe_dir = _validate_safe_tool_bin_dir(bin_dir)
+    if safe_dir is None:
+        return
+    bin_str = str(safe_dir)
     current = os.environ.get("PATH", "")
     parts = current.split(os.pathsep) if current else []
     if bin_str not in parts:
         os.environ["PATH"] = f"{bin_str}{os.pathsep}{current}" if current else bin_str
-        _NPM_GLOBAL_BIN_NOTICE = bin_dir
-        if bin_dir not in _PATH_NOTICE_DIRS:
-            _PATH_NOTICE_DIRS.append(bin_dir)
+        _NPM_GLOBAL_BIN_NOTICE = safe_dir
+        if safe_dir not in _PATH_NOTICE_DIRS:
+            _PATH_NOTICE_DIRS.append(safe_dir)
 
 
 def _ensure_writable_npm_prefix() -> Path:
@@ -493,16 +521,20 @@ def _find_uv_tool_bin(name: str) -> str | None:
     found = shutil.which(name)
     if found:
         return found
-    candidates: list[Path] = []
+    raw_dirs: list[str | Path] = []
     env_bin_dir = os.environ.get("UV_TOOL_BIN_DIR", "").strip()
     if env_bin_dir:
-        candidates.append(Path(env_bin_dir) / name)
+        raw_dirs.append(env_bin_dir)
     if shutil.which("uv"):
         uv_bin_dir = _run_quiet(["uv", "tool", "dir", "--bin"])
         if uv_bin_dir:
-            candidates.append(Path(uv_bin_dir) / name)
-    candidates.append(HOME / ".local/bin" / name)
-    for candidate in candidates:
+            raw_dirs.append(uv_bin_dir)
+    raw_dirs.append(HOME / ".local/bin")
+    for raw_dir in raw_dirs:
+        safe_dir = _validate_safe_tool_bin_dir(raw_dir)
+        if safe_dir is None:
+            continue
+        candidate = safe_dir / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return None
@@ -512,15 +544,19 @@ def _find_go_bin(name: str) -> str | None:
     found = shutil.which(name)
     if found:
         return found
-    candidates: list[Path] = []
+    raw_dirs: list[Path] = []
     if shutil.which("go"):
         gopath = _run_quiet(["go", "env", "GOPATH"])
         if gopath:
             for root in gopath.split(os.pathsep):
                 if root:
-                    candidates.append(Path(root) / "bin" / name)
-    candidates.append(HOME / "go/bin" / name)
-    for candidate in candidates:
+                    raw_dirs.append(Path(root) / "bin")
+    raw_dirs.append(HOME / "go/bin")
+    for raw_dir in raw_dirs:
+        safe_dir = _validate_safe_tool_bin_dir(raw_dir)
+        if safe_dir is None:
+            continue
+        candidate = safe_dir / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return None
@@ -552,8 +588,8 @@ def install_basedpyright() -> None:
     if result.returncode != 0:
         raise _CommandFailedError(f"{BASEDPYRIGHT_INSTALL_CMD} failed", result.stderr or result.stdout)
     found = _find_uv_tool_bin("basedpyright-langserver")
-    uv_bin = Path(found).parent if found else HOME / ".local/bin"
-    if uv_bin.is_dir():
+    uv_bin = _validate_safe_tool_bin_dir(Path(found).parent if found else HOME / ".local/bin")
+    if uv_bin is not None and uv_bin.is_dir():
         _prepend_to_path(uv_bin)
     log.info("basedpyright installation verified bin_dir=%s", uv_bin)
 

@@ -1723,6 +1723,63 @@ def test_show_summary_combines_all_distinct_prepended_path_dirs(
     assert "npm global bin" not in out
 
 
+def test_find_uv_tool_bin_rejects_relative_env_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    checkout = tmp_path / "checkout"
+    rel_bin = checkout / "evil-bin"
+    rel_bin.mkdir(parents=True)
+    fake_bin = rel_bin / "basedpyright-langserver"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+
+    monkeypatch.chdir(checkout)
+    monkeypatch.setattr(install, "HOME", tmp_path / "empty-home")
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", "./evil-bin")
+
+    assert install._find_uv_tool_bin("basedpyright-langserver") is None
+
+
+def test_find_uv_tool_bin_rejects_symlink_into_checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    checkout = tmp_path / "checkout"
+    evil_dir = checkout / "tools"
+    evil_dir.mkdir(parents=True)
+    fake_bin = evil_dir / "basedpyright-langserver"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    symlink_dir = tmp_path / "trusted-link"
+    symlink_dir.symlink_to(evil_dir)
+
+    monkeypatch.chdir(checkout)
+    monkeypatch.setattr(install, "HOME", tmp_path / "empty-home")
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(symlink_dir))
+
+    assert install._find_uv_tool_bin("basedpyright-langserver") is None
+
+
+def test_find_uv_tool_bin_accepts_trusted_absolute_custom_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    custom_bin = tmp_path / "custom-uv-bin"
+    custom_bin.mkdir()
+    langserver = custom_bin / "basedpyright-langserver"
+    langserver.write_text("#!/bin/sh\n")
+    langserver.chmod(0o755)
+
+    monkeypatch.chdir(checkout)
+    monkeypatch.setattr(install, "HOME", tmp_path / "empty-home")
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(custom_bin))
+
+    assert install._find_uv_tool_bin("basedpyright-langserver") == str(langserver.resolve())
+
+
 def test_install_standalone_fallback_matches_install_sources_lsp_constants() -> None:
     import install_sources
 
