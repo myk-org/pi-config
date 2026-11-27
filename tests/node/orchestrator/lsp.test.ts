@@ -242,6 +242,32 @@ function handleMessage(msg) {
       }, delayMs);
       return;
     }
+    if (mode === "stale-versioned-then-unversioned") {
+      if (doc.text.includes("OLD_ERR")) {
+        // After the 120ms client timeout, send a stale versioned result followed by a stale unversioned result
+        setTimeout(() => {
+          send({
+            jsonrpc: "2.0",
+            method: "textDocument/publishDiagnostics",
+            params: { uri: doc.uri, version: doc.version, diagnostics: diagnosticsForText(doc.text) },
+          });
+        }, 160);
+        setTimeout(() => {
+          send({
+            jsonrpc: "2.0",
+            method: "textDocument/publishDiagnostics",
+            params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+          });
+        }, 230);
+        return;
+      }
+      send({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: { uri: doc.uri, diagnostics: diagnosticsForText(doc.text) },
+      });
+      return;
+    }
     if (mode === "mixed-versioned-unversioned") {
       if (doc.uri.endsWith("/versioned.ts")) {
         const delayMs = doc.text.includes("SLOW_VER") ? 180 : 0;
@@ -1145,6 +1171,44 @@ describe("LSP diagnostics integration (#1445)", () => {
       assert.ok(res2?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
       assert.ok(!res2.content[1].text.includes("STALE_EDIT_1_ERROR"));
       assert.equal(await waitForPidExit(oldPid, 2000), true);
+    });
+
+    it("preserves timeout ambiguity even if a late versioned publication arrives before the next edit", async () => {
+      writeGlobalSettings({
+        lsp_enabled: true,
+        lsp_servers: {
+          typescript: {
+            command: process.execPath,
+            args: [mockServerScript, "--mode=stale-versioned-then-unversioned"],
+            extensions: [".ts"],
+          },
+        },
+      });
+      const file = join(testDir, "late-ver.ts");
+      writeFileSync(file, "OLD_ERR\n");
+
+      const { pi, fire } = createMockPi();
+      const { manager } = registerLsp(pi, { timeoutMs: 120 });
+      activeManagers.push(manager);
+
+      const timedOut = await fire(
+        "tool_result",
+        { toolName: "write", input: { path: "late-ver.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.equal(timedOut, undefined);
+
+      // Wait until the stale versioned publish (160ms) has been processed, before the stale unversioned publish (230ms)
+      await new Promise((r) => setTimeout(r, 80));
+
+      writeFileSync(file, "line1\nNEW_ERR\n");
+      const nextRes = await fire(
+        "tool_result",
+        { toolName: "edit", input: { path: "late-ver.ts" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        { cwd: testDir },
+      );
+      assert.ok(nextRes?.content?.[1]?.text.includes("FRESH_EDIT_2_ERROR"));
+      assert.ok(!nextRes.content[1].text.includes("STALE_EDIT_1_ERROR"));
     });
 
     it("returns diagnostics for a versioned document on a mixed-mode server", async () => {

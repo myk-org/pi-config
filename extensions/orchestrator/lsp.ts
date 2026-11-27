@@ -702,7 +702,6 @@ export class LspClient {
 
       if (version !== undefined) {
         this.versionedUris.add(uri);
-        this.ambiguousUris.delete(uri);
       } else {
         this.versionedUris.delete(uri);
         if (this.ambiguousUris.has(uri)) {
