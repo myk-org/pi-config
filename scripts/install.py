@@ -46,8 +46,10 @@ try:
         MYK_PI_TOOLS_INSTALL_CMD,
         PI_CONFIG_NPM,
         PI_VERTEX_NPM,
+        TS_LSP_BIN_DIR_REL,
         TS_LSP_INSTALL_CMD,
         TS_LSP_NPM_PACKAGES,
+        TS_LSP_PREFIX_REL,
         create_logger,
         is_pi_pkg_installed,
         pi_config_pi_cmd,
@@ -63,7 +65,9 @@ except ModuleNotFoundError:
     MYK_PI_TOOLS_INSTALL_CMD = "uv tool install --python 3.14 --upgrade myk-pi-tools"
     BASEDPYRIGHT_INSTALL_CMD = "uv tool install --upgrade basedpyright"
     TS_LSP_NPM_PACKAGES = ("typescript@6", "typescript-language-server")
-    TS_LSP_INSTALL_CMD = "npm install -g typescript@6 typescript-language-server"
+    TS_LSP_PREFIX_REL = ".pi/lsp/ts-lsp"
+    TS_LSP_BIN_DIR_REL = ".pi/lsp/bin"
+    TS_LSP_INSTALL_CMD = "npm install --prefix ~/.pi/lsp/ts-lsp typescript@6 typescript-language-server"
     GOPLS_INSTALL_CMD = "go install golang.org/x/tools/gopls@latest"
 
     def create_logger(name: str = "install") -> logging.Logger:
@@ -219,6 +223,7 @@ def _trusted_home_tool_bin_dirs() -> tuple[Path, ...]:
         (home / ".local/bin").resolve(),
         (home / ".npm-global/bin").resolve(),
         (home / "go/bin").resolve(),
+        (home / TS_LSP_BIN_DIR_REL).resolve(),
     )
 
 
@@ -577,18 +582,40 @@ def _find_go_bin(name: str) -> str | None:
     return None
 
 
+def _find_ts_lsp_bin() -> str | None:
+    managed_candidates = (
+        HOME / TS_LSP_BIN_DIR_REL / "typescript-language-server",
+        HOME / TS_LSP_PREFIX_REL / "node_modules/.bin/typescript-language-server",
+    )
+    for candidate in managed_candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return _find_npm_bin("typescript-language-server")
+
+
 def install_typescript_lsp() -> None:
-    prefix = _ensure_writable_npm_prefix()
-    _prepend_to_path(prefix / "bin")
+    if not shutil.which("npm"):
+        raise RuntimeError("npm not found on PATH")
+    prefix = HOME / TS_LSP_PREFIX_REL
+    bin_dir = HOME / TS_LSP_BIN_DIR_REL
+    prefix.mkdir(parents=True, exist_ok=True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
-        ["npm", "install", "-g", *TS_LSP_NPM_PACKAGES],
+        ["npm", "install", "--prefix", str(prefix), *TS_LSP_NPM_PACKAGES],
         capture_output=True,
         text=True,
         timeout=300,
     )
     if result.returncode != 0:
         raise _CommandFailedError(f"{TS_LSP_INSTALL_CMD} failed", result.stderr or result.stdout)
-    log.info("typescript-language-server installation verified prefix=%s", prefix)
+    target = prefix / "node_modules/.bin/typescript-language-server"
+    link = bin_dir / "typescript-language-server"
+    if target.is_file():
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(target)
+    _prepend_to_path(bin_dir)
+    log.info("typescript-language-server installed in isolated prefix=%s bin_dir=%s", prefix, bin_dir)
 
 
 def install_basedpyright() -> None:
@@ -956,8 +983,8 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         [
             Tool(
                 "typescript-language-server",
-                "TypeScript/JavaScript LSP (typescript@6 + typescript-language-server)",
-                installed=bool(_find_npm_bin("typescript-language-server")),
+                "TypeScript/JavaScript LSP (isolated typescript@6 + typescript-language-server)",
+                installed=bool(_find_ts_lsp_bin()),
                 disabled=nd,
                 install_cmd=TS_LSP_INSTALL_CMD,
                 install_fn=install_typescript_lsp,

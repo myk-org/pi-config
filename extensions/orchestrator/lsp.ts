@@ -135,8 +135,9 @@ export const BUILTIN_INSTALL_RECIPES: Readonly<Record<string, LspInstallRecipe>>
     serverId: "typescript",
     label: "typescript-language-server",
     binary: "typescript-language-server",
-    // Pin typescript@6 because typescript@7+ removed lib/tsserver.js required by typescript-language-server.
-    displayCmd: "npm install -g typescript@6 typescript-language-server",
+    // Isolated prefix keeps typescript@6 (needed because typescript@7+ removed lib/tsserver.js)
+    // without downgrading any globally installed TypeScript compiler (`tsc`).
+    displayCmd: "npm install --prefix ~/.pi/lsp/ts-lsp typescript@6 typescript-language-server",
     prereq: "npm",
   },
   python: {
@@ -277,6 +278,24 @@ export function findExecutableOnPath(
   return null;
 }
 
+export function getManagedLspDir(): string {
+  return path.join(os.homedir(), ".pi", "lsp");
+}
+
+export function getManagedTsLspPrefix(managedDir: string = getManagedLspDir()): string {
+  return path.join(managedDir, "ts-lsp");
+}
+
+export function getManagedLspBinDir(managedDir: string = getManagedLspDir()): string {
+  return path.join(managedDir, "bin");
+}
+
+function getDefaultLspSearchPath(): string {
+  const sysPath = process.env.PATH ?? "";
+  const managedBin = getManagedLspBinDir();
+  return sysPath ? `${sysPath}${path.delimiter}${managedBin}` : managedBin;
+}
+
 /**
  * Resolve the matching already-installed LSP server for `filePath`.
  * User overrides in `lsp_servers` take precedence over built-in defaults.
@@ -284,8 +303,9 @@ export function findExecutableOnPath(
 export function resolveServerForFile(
   filePath: string,
   overrides: LspServersConfig = {},
-  envPath: string = process.env.PATH ?? "",
+  envPath?: string,
 ): ResolvedLspServer | null {
+  const searchPath = envPath === undefined ? getDefaultLspSearchPath() : envPath;
   const ext = path.extname(filePath).toLowerCase();
   if (!ext) return null;
 
@@ -297,7 +317,7 @@ export function resolveServerForFile(
       return lower.startsWith(".") ? lower : `.${lower}`;
     });
     if (!exts.includes(ext)) continue;
-    const resolvedCmd = findExecutableOnPath(cfg.command, envPath);
+    const resolvedCmd = findExecutableOnPath(cfg.command, searchPath);
     if (resolvedCmd) {
       return { serverId, command: resolvedCmd, args: cfg.args ? [...cfg.args] : [] };
     }
@@ -307,7 +327,7 @@ export function resolveServerForFile(
     if (overriddenIds.has(spec.id)) continue;
     if (!spec.extensions.includes(ext)) continue;
     for (const candidate of spec.candidates) {
-      const resolvedCmd = findExecutableOnPath(candidate.command, envPath);
+      const resolvedCmd = findExecutableOnPath(candidate.command, searchPath);
       if (resolvedCmd) {
         return { serverId: spec.id, command: resolvedCmd, args: [...candidate.args] };
       }
@@ -381,7 +401,7 @@ function isLspDisabledInSubagents(): boolean {
 export function findMissingBuiltinServerId(
   filePath: string,
   overrides: LspServersConfig = {},
-  envPath: string = process.env.PATH ?? "",
+  envPath?: string,
 ): string | null {
   const ext = path.extname(filePath).toLowerCase();
   if (!ext) return null;
@@ -455,11 +475,14 @@ function prependDirToProcessPath(binDir: string): void {
 
 /**
  * Safely run a built-in LSP server install recipe (no shell interpolation).
- * Mirrors `scripts/install.py` user-writable `~/.npm-global` prefix fallback.
+ * TypeScript installs `typescript@6` + `typescript-language-server` into an
+ * isolated prefix (`~/.pi/lsp/ts-lsp`) and symlinks only `typescript-language-server`
+ * into `~/.pi/lsp/bin` so any global `tsc` installation is never downgraded.
  */
 export async function runLspServerInstall(
   recipe: LspInstallRecipe,
   envPath: string = process.env.PATH ?? "",
+  options: { managedLspDir?: string } = {},
 ): Promise<{ ok: boolean; error?: string }> {
   const prereqBin = findExecutableOnPath(recipe.prereq, envPath);
   if (!prereqBin) {
@@ -468,27 +491,28 @@ export async function runLspServerInstall(
 
   try {
     if (recipe.serverId === "typescript") {
-      const { stdout } = await execFileAsync(prereqBin, ["prefix", "-g"], { timeout: 10_000 });
-      const rawPrefix = stdout.trim();
-      let prefixDir = rawPrefix && path.isAbsolute(rawPrefix) ? rawPrefix : "";
-      let writable = false;
-      if (prefixDir && fs.existsSync(prefixDir) && fs.statSync(prefixDir).isDirectory()) {
+      const managedDir = options.managedLspDir ?? getManagedLspDir();
+      const prefixDir = getManagedTsLspPrefix(managedDir);
+      const binDir = getManagedLspBinDir(managedDir);
+      fs.mkdirSync(prefixDir, { recursive: true });
+      fs.mkdirSync(binDir, { recursive: true });
+      await execFileAsync(
+        prereqBin,
+        ["install", "--prefix", prefixDir, "typescript@6", "typescript-language-server"],
+        { timeout: 180_000 },
+      );
+      const target = path.join(prefixDir, "node_modules", ".bin", "typescript-language-server");
+      const link = path.join(binDir, "typescript-language-server");
+      if (fs.existsSync(target)) {
         try {
-          fs.accessSync(prefixDir, fs.constants.W_OK);
-          writable = true;
+          fs.lstatSync(link);
+          fs.unlinkSync(link);
         } catch {
-          writable = false;
+          // Not present
         }
+        fs.symlinkSync(target, link);
       }
-      if (!writable) {
-        prefixDir = path.join(os.homedir(), ".npm-global");
-        fs.mkdirSync(path.join(prefixDir, "bin"), { recursive: true });
-        await execFileAsync(prereqBin, ["config", "set", "prefix", prefixDir], { timeout: 10_000 });
-      }
-      prependDirToProcessPath(path.join(prefixDir, "bin"));
-      await execFileAsync(prereqBin, ["install", "-g", "typescript@6", "typescript-language-server"], {
-        timeout: 180_000,
-      });
+      prependDirToProcessPath(binDir);
       return { ok: true };
     }
 
@@ -1761,9 +1785,8 @@ export class LspManager {
 
     const resolvedRoot = path.resolve(rootDir);
     const absPath = path.resolve(resolvedRoot, filePath);
-    const envPath = this.envPath ?? process.env.PATH ?? "";
 
-    const server = resolveServerForFile(absPath, overrides, envPath);
+    const server = resolveServerForFile(absPath, overrides, this.envPath);
     if (!server) {
       const ext = path.extname(absPath).toLowerCase();
       if (ext && !this.missingLogged.has(ext)) {
@@ -1907,7 +1930,7 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
           return null;
         }
 
-        const verified = verifyInstalled(recipe.binary, options.envPath ?? process.env.PATH ?? "");
+        const verified = verifyInstalled(recipe.binary, options.envPath ?? getDefaultLspSearchPath());
         if (!verified) {
           log.warn("lsp_install_binary_not_on_path", { serverId: missingId, binary: recipe.binary });
           ctx.ui?.notify?.(
@@ -1977,8 +2000,7 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
 
       const overrides = resolveTrustedLspServers();
       const absPath = path.resolve(cwd, filePath);
-      const envPath = options.envPath ?? process.env.PATH ?? "";
-      const missingId = findMissingBuiltinServerId(absPath, overrides, envPath);
+      const missingId = findMissingBuiltinServerId(absPath, overrides, options.envPath);
 
       const formatted = missingId
         ? await handleMissingServer(missingId, ctx, cwd, filePath, overrides)

@@ -1628,22 +1628,35 @@ def test_build_steps_disables_gopls_when_go_missing(monkeypatch: pytest.MonkeyPa
     assert gopls_tool not in install.auto_select_all(steps)
 
 
-def test_install_typescript_lsp_uses_writable_npm_prefix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_install_typescript_lsp_uses_isolated_prefix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _stub_questionary()
     install = importlib.import_module("install")
-    prefix = tmp_path / "npm-global"
-    prefix.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
     seen: list[list[str]] = []
+    expected_prefix = home / ".pi/lsp/ts-lsp"
 
     def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         seen.append(cmd)
+        bin_dir = expected_prefix / "node_modules/.bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("typescript-language-server", "tsc"):
+            bin_file = bin_dir / name
+            bin_file.write_text("#!/bin/sh\n")
+            bin_file.chmod(0o755)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(install, "_ensure_writable_npm_prefix", lambda: prefix)
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
     monkeypatch.setattr(install.subprocess, "run", fake_run)
 
     install.install_typescript_lsp()
-    assert seen == [["npm", "install", "-g", "typescript@6", "typescript-language-server"]]
+    assert seen == [["npm", "install", "--prefix", str(expected_prefix), "typescript@6", "typescript-language-server"]]
+    assert (home / ".pi/lsp/bin/typescript-language-server").is_symlink()
+    assert not (home / ".pi/lsp/bin/tsc").exists()
 
 
 def test_install_gopls_runs_go_install_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1844,12 +1857,24 @@ def test_install_basedpyright_records_home_uv_bin_when_invoked_from_home(
     assert f'export PATH="{uv_bin.resolve()}:$PATH"' in out
 
 
-def test_install_standalone_fallback_matches_install_sources_lsp_constants() -> None:
+def test_install_standalone_fallback_matches_install_sources_lsp_constants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
     import install_sources
 
-    install_text = (SCRIPTS / "install.py").read_text(encoding="utf-8")
-    fallback_section = install_text.split("except ModuleNotFoundError:", 1)[1].split("log = create_logger", 1)[0]
-    assert f'BASEDPYRIGHT_INSTALL_CMD = "{install_sources.BASEDPYRIGHT_INSTALL_CMD}"' in fallback_section
-    assert f'TS_LSP_INSTALL_CMD = "{install_sources.TS_LSP_INSTALL_CMD}"' in fallback_section
-    assert f'GOPLS_INSTALL_CMD = "{install_sources.GOPLS_INSTALL_CMD}"' in fallback_section
-    assert 'TS_LSP_NPM_PACKAGES = ("typescript@6", "typescript-language-server")' in fallback_section
+    _stub_questionary()
+    monkeypatch.setitem(sys.modules, "install_sources", None)
+    spec = importlib.util.spec_from_file_location("_install_standalone_fallback_check", SCRIPTS / "install.py")
+    assert spec is not None and spec.loader is not None
+    standalone = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, standalone)
+    spec.loader.exec_module(standalone)
+
+    assert standalone.BASEDPYRIGHT_INSTALL_CMD == install_sources.BASEDPYRIGHT_INSTALL_CMD
+    assert standalone.TS_LSP_NPM_PACKAGES == install_sources.TS_LSP_NPM_PACKAGES
+    assert standalone.TS_LSP_PREFIX_REL == install_sources.TS_LSP_PREFIX_REL
+    assert standalone.TS_LSP_BIN_DIR_REL == install_sources.TS_LSP_BIN_DIR_REL
+    assert standalone.TS_LSP_INSTALL_CMD == install_sources.TS_LSP_INSTALL_CMD
+    assert standalone.GOPLS_INSTALL_CMD == install_sources.GOPLS_INSTALL_CMD

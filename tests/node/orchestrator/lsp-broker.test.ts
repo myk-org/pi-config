@@ -11,6 +11,7 @@ import {
   getLspBrokerSocketPath,
   isLspInstallDismissed,
   registerLsp,
+  runLspServerInstall,
 } from "../../../extensions/orchestrator/lsp.ts";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
 import { closeStateDb } from "../../../extensions/orchestrator/state-db.ts";
@@ -442,11 +443,72 @@ describe("shared per-worktree LSP broker (#1445)", () => {
   // ── Lazy user-confirmed missing-server TUI install prompt ─────────
 
   describe("lazy missing-server install prompt", () => {
-    it("pins typescript@6 alongside typescript-language-server in the TypeScript install recipe", () => {
+    it("pins typescript@6 in an isolated prefix in the TypeScript install recipe", () => {
       assert.equal(
         BUILTIN_INSTALL_RECIPES.typescript?.displayCmd,
-        "npm install -g typescript@6 typescript-language-server",
+        "npm install --prefix ~/.pi/lsp/ts-lsp typescript@6 typescript-language-server",
       );
+    });
+
+    it("installs typescript@6 into an isolated prefix without exposing tsc", async () => {
+      const stubBinDir = join(testDir, "stub-npm-bin");
+      const managedLspDir = join(testDir, "managed-lsp");
+      const argvLog = join(testDir, "npm-argv.json");
+      mkdirSync(stubBinDir, { recursive: true });
+      const stubNpm = join(stubBinDir, "npm");
+      writeFileSync(
+        stubNpm,
+        `#!/usr/bin/env node
+import * as fs from "node:fs";
+import * as path from "node:path";
+const argv = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(argv), "utf8");
+const prefixIdx = argv.indexOf("--prefix");
+if (prefixIdx >= 0 && argv[prefixIdx + 1]) {
+  const binDir = path.join(argv[prefixIdx + 1], "node_modules", ".bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  for (const name of ["typescript-language-server", "tsc"]) {
+    const p = path.join(binDir, name);
+    fs.writeFileSync(p, "#!/bin/sh\\nexit 0\\n", "utf8");
+    fs.chmodSync(p, 0o755);
+  }
+}
+`,
+        "utf8",
+      );
+      chmodSync(stubNpm, 0o755);
+      setEnv("PATH", process.env.PATH);
+
+      const res = await runLspServerInstall(BUILTIN_INSTALL_RECIPES.typescript, stubBinDir, { managedLspDir });
+      assert.deepEqual(res, { ok: true });
+
+      const recorded = JSON.parse(readFileSync(argvLog, "utf8"));
+      assert.deepEqual(recorded, [
+        "install",
+        "--prefix",
+        join(managedLspDir, "ts-lsp"),
+        "typescript@6",
+        "typescript-language-server",
+      ]);
+      assert.equal(existsSync(join(managedLspDir, "bin", "typescript-language-server")), true);
+      assert.equal(existsSync(join(managedLspDir, "bin", "tsc")), false);
+    });
+
+    it("returns a failure result when runLspServerInstall npm exits non-zero", async () => {
+      const stubBinDir = join(testDir, "stub-npm-fail");
+      const managedLspDir = join(testDir, "managed-lsp-fail");
+      mkdirSync(stubBinDir, { recursive: true });
+      const stubNpm = join(stubBinDir, "npm");
+      writeFileSync(
+        stubNpm,
+        `#!/bin/sh\necho "simulated registry failure" >&2\nexit 1\n`,
+        "utf8",
+      );
+      chmodSync(stubNpm, 0o755);
+
+      const res = await runLspServerInstall(BUILTIN_INSTALL_RECIPES.typescript, stubBinDir, { managedLspDir });
+      assert.equal(res.ok, false);
+      assert.ok(res.error && res.error.includes("simulated registry failure"));
     });
 
     it("identifies a missing built-in server only when no binary or override matches", () => {
