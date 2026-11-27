@@ -329,15 +329,22 @@ describe("evaluateBashPolicy git protection and workflow guards", () => {
     assert.equal(decision.stripTimeout, true);
   });
 
-  it("blocks commands repeated 3 times in a row via trackRepeat", async () => {
+  it("allows repeated identical bash commands without blocking (e.g. edit-retest loops)", async () => {
     const dir = makeTempDir("pi-bash-policy-misc-");
-    let count = 0;
-    const trackRepeat = () => ++count;
-    assert.equal((await evaluateBashPolicy({ command: "git status", cwd: dir, trackRepeat })).action, "allow");
-    assert.equal((await evaluateBashPolicy({ command: "git status", cwd: dir, trackRepeat })).action, "allow");
-    const third = await evaluateBashPolicy({ command: "git status", cwd: dir, trackRepeat });
-    assert.equal(third.action, "block");
-    assert.match(third.reason, /3 times in a row/);
+    for (let i = 0; i < 5; i++) {
+      const decision = await evaluateBashPolicy({ command: "git status", cwd: dir });
+      assert.equal(decision.action, "allow", `run #${i + 1} should be allowed`);
+    }
+  });
+
+  it("still blocks polling loops with sleep exceeding enforcement_loop_sleep_threshold_s", async () => {
+    const dir = makeTempDir("pi-bash-policy-misc-");
+    const decision = await evaluateBashPolicy({
+      command: "while true; do sleep 65; echo polling; done",
+      cwd: dir,
+    });
+    assert.equal(decision.action, "block");
+    assert.match(decision.reason, /Polling loop with sleep 65s blocked/);
   });
 
   it("blocks git identity environment overrides", async () => {

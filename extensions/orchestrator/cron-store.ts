@@ -8,6 +8,13 @@ import { parseModelOverride } from "./parse-model-override.js";
 import { createLogger } from "../shared/logger.js";
 
 export type CronScope = "session" | "project";
+export type CronRunOutcome = "delivered" | "noop" | "error";
+
+/** True when a completed quiet_on_noop cron worker output starts with `[NOOP]` (case-insensitive). */
+export function isCronNoopOutput(output: unknown): boolean {
+  return typeof output === "string" && /^\[noop\]/i.test(output.trim());
+}
+
 export interface DurableCronTask {
   id: string;
   scope: "project";
@@ -24,6 +31,53 @@ export interface DurableCronTask {
   nextRun?: number;
   /** Paused by the user: the definition is kept, no timer is armed (issue #1087). */
   paused?: boolean;
+  /** Suppress parent followUp chat delivery when a successful worker replies starting with `[NOOP]`. */
+  quiet_on_noop?: boolean;
+  /** Number of completed/executed runs recorded for this cron. */
+  runCount?: number;
+  /** Outcome of the most recent completed run. */
+  lastOutcome?: CronRunOutcome;
+  /** Worker run id that last updated `lastOutcome`, used for idempotent/late-result reconciliation. */
+  lastRunId?: string;
+  /** Start timestamp of the completed run that last updated `lastOutcome` (separate from dispatch `lastRun`). */
+  lastOutcomeStartedAt?: number;
+}
+export interface CronRunOutcomeUpdate {
+  id: string;
+  runId: string;
+  outcome: CronRunOutcome;
+  startedAt?: number;
+  isLate?: boolean;
+}
+/**
+ * Pure, idempotent update of cron run history (`runCount`, `lastOutcome`, `lastRunId`, `lastOutcomeStartedAt`).
+ * Preserves `lastRun` (dispatch start time) and compares completion order against `lastOutcomeStartedAt`
+ * rather than `lastRun` so overlapping dispatches never hide a completed run's outcome.
+ */
+export function applyCronRunOutcomeUpdate<
+  T extends Pick<DurableCronTask, "lastRun" | "runCount" | "lastOutcome" | "lastRunId" | "lastOutcomeStartedAt">,
+>(task: T, update: Omit<CronRunOutcomeUpdate, "id">): T {
+  if (task.lastRunId === update.runId) {
+    return { ...task, lastOutcome: update.outcome };
+  }
+  if (update.isLate) {
+    return task;
+  }
+  const nextCount = (task.runCount ?? 0) + 1;
+  const isOlderThanLatestCompleted =
+    update.startedAt !== undefined
+    && task.lastOutcomeStartedAt !== undefined
+    && update.startedAt < task.lastOutcomeStartedAt;
+  if (isOlderThanLatestCompleted) {
+    return { ...task, runCount: nextCount };
+  }
+  return {
+    ...task,
+    runCount: nextCount,
+    lastOutcome: update.outcome,
+    lastRunId: update.runId,
+    ...(update.startedAt !== undefined ? { lastOutcomeStartedAt: update.startedAt } : {}),
+  };
 }
 export interface DurableCronEnvelope { version: 1; tasks: DurableCronTask[]; }
 export type DurableCronReadOutcome =
@@ -216,6 +270,11 @@ export function validateDurableCronTask(task: unknown): asserts task is DurableC
   if (value.model !== undefined && (typeof value.model !== "string" || !parseModelOverride(value.model))) throw new Error("Invalid durable cron model");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid durable cron timestamp");
   if (value.paused !== undefined && typeof value.paused !== "boolean") throw new Error("Invalid durable cron paused flag");
+  if (value.quiet_on_noop !== undefined && typeof value.quiet_on_noop !== "boolean") throw new Error("Invalid durable cron quiet_on_noop flag");
+  if (value.runCount !== undefined && (!Number.isInteger(value.runCount) || value.runCount < 0)) throw new Error("Invalid durable cron runCount");
+  if (value.lastOutcome !== undefined && value.lastOutcome !== "delivered" && value.lastOutcome !== "noop" && value.lastOutcome !== "error") throw new Error("Invalid durable cron lastOutcome");
+  if (value.lastRunId !== undefined && (typeof value.lastRunId !== "string" || !value.lastRunId)) throw new Error("Invalid durable cron lastRunId");
+  if (value.lastOutcomeStartedAt !== undefined && !Number.isFinite(value.lastOutcomeStartedAt)) throw new Error("Invalid durable cron lastOutcomeStartedAt");
 }
 function validate(tasks: DurableCronTask[]) { for (const task of tasks) validateDurableCronTask(task); }
 function atomicWrite(file: string, content: string) {
@@ -281,6 +340,41 @@ export function setDurableCronPaused(store: string, id: string, paused: boolean)
   }));
   log.debug("cron_pause_persisted", { store, id, paused, found });
   return found;
+}
+/**
+ * Atomically record a completed worker's outcome under the kernel mutation flock without
+ * requiring the scheduling leader lease, so in-flight runs finishing after a leader handoff
+ * are never dropped and peer edits are never clobbered.
+ */
+export function recordDurableCronRunOutcome(
+  store: string,
+  update: CronRunOutcomeUpdate,
+): { found: boolean; runCount?: number; lastOutcome?: CronRunOutcome; lastRunId?: string; lastOutcomeStartedAt?: number } {
+  if (!fs.existsSync(store)) return { found: false };
+  let found = false;
+  let updated: DurableCronTask | undefined;
+  mutateDurableCronStore(store, (tasks) => tasks.map((task) => {
+    if (task.id !== update.id) return task;
+    found = true;
+    updated = applyCronRunOutcomeUpdate(task, update);
+    return updated;
+  }));
+  log.debug("cron_run_outcome_persisted", {
+    store,
+    id: update.id,
+    runId: update.runId,
+    outcome: update.outcome,
+    isLate: update.isLate === true,
+    found,
+    runCount: updated?.runCount,
+  });
+  return {
+    found,
+    runCount: updated?.runCount,
+    lastOutcome: updated?.lastOutcome,
+    lastRunId: updated?.lastRunId,
+    lastOutcomeStartedAt: updated?.lastOutcomeStartedAt,
+  };
 }
 export function acquireLeaderLock(store: string, instanceId: string, deps: StartTokenDeps = startTokenDeps): CronLockOwner | null { return acquireDirectoryLock(lockPath(store, "leader"), instanceId, true, deps); }
 export function isLeaderLockCurrent(store: string, owner: CronLockOwner): boolean {
