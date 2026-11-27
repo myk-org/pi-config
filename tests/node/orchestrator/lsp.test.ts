@@ -3101,6 +3101,98 @@ recordPendingLspInstallRequest(
       assert.equal(existsSync(join(managedDir, ".install-typescript.lock")), false);
     });
 
+    it("terminates installer descendant writers before releasing the per-server lock on abort", async () => {
+      setEnv("PATH", process.env.PATH);
+      const stubBinDir = join(testDir, "stub-bin");
+      const fastBinDir = join(testDir, "fast-bin");
+      const managedLspDir = join(testDir, "managed-lsp");
+      mkdirSync(stubBinDir, { recursive: true });
+      mkdirSync(fastBinDir, { recursive: true });
+      mkdirSync(managedLspDir, { recursive: true });
+
+      const childPidFile = join(testDir, "descendant.pid");
+      const destLogFile = join(managedLspDir, "dest.log");
+      const shQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+      const childScript = [
+        'const fs = require("node:fs");',
+        "const [pidFile, logFile] = process.argv.slice(1);",
+        'const tmp = pidFile + ".tmp";',
+        "fs.writeFileSync(tmp, String(process.pid));",
+        "fs.renameSync(tmp, pidFile);",
+        'fs.appendFileSync(logFile, "tick\\n");',
+        'setInterval(() => fs.appendFileSync(logFile, "tick\\n"), 15);',
+      ].join(" ");
+
+      const stubNpm = join(stubBinDir, "npm");
+      writeFileSync(
+        stubNpm,
+        `#!/bin/sh\n` +
+          `${shQuote(process.execPath)} -e ${shQuote(childScript)} ${shQuote(childPidFile)} ${shQuote(destLogFile)} </dev/null >/dev/null 2>&1 &\n` +
+          `sleep 30\n`,
+        "utf8",
+      );
+      chmodSync(stubNpm, 0o755);
+
+      const fastNpm = join(fastBinDir, "npm");
+      writeFileSync(fastNpm, "#!/bin/sh\nexit 0\n", "utf8");
+      chmodSync(fastNpm, 0o755);
+
+      const ac = new AbortController();
+      const installPromise = runLspServerInstall(BUILTIN_INSTALL_RECIPES.typescript, stubBinDir, {
+        managedLspDir,
+        signal: ac.signal,
+      });
+
+      let childPid = 0;
+      try {
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline) {
+          if (existsSync(childPidFile) && existsSync(destLogFile)) {
+            const parsedPid = Number.parseInt(readFileSync(childPidFile, "utf8").trim(), 10);
+            const lines = readFileSync(destLogFile, "utf8").split("\n").filter(Boolean);
+            if (Number.isInteger(parsedPid) && parsedPid > 0 && lines.length >= 1) {
+              childPid = parsedPid;
+              break;
+            }
+          }
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        assert.ok(childPid > 0, "expected descendant writer subprocess to record its PID and write to destLogFile");
+
+        ac.abort();
+        const res = await installPromise;
+        assert.equal(res.ok, false);
+
+        const snapshotAfterAbort = readFileSync(destLogFile, "utf8");
+        const secondRes = await runLspServerInstall(BUILTIN_INSTALL_RECIPES.typescript, fastBinDir, {
+          managedLspDir,
+        });
+        assert.equal(secondRes.ok, true, "expected per-server lock to be released immediately after abort settles");
+
+        await new Promise((r) => setTimeout(r, 150));
+        assert.equal(
+          readFileSync(destLogFile, "utf8"),
+          snapshotAfterAbort,
+          "expected zero additional writes to destLogFile after aborted install settled",
+        );
+        assert.equal(isPidAlive(childPid), false, `expected descendant writer PID ${childPid} to be terminated`);
+      } finally {
+        ac.abort();
+        await installPromise.catch(() => {});
+        if (!childPid && existsSync(childPidFile)) {
+          const parsedPid = Number.parseInt(readFileSync(childPidFile, "utf8").trim(), 10);
+          if (Number.isInteger(parsedPid) && parsedPid > 0) childPid = parsedPid;
+        }
+        if (childPid > 0 && isPidAlive(childPid)) {
+          try {
+            process.kill(childPid, "SIGKILL");
+          } catch {
+            // Already exited
+          }
+        }
+      }
+    });
+
     it("aborts the installRunner AbortSignal when claim renewal fails mid-install", async () => {
       writeGlobalSettings({ lsp_enabled: true });
       recordPendingLspInstallRequest("python", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);

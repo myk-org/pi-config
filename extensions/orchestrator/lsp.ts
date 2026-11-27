@@ -18,7 +18,7 @@
  *   `session_shutdown`, and silent degradation on missing binaries or errors.
  */
 
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -26,7 +26,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import type { ExtensionAPI, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 import { acquireTokenFileLock } from "../shared/file-lock.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
@@ -39,7 +38,6 @@ import {
 import { openStateDb, withTransaction } from "./state-db.js";
 import { resolveWorktreeRoot } from "./utils.js";
 
-const execFileAsync = promisify(execFile);
 const defaultLog = createLogger("lsp");
 
 export const DEFAULT_DIAGNOSTICS_TIMEOUT_MS = 1_500;
@@ -814,6 +812,231 @@ function prependDirToProcessPath(binDir: string): void {
   }
 }
 
+const MAX_INSTALL_OUTPUT_BYTES = 64 * 1024;
+const PROCESS_GROUP_POLL_MS = 20;
+const PROCESS_GROUP_TERM_WAIT_MS = 500;
+const PROCESS_GROUP_KILL_WAIT_MS = 1_000;
+
+function createAbortError(message = "Install aborted"): Error {
+  const err = new Error(message);
+  err.name = "AbortError";
+  return err;
+}
+
+function isProcessGroupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err: any) {
+    return err?.code === "EPERM";
+  }
+}
+
+async function runAbortableProcessGroup(
+  command: string,
+  args: string[],
+  options: { timeoutMs: number; signal?: AbortSignal },
+): Promise<{ stdout: string; stderr: string }> {
+  if (options.signal?.aborted) {
+    throw createAbortError();
+  }
+
+  const child = spawn(command, args, {
+    detached: process.platform !== "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+
+  child.stdout?.on("data", (chunk: Buffer) => {
+    const remaining = MAX_INSTALL_OUTPUT_BYTES - stdoutBytes;
+    if (remaining <= 0) return;
+    const slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+    stdoutChunks.push(slice);
+    stdoutBytes += slice.byteLength;
+  });
+
+  child.stderr?.on("data", (chunk: Buffer) => {
+    const remaining = MAX_INSTALL_OUTPUT_BYTES - stderrBytes;
+    if (remaining <= 0) return;
+    const slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+    stderrChunks.push(slice);
+    stderrBytes += slice.byteLength;
+  });
+
+  const state: {
+    aborted: boolean;
+    timedOut: boolean;
+    childClosed: boolean;
+    spawnError: Error | null;
+    exitCode: number | null;
+    exitSignal: NodeJS.Signals | null;
+    terminatePromise: Promise<void> | null;
+  } = {
+    aborted: false,
+    timedOut: false,
+    childClosed: false,
+    spawnError: null,
+    exitCode: null,
+    exitSignal: null,
+    terminatePromise: null,
+  };
+
+  let resolveChildClose!: () => void;
+  const childClosePromise = new Promise<void>((resolve) => {
+    resolveChildClose = resolve;
+  });
+  const markChildClosed = (): void => {
+    if (state.childClosed) return;
+    state.childClosed = true;
+    resolveChildClose();
+  };
+
+  const waitUntilGroupDead = async (pgid: number, maxWaitMs: number): Promise<boolean> => {
+    const deadline = Date.now() + maxWaitMs;
+    while (!state.childClosed || isProcessGroupAlive(pgid)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise((r) => setTimeout(r, Math.min(PROCESS_GROUP_POLL_MS, remaining)));
+    }
+    return true;
+  };
+
+  const signalProcessGroup = (pgid: number, sig: NodeJS.Signals): void => {
+    try {
+      process.kill(-pgid, sig);
+    } catch (err: any) {
+      if (err?.code !== "ESRCH") {
+        defaultLog.debug("lsp_install_pgid_signal_failed", {
+          pgid,
+          signal: sig,
+          error: err?.message ?? String(err),
+        });
+      }
+    }
+  };
+
+  const terminateProcessGroupAndWait = (target: ChildProcess): Promise<void> => {
+    if (state.terminatePromise) return state.terminatePromise;
+    state.terminatePromise = (async () => {
+      const pid = target.pid;
+      if (!pid || pid <= 0) {
+        await childClosePromise;
+        return;
+      }
+
+      if (process.platform === "win32") {
+        await new Promise<void>((resolve) => {
+          try {
+            const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+              stdio: "ignore",
+              windowsHide: true,
+            });
+            killer.once("error", () => resolve());
+            killer.once("close", () => resolve());
+          } catch {
+            resolve();
+          }
+        });
+        await childClosePromise;
+        return;
+      }
+
+      const pgid = pid;
+      signalProcessGroup(pgid, "SIGTERM");
+      if (await waitUntilGroupDead(pgid, PROCESS_GROUP_TERM_WAIT_MS)) {
+        return;
+      }
+      signalProcessGroup(pgid, "SIGKILL");
+      await waitUntilGroupDead(pgid, PROCESS_GROUP_KILL_WAIT_MS);
+    })();
+    return state.terminatePromise;
+  };
+
+  child.once("error", (err) => {
+    state.spawnError = err;
+    if (!child.pid) {
+      markChildClosed();
+    } else {
+      void terminateProcessGroupAndWait(child);
+    }
+  });
+
+  child.once("exit", (code, signal) => {
+    state.exitCode = code;
+    state.exitSignal = signal;
+    if (process.platform !== "win32" && child.pid && child.pid > 0 && isProcessGroupAlive(child.pid)) {
+      void terminateProcessGroupAndWait(child);
+    }
+  });
+
+  child.once("close", (code, signal) => {
+    if (state.exitCode === null && code !== null) state.exitCode = code;
+    if (state.exitSignal === null && signal !== null) state.exitSignal = signal;
+    markChildClosed();
+    if (process.platform !== "win32" && child.pid && child.pid > 0 && isProcessGroupAlive(child.pid)) {
+      void terminateProcessGroupAndWait(child);
+    }
+  });
+
+  const onAbort = (): void => {
+    state.aborted = true;
+    void terminateProcessGroupAndWait(child);
+  };
+
+  const timer = setTimeout(() => {
+    if (!state.aborted && state.exitCode === null && state.exitSignal === null) {
+      state.timedOut = true;
+    }
+    void terminateProcessGroupAndWait(child);
+  }, Math.max(1, options.timeoutMs));
+  timer.unref();
+
+  if (options.signal) {
+    if (options.signal.aborted) {
+      onAbort();
+    } else {
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    }
+  }
+
+  try {
+    await childClosePromise;
+    if (state.terminatePromise) {
+      await state.terminatePromise;
+    } else if (process.platform !== "win32" && child.pid && child.pid > 0 && isProcessGroupAlive(child.pid)) {
+      await terminateProcessGroupAndWait(child);
+    }
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+
+  if (state.aborted || options.signal?.aborted) {
+    throw createAbortError();
+  }
+  if (state.timedOut) {
+    throw new Error("Install timed out");
+  }
+
+  const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+  const stderr = Buffer.concat(stderrChunks).toString("utf8");
+
+  if (state.spawnError) {
+    const detail = stderr.trim();
+    throw new Error(detail || state.spawnError.message || `Failed to run ${command}`);
+  }
+  if (state.exitCode === 0 && state.exitSignal === null) {
+    return { stdout, stderr };
+  }
+  const detail = stderr.trim();
+  const reason = state.exitSignal ? `signal ${state.exitSignal}` : `exit code ${state.exitCode ?? "unknown"}`;
+  throw new Error(detail || `${command} exited with ${reason}`);
+}
+
 /**
  * Safely run a built-in LSP server install recipe (no shell interpolation).
  * TypeScript installs `typescript@6` + `typescript-language-server` into an
@@ -856,10 +1079,10 @@ export async function runLspServerInstall(
       const binDir = getManagedLspBinDir(managedDir);
       fs.mkdirSync(prefixDir, { recursive: true });
       fs.mkdirSync(binDir, { recursive: true });
-      await execFileAsync(
+      await runAbortableProcessGroup(
         prereqBin,
         ["install", "--prefix", prefixDir, "typescript@6", "typescript-language-server"],
-        { timeout: 180_000, signal: options.signal },
+        { timeoutMs: 180_000, signal: options.signal },
       );
       if (options.signal?.aborted) {
         return { ok: false, error: "Install aborted" };
@@ -880,8 +1103,8 @@ export async function runLspServerInstall(
     }
 
     if (recipe.serverId === "python") {
-      await execFileAsync(prereqBin, ["tool", "install", "--upgrade", "basedpyright"], {
-        timeout: 180_000,
+      await runAbortableProcessGroup(prereqBin, ["tool", "install", "--upgrade", "basedpyright"], {
+        timeoutMs: 180_000,
         signal: options.signal,
       });
       if (options.signal?.aborted) {
@@ -891,8 +1114,8 @@ export async function runLspServerInstall(
       return { ok: true };
     }
 
-    await execFileAsync(prereqBin, ["install", "golang.org/x/tools/gopls@latest"], {
-      timeout: 180_000,
+    await runAbortableProcessGroup(prereqBin, ["install", "golang.org/x/tools/gopls@latest"], {
+      timeoutMs: 180_000,
       signal: options.signal,
     });
     if (options.signal?.aborted) {
@@ -900,8 +1123,8 @@ export async function runLspServerInstall(
     }
     let goBin = path.join(os.homedir(), "go", "bin");
     try {
-      const { stdout } = await execFileAsync(prereqBin, ["env", "GOPATH"], {
-        timeout: 5_000,
+      const { stdout } = await runAbortableProcessGroup(prereqBin, ["env", "GOPATH"], {
+        timeoutMs: 5_000,
         signal: options.signal,
       });
       const gopath = stdout.trim().split(path.delimiter)[0];
