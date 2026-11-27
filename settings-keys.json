@@ -765,5 +765,18 @@
     "env": "PI_MAGIC_KEYWORDS",
     "default": true,
     "group": "Session"
+  },
+  "lsp_enabled": {
+    "description": "Enable opt-in LSP diagnostics after write/edit tool calls using already-installed language servers on PATH",
+    "type": "bool",
+    "env": "PI_LSP_ENABLED",
+    "default": false,
+    "group": "LSP"
+  },
+  "lsp_servers": {
+    "description": "Optional per-server LSP overrides mapping server id to {command, args?, extensions}",
+    "type": "lsp_servers",
+    "default": {},
+    "group": "LSP"
   }
 }

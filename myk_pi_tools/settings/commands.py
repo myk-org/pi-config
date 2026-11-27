@@ -354,6 +354,49 @@ def _parse_agent_overrides(raw: Any) -> dict[str, Any] | None:
     return overrides if overrides else None
 
 
+def _parse_lsp_servers(raw: Any) -> dict[str, Any] | None:
+    """Parse lsp_servers nested object. Invalid → None."""
+    if not isinstance(raw, dict):
+        return None
+    if not raw:
+        return {}
+    servers: dict[str, Any] = {}
+    for raw_id, val in raw.items():
+        server_id = str(raw_id).strip()
+        if not server_id or not isinstance(val, dict):
+            continue
+        cmd = val.get("command")
+        if not isinstance(cmd, str) or not cmd.strip():
+            continue
+        raw_args = val.get("args", _MISSING)
+        args: list[str] | None = None
+        if raw_args is not _MISSING:
+            if not isinstance(raw_args, list) or not all(isinstance(a, str) for a in raw_args):
+                continue
+            args = list(raw_args)
+        raw_exts = val.get("extensions")
+        if not isinstance(raw_exts, list) or not raw_exts:
+            continue
+        exts: list[str] = []
+        valid_exts = True
+        for ext in raw_exts:
+            if not isinstance(ext, str) or not ext.strip():
+                valid_exts = False
+                break
+            norm = ext.strip().lower()
+            exts.append(norm if norm.startswith(".") else f".{norm}")
+        if not valid_exts or not exts:
+            continue
+        entry: dict[str, Any] = {"command": cmd.strip(), "extensions": exts}
+        if args is not None:
+            entry["args"] = args
+        servers[server_id] = entry
+    dropped = len(raw) - len(servers)
+    if dropped:
+        log.debug("settings: dropped %d invalid lsp_servers entry(ies)", dropped)
+    return servers if servers else None
+
+
 def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> Any | None:
     """Validate one settings-file value from JSON type metadata. Invalid → None."""
     if key not in raw:
@@ -388,6 +431,8 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
         return None
     if typ == "agent_overrides":
         return _parse_agent_overrides(value)
+    if typ == "lsp_servers":
+        return _parse_lsp_servers(value)
     if typ == "string_list":
         if isinstance(value, list):
             filtered = [e for e in value if isinstance(e, str) and e]
@@ -575,7 +620,7 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
                 return env.strip()
         return default
 
-    if typ == "agent_overrides":
+    if typ in ("agent_overrides", "lsp_servers"):
         return default if isinstance(default, dict) else {}
 
     return default
@@ -623,7 +668,7 @@ def _resolve_key(key: str, ctx: _SettingsContext) -> SettingValue:
             if isinstance(value, int) and not isinstance(value, bool) and min_port <= value <= 65535:
                 return value
             # Invalid in merged — fall through to env/default
-        elif typ == "agent_overrides":
+        elif typ in ("agent_overrides", "lsp_servers"):
             return value if isinstance(value, dict) else {}
         elif typ == "string":
             return value if isinstance(value, str) else ""

@@ -548,3 +548,31 @@ def test_commented_json_settings_fall_back_to_commentjson(
 
     assert get_setting("coms_max_hops", cwd=_isolated_settings) == 8
     assert "commentjson" in sys.modules
+
+
+def test_lsp_settings_defaults_and_override_parsing(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PI_LSP_ENABLED", raising=False)
+    assert get_setting("lsp_enabled", cwd=_isolated_settings) is False
+    assert get_setting("lsp_servers", cwd=_isolated_settings) == {}
+
+    monkeypatch.setenv("PI_LSP_ENABLED", "true")
+    assert get_setting("lsp_enabled", cwd=_isolated_settings) is True
+
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({
+            "lsp_enabled": True,
+            "lsp_servers": {
+                "rust": {"command": "rust-analyzer", "args": [], "extensions": ["RS", ".toml"]},
+                "bad": {"command": "", "extensions": [".ts"]},
+            },
+        }),
+        encoding="utf-8",
+    )
+    assert get_setting("lsp_servers", cwd=_isolated_settings) == {
+        "rust": {"command": "rust-analyzer", "args": [], "extensions": [".rs", ".toml"]}
+    }

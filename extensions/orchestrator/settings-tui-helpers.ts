@@ -74,6 +74,12 @@ export function formatValue(key: string, value: unknown, def: SettingsKeyDef): s
         return entries.length > 0 ? `${entries.length} override(s)` : "(none)";
       }
       return "(none)";
+    case "lsp_servers":
+      if (typeof value === "object" && value !== null) {
+        const entries = Object.entries(value);
+        return entries.length > 0 ? `${entries.length} server(s)` : "(none)";
+      }
+      return "(none)";
     default:
       return String(value);
   }

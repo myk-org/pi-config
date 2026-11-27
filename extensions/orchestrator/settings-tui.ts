@@ -343,6 +343,25 @@ export function buildCategoryItems(
           };
           break;
         }
+
+        case "lsp_servers": {
+          item.submenu = (_current: string, done: (val?: string) => void): Component => {
+            const scopeFile = getFilePathForScope(editScope, cwd);
+            const raw = readSettingsFile(scopeFile);
+            const scopeVal =
+              raw && typeof raw[key] === "object" && raw[key] !== null && !Array.isArray(raw[key])
+                ? JSON.stringify(raw[key])
+                : "{}";
+            return new InputSubmenu(
+              key,
+              scopeVal,
+              'Enter JSON object mapping server id to {"command":"...","args":[...],"extensions":[".ext"]}',
+              theme,
+              done,
+            );
+          };
+          break;
+        }
       }
     }
 

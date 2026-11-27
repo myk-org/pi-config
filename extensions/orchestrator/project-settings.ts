@@ -69,12 +69,15 @@ export function setSettingsLogger(logger: Partial<SettingsLogger>): void {
 export type SettingKey = keyof SettingsKeysSchema;
 export type AgentOverrideEntry = { provider?: string | null; model?: string | null };
 export type AgentOverrides = Record<string, AgentOverrideEntry>;
+export type LspServerOverride = { command: string; args?: string[]; extensions: string[] };
+export type LspServersConfig = Record<string, LspServerOverride>;
 
 type SpecialSettingValueMap = {
   commit_trailer: boolean | string;
   dangerous_command_allowlist: string[];
   restricted_folders: string[];
   agent_overrides: AgentOverrides;
+  lsp_servers: LspServersConfig;
 };
 
 export type SettingValue<K extends SettingKey> =
@@ -89,7 +92,7 @@ export type SettingValue<K extends SettingKey> =
           : unknown;
 
 export type ProjectSettings = { [K in SettingKey]?: SettingValue<K> };
-export type AnySettingValue = boolean | string | number | string[] | AgentOverrides;
+export type AnySettingValue = boolean | string | number | string[] | AgentOverrides | LspServersConfig;
 export type SettingsScope = "project" | "global";
 export type SettingSource = "P" | "G" | "E" | "D";
 
@@ -567,6 +570,73 @@ function validateAgentOverrides(
   return { ok: true, value: overrides };
 }
 
+function validateLspServers(
+  key: string,
+  value: unknown,
+  mode: "strict" | "lenient",
+): ValidationResult<LspServersConfig> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: `${key} must be an object mapping server id to {command, args?, extensions}` };
+  }
+  const rawEntries = Object.entries(value as Record<string, unknown>);
+  const servers: LspServersConfig = {};
+  for (const [rawId, val] of rawEntries) {
+    const id = rawId.trim();
+    if (!id || typeof val !== "object" || val === null || Array.isArray(val)) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${rawId} must be an object with {command, args?, extensions}` };
+      }
+      continue;
+    }
+    const v = val as { command?: unknown; args?: unknown; extensions?: unknown };
+    if (typeof v.command !== "string" || !v.command.trim()) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${id}.command must be a non-empty string` };
+      }
+      continue;
+    }
+    let args: string[] | undefined;
+    if (v.args !== undefined) {
+      if (!Array.isArray(v.args) || !v.args.every((a) => typeof a === "string")) {
+        if (mode === "strict") {
+          return { ok: false, error: `${key}.${id}.args must be an array of strings` };
+        }
+        continue;
+      }
+      args = [...v.args];
+    }
+    if (!Array.isArray(v.extensions) || v.extensions.length === 0) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${id}.extensions must be a non-empty array of strings` };
+      }
+      continue;
+    }
+    const normalizedExts: string[] = [];
+    let extInvalid = false;
+    for (const ext of v.extensions) {
+      if (typeof ext !== "string" || !ext.trim()) {
+        extInvalid = true;
+        break;
+      }
+      const trimmed = ext.trim().toLowerCase();
+      normalizedExts.push(trimmed.startsWith(".") ? trimmed : `.${trimmed}`);
+    }
+    if (extInvalid || normalizedExts.length === 0) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${id}.extensions must be a non-empty array of non-empty strings` };
+      }
+      continue;
+    }
+    const entry: LspServerOverride = { command: v.command.trim(), extensions: normalizedExts };
+    if (args !== undefined) entry.args = args;
+    servers[id] = entry;
+  }
+  if (mode === "lenient" && rawEntries.length > 0 && Object.keys(servers).length === 0) {
+    return { ok: false, error: `${key} has no valid server entries` };
+  }
+  return { ok: true, value: servers };
+}
+
 /**
  * Validate and normalize a single setting value against `settings-keys.json`.
  * Used consistently across file parsing, env resolution, TUI edits, and browser edits.
@@ -668,6 +738,9 @@ export function validateSetting(
     case "agent_overrides":
       return validateAgentOverrides(key, value, mode);
 
+    case "lsp_servers":
+      return validateLspServers(key, value, mode);
+
     default:
       return { ok: false, error: `${key} has unsupported type ${def.type}` };
   }
@@ -738,7 +811,8 @@ export function parseSettingInput(key: string, rawValue: string): ValidationResu
       return { ok: true, value: trimmed !== "" ? [trimmed] : [] };
     }
 
-    case "agent_overrides": {
+    case "agent_overrides":
+    case "lsp_servers": {
       try {
         const parsed = JSON.parse(rawValue);
         return validateSetting(key, parsed);
@@ -1031,7 +1105,9 @@ export function resolveSetting(
       ? (Array.isArray(def.default) ? [...(def.default as string[])] : [])
       : def.type === "agent_overrides"
         ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as AgentOverrides) } : {})
-        : (def.default as AnySettingValue);
+        : def.type === "lsp_servers"
+          ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as LspServersConfig) } : {})
+          : (def.default as AnySettingValue);
   return { value: defaultVal, source: "D" };
 }
 

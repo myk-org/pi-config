@@ -1179,6 +1179,43 @@ Elision never rewrites user messages, assistant prose, thinking/reasoning blocks
 export PI_MAGIC_KEYWORDS=false
 ```
 
+## Opt-In LSP Diagnostics
+
+### `lsp_enabled`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `lsp_enabled` | boolean | `false` | `PI_LSP_ENABLED` | Enables opt-in language server diagnostics after `write` and `edit` tool calls. | Defaults to `false` for zero CPU and memory overhead. When `true`, lazily starts an already-installed language server on `PATH` (`typescript-language-server --stdio` for TS/JS, `basedpyright-langserver --stdio` / `pyright-langserver --stdio` / `ruff server` for Python, `gopls` for Go) per `(rootDir, serverId)`, waits up to `1500ms` for `textDocument/publishDiagnostics`, and appends concise error/warning lines (`file:line:col [error|warning] message`, capped at 20 lines) to the tool result. Never downloads binaries, fails soft if no server is installed or a server hangs/crashes, shuts down idle servers after 5 minutes, and cleans up all child processes on `session_shutdown`. Skipped in subagent children (`PI_SUBAGENT_CHILD=1`) unless `PI_LSP_IN_SUBAGENTS=1` is set. |
+
+```json
+{
+  "lsp_enabled": true
+}
+```
+
+```bash
+export PI_LSP_ENABLED=true
+```
+
+### `lsp_servers`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `lsp_servers` | object (`Record<string, { command, args?, extensions }>`) | `{}` | none | Optional per-server LSP overrides or additions. | Maps a server ID to `{ "command": "...", "args": [...], "extensions": [".ext"] }`. Overrides matching built-in server IDs (`typescript`, `python`, `go`) or adds servers for other extensions. Commands are resolved on `PATH` (or as explicit executable paths) without downloading anything. |
+
+```json
+{
+  "lsp_enabled": true,
+  "lsp_servers": {
+    "rust": {
+      "command": "rust-analyzer",
+      "args": [],
+      "extensions": [".rs"]
+    }
+  }
+}
+```
+
 ## Environment-only Process Flag
 
 ### `PI_SUBAGENT_CHILD`

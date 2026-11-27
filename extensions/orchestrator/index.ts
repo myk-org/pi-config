@@ -57,6 +57,7 @@ import { registerSessionSpill } from "./session-spill.js";
 import { registerPreCompactionElision } from "./pre-compaction-elision.js";
 import { registerMagicKeywords } from "./magic-keywords.js";
 import { registerAdvisor } from "./advisor.js";
+import { registerLsp } from "./lsp.js";
 import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
@@ -222,6 +223,8 @@ export default function (pi: ExtensionAPI) {
   registerSessionSearch(pi);
   registerSettingsTui(pi);
   registerMarkdownTransformer(pi);
+  // Opt-in LSP diagnostics appended to write/edit tool results (default disabled) (#1445).
+  registerLsp(pi);
   // Register session spill LAST among tool_result hooks so enforcement, trail,
   // review-learning, pr-retro, and skill-maintenance inspect full outputs first (#1420).
   registerSessionSpill(pi);
