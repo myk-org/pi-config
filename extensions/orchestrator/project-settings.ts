@@ -71,11 +71,15 @@ export type AgentOverrideEntry = { provider?: string | null; model?: string | nu
 export type AgentOverrides = Record<string, AgentOverrideEntry>;
 export type LspServerOverride = { command: string; args?: string[]; extensions: string[] };
 export type LspServersConfig = Record<string, LspServerOverride>;
+export type ToolPermissionAction = "allow" | "ask" | "deny";
+export type ToolPermissionRuleValue = ToolPermissionAction | Record<string, ToolPermissionAction>;
+export type ToolPermissions = Record<string, ToolPermissionRuleValue>;
 
 type SpecialSettingValueMap = {
   commit_trailer: boolean | string;
   dangerous_command_allowlist: string[];
   restricted_folders: string[];
+  tool_permissions: ToolPermissions;
   agent_overrides: AgentOverrides;
   lsp_servers: LspServersConfig;
 };
@@ -92,7 +96,7 @@ export type SettingValue<K extends SettingKey> =
           : unknown;
 
 export type ProjectSettings = { [K in SettingKey]?: SettingValue<K> };
-export type AnySettingValue = boolean | string | number | string[] | AgentOverrides | LspServersConfig;
+export type AnySettingValue = boolean | string | number | string[] | AgentOverrides | LspServersConfig | ToolPermissions;
 export type SettingsScope = "project" | "global";
 export type SettingSource = "P" | "G" | "E" | "D";
 
@@ -637,6 +641,99 @@ function validateLspServers(
   return { ok: true, value: servers };
 }
 
+const TOOL_PERMISSION_ACTIONS = new Set<string>(["allow", "ask", "deny"]);
+
+function normalizeToolPermissionAction(val: unknown): ToolPermissionAction | null {
+  if (typeof val !== "string") return null;
+  const normalized = val.trim().toLowerCase();
+  return TOOL_PERMISSION_ACTIONS.has(normalized) ? (normalized as ToolPermissionAction) : null;
+}
+
+function validateToolPermissions(
+  key: string,
+  value: unknown,
+  mode: "strict" | "lenient",
+): ValidationResult<ToolPermissions> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    if (mode === "lenient") {
+      log.warn("tool_permissions_invalid_type", { key });
+    }
+    return {
+      ok: false,
+      error: `${key} must be an object mapping tool/glob/annotation selectors to "allow"|"ask"|"deny" or a nested host rule map`,
+    };
+  }
+  const rawEntries = Object.entries(value as Record<string, unknown>);
+  const rules: ToolPermissions = {};
+  for (const [rawSelector, rawVal] of rawEntries) {
+    const selector = rawSelector.trim();
+    if (!selector) {
+      if (mode === "strict") return { ok: false, error: `${key} contains an empty rule selector` };
+      log.warn("tool_permissions_empty_selector_dropped", { key });
+      continue;
+    }
+    const normalizedAction = normalizeToolPermissionAction(rawVal);
+    if (normalizedAction !== null) {
+      rules[selector] = normalizedAction;
+      continue;
+    }
+    if (typeof rawVal === "object" && rawVal !== null && !Array.isArray(rawVal)) {
+      const nestedEntries = Object.entries(rawVal as Record<string, unknown>);
+      const nested: Record<string, ToolPermissionAction> = {};
+      for (const [rawPattern, rawAction] of nestedEntries) {
+        const pattern = rawPattern.trim();
+        const nestedAction = normalizeToolPermissionAction(rawAction);
+        if (!pattern) {
+          if (mode === "strict") {
+            return {
+              ok: false,
+              error: `${key}.${selector}.${rawPattern} must map a non-empty pattern to "allow", "ask", or "deny"`,
+            };
+          }
+          log.warn("tool_permissions_empty_host_pattern_dropped", { key, selector });
+          continue;
+        }
+        if (nestedAction === null) {
+          if (mode === "strict") {
+            return {
+              ok: false,
+              error: `${key}.${selector}.${rawPattern} must map a non-empty pattern to "allow", "ask", or "deny"`,
+            };
+          }
+          // Fail closed on typo'd/malformed host action in settings file rather than
+          // silently dropping a rule and falling through to default-allow.
+          log.warn("tool_permissions_invalid_action_fail_closed", {
+            key,
+            selector,
+            pattern,
+          });
+          nested[pattern] = "deny";
+          continue;
+        }
+        nested[pattern] = nestedAction;
+      }
+      if (Object.keys(nested).length > 0 || (mode === "strict" && nestedEntries.length === 0)) {
+        rules[selector] = nested;
+      }
+      continue;
+    }
+    if (mode === "strict") {
+      return {
+        ok: false,
+        error: `${key}.${selector} must be "allow", "ask", "deny", or an object mapping patterns to actions`,
+      };
+    }
+    // Fail closed on typo'd/malformed selector action in settings file rather than
+    // silently disabling the rule.
+    log.warn("tool_permissions_invalid_action_fail_closed", { key, selector });
+    rules[selector] = "deny";
+  }
+  if (mode === "lenient" && rawEntries.length > 0 && Object.keys(rules).length === 0) {
+    return { ok: false, error: `${key} has no valid permission entries` };
+  }
+  return { ok: true, value: rules };
+}
+
 /**
  * Validate and normalize a single setting value against `settings-keys.json`.
  * Used consistently across file parsing, env resolution, TUI edits, and browser edits.
@@ -741,6 +838,9 @@ export function validateSetting(
     case "lsp_servers":
       return validateLspServers(key, value, mode);
 
+    case "tool_permissions":
+      return validateToolPermissions(key, value, mode);
+
     default:
       return { ok: false, error: `${key} has unsupported type ${def.type}` };
   }
@@ -812,7 +912,8 @@ export function parseSettingInput(key: string, rawValue: string): ValidationResu
     }
 
     case "agent_overrides":
-    case "lsp_servers": {
+    case "lsp_servers":
+    case "tool_permissions": {
       try {
         const parsed = JSON.parse(rawValue);
         return validateSetting(key, parsed);
@@ -970,7 +1071,11 @@ const SETTINGS_CACHE_MAX = 32;
 interface CachedLayer {
   checkedAt: number;
   file: string | null;
-  mtimeMs: number;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+  size: bigint;
+  ino: bigint;
+  dev: bigint;
   parsed: ProjectSettings;
 }
 
@@ -998,7 +1103,7 @@ export function clearSettingsCache(): void {
   layerCache.clear();
 }
 
-function readCachedLayer(scope: SettingsScope, cwd: string): CachedLayer {
+function readCachedLayer(scope: SettingsScope, cwd: string, verifyFresh = false): CachedLayer {
   const now = Date.now();
   let cacheKey: string;
   let resolveFile: () => string | null;
@@ -1025,34 +1130,75 @@ function readCachedLayer(scope: SettingsScope, cwd: string): CachedLayer {
   }
 
   const cached = layerCache.get(cacheKey);
-  if (cached && now - cached.checkedAt < SETTINGS_CACHE_TTL_MS) {
+  if (!verifyFresh && cached && now - cached.checkedAt < SETTINGS_CACHE_TTL_MS) {
     layerCache.delete(cacheKey);
     layerCache.set(cacheKey, cached);
     return cached;
   }
 
   const file = resolveFile();
-  let mtimeMs = 0;
+  let mtimeNs = 0n;
+  let ctimeNs = 0n;
+  let size = 0n;
+  let ino = 0n;
+  let dev = 0n;
   if (file) {
     try {
-      mtimeMs = statSync(file).mtimeMs;
+      const st = statSync(file, { bigint: true });
+      mtimeNs = st.mtimeNs;
+      ctimeNs = st.ctimeNs;
+      size = st.size;
+      ino = st.ino;
+      dev = st.dev;
     } catch {
-      mtimeMs = 0;
+      mtimeNs = 0n;
+      ctimeNs = 0n;
+      size = 0n;
+      ino = 0n;
+      dev = 0n;
     }
   }
-  if (cached && cached.file === file && cached.mtimeMs === mtimeMs) {
+  if (
+    cached &&
+    cached.file === file &&
+    cached.mtimeNs === mtimeNs &&
+    cached.ctimeNs === ctimeNs &&
+    cached.size === size &&
+    cached.ino === ino &&
+    cached.dev === dev
+  ) {
     cached.checkedAt = now;
+    layerCache.delete(cacheKey);
+    layerCache.set(cacheKey, cached);
     return cached;
   }
 
   const parsed = file ? parseSettingsFile(file) : {};
-  const entry: CachedLayer = { checkedAt: now, file, mtimeMs, parsed };
+  const entry: CachedLayer = { checkedAt: now, file, mtimeNs, ctimeNs, size, ino, dev, parsed };
   if (layerCache.size >= SETTINGS_CACHE_MAX) {
     const oldest = layerCache.keys().next().value;
     if (oldest !== undefined) layerCache.delete(oldest);
   }
   layerCache.set(cacheKey, entry);
   return entry;
+}
+
+/**
+ * Return parsed global and project settings through the coordinated layer cache
+ * (invalidated automatically on `writeSettingsFile` / `clearSettingsCache` / TTL / stat).
+ * Pass `{ verifyFresh: true }` for security-sensitive authorization paths so external
+ * file edits, replacements, or deletions are detected immediately via stat identity
+ * (`file`, `mtimeMs`, `size`, `ino`, `dev`) while keeping JSON parsing cached when unchanged.
+ */
+export function getCachedSettingsLayers(
+  cwd: string,
+  options?: { verifyFresh?: boolean },
+): { global: ProjectSettings; project: ProjectSettings } {
+  const verifyFresh = options?.verifyFresh === true;
+  return {
+    global: readCachedLayer("global", cwd, verifyFresh).parsed,
+    project: readCachedLayer("project", cwd, verifyFresh).parsed,
+  };
 }
 
 // ── Unified resolution & source detection ───────────────────────────
@@ -1107,7 +1253,9 @@ export function resolveSetting(
         ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as AgentOverrides) } : {})
         : def.type === "lsp_servers"
           ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as LspServersConfig) } : {})
-          : (def.default as AnySettingValue);
+          : def.type === "tool_permissions"
+            ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as ToolPermissions) } : {})
+            : (def.default as AnySettingValue);
   return { value: defaultVal, source: "D" };
 }
 

@@ -397,6 +397,57 @@ def _parse_lsp_servers(raw: Any) -> dict[str, Any] | None:
     return servers if servers else None
 
 
+_TOOL_PERMISSION_ACTIONS = frozenset({"allow", "ask", "deny"})
+
+
+def _normalize_tool_permission_action(val: Any) -> str | None:
+    if not isinstance(val, str):
+        return None
+    normalized = val.strip().lower()
+    return normalized if normalized in _TOOL_PERMISSION_ACTIONS else None
+
+
+def _parse_tool_permissions(raw: Any) -> dict[str, Any] | None:
+    """Parse tool_permissions rule object. Invalid top-level → None; invalid entry actions fail closed to 'deny'."""
+    if not isinstance(raw, dict):
+        log.warning("tool_permissions_invalid_type type=%s", type(raw).__name__)
+        return None
+    if not raw:
+        return {}
+    rules: dict[str, Any] = {}
+    for selector, val in raw.items():
+        if not isinstance(selector, str) or not selector.strip():
+            log.warning("tool_permissions_empty_selector_dropped")
+            continue
+        sel = selector.strip()
+        action = _normalize_tool_permission_action(val)
+        if action is not None:
+            rules[sel] = action
+        elif isinstance(val, dict):
+            nested: dict[str, str] = {}
+            for pattern_raw, act_raw in val.items():
+                if not isinstance(pattern_raw, str) or not pattern_raw.strip():
+                    log.warning("tool_permissions_empty_host_pattern_dropped selector=%s", sel)
+                    continue
+                pattern = pattern_raw.strip()
+                nested_action = _normalize_tool_permission_action(act_raw)
+                if nested_action is None:
+                    log.warning(
+                        "tool_permissions_invalid_action_fail_closed selector=%s pattern=%s",
+                        sel,
+                        pattern,
+                    )
+                    nested[pattern] = "deny"
+                else:
+                    nested[pattern] = nested_action
+            if nested:
+                rules[sel] = nested
+        else:
+            log.warning("tool_permissions_invalid_action_fail_closed selector=%s", sel)
+            rules[sel] = "deny"
+    return rules if rules else None
+
+
 def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> Any | None:
     """Validate one settings-file value from JSON type metadata. Invalid → None."""
     if key not in raw:
@@ -433,6 +484,8 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
         return _parse_agent_overrides(value)
     if typ == "lsp_servers":
         return _parse_lsp_servers(value)
+    if typ == "tool_permissions":
+        return _parse_tool_permissions(value)
     if typ == "string_list":
         if isinstance(value, list):
             filtered = [e for e in value if isinstance(e, str) and e]
@@ -620,7 +673,7 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
                 return env.strip()
         return default
 
-    if typ in ("agent_overrides", "lsp_servers"):
+    if typ in ("agent_overrides", "lsp_servers", "tool_permissions"):
         return default if isinstance(default, dict) else {}
 
     return default
@@ -668,7 +721,7 @@ def _resolve_key(key: str, ctx: _SettingsContext) -> SettingValue:
             if isinstance(value, int) and not isinstance(value, bool) and min_port <= value <= 65535:
                 return value
             # Invalid in merged — fall through to env/default
-        elif typ in ("agent_overrides", "lsp_servers"):
+        elif typ in ("agent_overrides", "lsp_servers", "tool_permissions"):
             return value if isinstance(value, dict) else {}
         elif typ == "string":
             return value if isinstance(value, str) else ""

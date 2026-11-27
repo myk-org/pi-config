@@ -177,6 +177,8 @@ export function registerAskUser(
   pi.registerTool({
     name: "ask_user",
     label: "Ask User",
+    exposure: "model-only",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description:
       "Ask the user a question with selectable options or free-text input. Never ask via plain text.",
     executionMode: "sequential",

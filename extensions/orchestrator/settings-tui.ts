@@ -362,6 +362,25 @@ export function buildCategoryItems(
           };
           break;
         }
+
+        case "tool_permissions": {
+          item.submenu = (_current: string, done: (val?: string) => void): Component => {
+            const scopeFile = getFilePathForScope(editScope, cwd);
+            const raw = readSettingsFile(scopeFile);
+            const scopeRules =
+              raw && typeof raw[key] === "object" && raw[key] !== null && !Array.isArray(raw[key])
+                ? raw[key]
+                : {};
+            return new InputSubmenu(
+              `${key} — JSON rules`,
+              JSON.stringify(scopeRules),
+              'Enter JSON rules, e.g. {"fetch_content":{"*":"ask","github.com":"allow"}} or {}',
+              theme,
+              done,
+            );
+          };
+          break;
+        }
       }
     }
 
@@ -507,7 +526,9 @@ class SettingsOverlay implements Component {
         // (Qodo PR #950 R5).
         const logValue = Array.isArray(parsed)
           ? `${parsed.length} entr${parsed.length === 1 ? "y" : "ies"} (values not logged)`
-          : String(parsed).slice(0, 60);
+          : typeof parsed === "object" && parsed !== null
+            ? `${Object.keys(parsed).length} rule(s) (values not logged)`
+            : String(parsed).slice(0, 60);
         log.info("settings_changed", id, logValue);
 
         // When provider changes, auto-clear the paired model to prevent stale cross-provider model

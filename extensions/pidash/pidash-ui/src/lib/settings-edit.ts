@@ -40,8 +40,10 @@ export function parseTypedSetting(raw: string, def: SettingsKey): { value: unkno
     const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
     return { value: list };
   }
-  if (t === "agent_overrides" || t === "lsp_servers") {
-    // Structured object settings must be sent as JSON objects, never raw strings.
+  if (t === "agent_overrides" || t === "lsp_servers" || t === "tool_permissions") {
+    // Structured object settings must parse as a JSON object — sending raw
+    // text would report a successful save while persisting an ignored string
+    // (Qodo R1).
     try {
       const parsed = JSON.parse(raw);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
@@ -50,7 +52,9 @@ export function parseTypedSetting(raw: string, def: SettingsKey): { value: unkno
           error:
             t === "lsp_servers"
               ? 'must be a JSON object: {"id": {"command": "...", "extensions": [".ext"]}}'
-              : 'must be a JSON object: {"agent": {"model": "..."}}',
+              : t === "tool_permissions"
+                ? 'must be a JSON object: {"fetch_content": {"*": "ask", "github.com": "allow"}}'
+                : 'must be a JSON object: {"agent": {"model": "..."}}',
         };
       }
       return { value: parsed };

@@ -61,6 +61,8 @@ The runtime skips registering `ask_user` on supervised peers and blocks non-TUI 
 
 ## Tool Reference
 
+All `coms_*` tools live in the `coms` `codemode` namespace — call them via `codemode` (`await tools.coms_peers({})`, `await tools.coms_send({ ... })`, batchable with `Promise.allSettled`).
+
 | Action | Tool |
 | --- | --- |
 | List connected peers | `coms_list` |

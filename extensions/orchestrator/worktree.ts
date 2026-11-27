@@ -8,6 +8,7 @@ import { hyperlink } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { isBrowserDispatch, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { createLogger } from "../shared/logger.js";
+import { TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import {
   countLinkedWorktrees,
   invalidateWorktreeCache,
@@ -671,6 +672,9 @@ export function registerWorktree(pi: ExtensionAPI, deps: WorktreeDeps = {}): voi
     pi.registerTool({
       name: "worktree_status",
       label: "Worktree Status",
+      exposure: "codemode",
+      namespace: TOOL_NAMESPACES.runtime,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       description:
         "Inspect git worktrees (path, branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata.",
       parameters: Type.Object({

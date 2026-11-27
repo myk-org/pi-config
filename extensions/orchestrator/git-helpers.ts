@@ -13,12 +13,15 @@ export function runGit(
   args: string[],
   cwd?: string,
   input?: string,
+  env?: NodeJS.ProcessEnv,
+  timeoutMs = 5000,
 ): { stdout: string; code: number } {
   try {
     const stdout = execFileSync("git", ["--no-optional-locks", ...args], {
       cwd,
       input,
-      timeout: 5000,
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
       env: {
@@ -27,6 +30,7 @@ export function runGit(
         LANGUAGE: "C",
         GIT_TERMINAL_PROMPT: "0",
         GCM_INTERACTIVE: "Never",
+        ...env,
       },
     });
     return { stdout: stdout.trimEnd(), code: 0 };
@@ -40,26 +44,39 @@ export function runGit(
   }
 }
 
-export type GitAsyncResult = { stdout: string; stderr?: string; code: number };
-export type GitAsyncRunner = (args: string[], cwd?: string) => Promise<GitAsyncResult>;
+export type GitAsyncResult = { stdout: string; stderr?: string; code: number; timedOut?: boolean };
+export type GitAsyncRunner = (
+  args: string[],
+  cwd?: string,
+  env?: NodeJS.ProcessEnv,
+  timeoutMs?: number,
+  input?: string,
+) => Promise<GitAsyncResult>;
 
-/** Async `git --no-optional-locks` runner (non-interactive, 5s timeout, C locale). */
-export function runGitAsync(args: string[], cwd?: string): Promise<GitAsyncResult> {
+/** Async `git --no-optional-locks` runner (non-interactive, C locale, optional timeout/env/stdin). */
+export function runGitAsync(
+  args: string[],
+  cwd?: string,
+  env?: NodeJS.ProcessEnv,
+  timeoutMs = 5000,
+  input?: string,
+): Promise<GitAsyncResult> {
   return new Promise((resolvePromise) => {
-    execFile(
+    const child = execFile(
       "git",
       ["--no-optional-locks", ...args],
       {
         cwd,
-        timeout: 5000,
+        timeout: timeoutMs,
         encoding: "utf-8",
-        maxBuffer: 1024 * 1024,
+        maxBuffer: 10 * 1024 * 1024,
         env: {
           ...process.env,
           LC_ALL: "C",
           LANGUAGE: "C",
           GIT_TERMINAL_PROMPT: "0",
           GCM_INTERACTIVE: "Never",
+          ...env,
         },
       },
       (err, stdout, stderr) => {
@@ -67,12 +84,17 @@ export function runGitAsync(args: string[], cwd?: string): Promise<GitAsyncResul
         const errOut = (typeof stderr === "string" ? stderr : "").trimEnd();
         if (err) {
           const exitCode = typeof (err as any).code === "number" ? (err as any).code : 1;
-          resolvePromise({ stdout: out, stderr: errOut, code: exitCode });
+          const timedOut = Boolean((err as any).killed || (err as any).code === "ETIMEDOUT");
+          resolvePromise({ stdout: out, stderr: errOut, code: exitCode, timedOut });
         } else {
           resolvePromise({ stdout: out, stderr: errOut, code: 0 });
         }
       },
     );
+    if (input !== undefined && child.stdin) {
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
   });
 }
 

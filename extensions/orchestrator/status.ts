@@ -11,6 +11,7 @@ import { formatCronSchedule } from "./cron-status-format.js";
 import { listWorktreesAsync, runGit } from "./git-helpers.js";
 import { formatWorktreeStatusSummary } from "./worktree-helpers.js";
 import { createLogger } from "../shared/logger.js";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 
 const log = createLogger("status");
 
@@ -160,6 +161,9 @@ export function registerStatus(
     pi.registerTool({
       name: "session_status",
       label: "Session Status",
+      exposure: "codemode",
+      namespace: TOOL_NAMESPACES.runtime,
+      annotations: READ_ONLY_LOCAL_ANNOTATIONS,
       description:
         "Return the unified session status snapshot (async agents, cron tasks, git branch & dirty state, worktree summary, context usage, loaded resources) — equivalent to /status.",
       parameters: Type.Object({}),

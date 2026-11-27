@@ -34,6 +34,7 @@
   "enforcement_loop_sleep_threshold_s": 60,
   "enforcement_sleep_threshold_s": 60,
   "restricted_folders": [],
+  "tool_permissions": {},
   "secret_obfuscation": false,
   "task_reminder_cadence_turns": 4,
   "task_headless_idle_reminder_minutes": 2,
@@ -50,6 +51,7 @@
   "pre_compaction_elision_keep_turns": 6,
   "pre_compaction_elision_min_chars": 2000,
   "magic_keywords": true,
+  "turn_snapshots": true,
   "lsp_enabled": false,
   "lsp_servers": {}
 }
