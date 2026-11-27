@@ -12,8 +12,12 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   SETTINGS_KEYS,
+  beginSettingsEditSession,
   clearSettingsCache,
+  endSettingsEditSession,
   setGlobalSettingsPath,
+  updateSetting,
+  updateSettingsTransaction,
 } from "../../../extensions/orchestrator/project-settings.js";
 import {
   PROTECTED_SETTING_KEYS,
@@ -707,6 +711,96 @@ describe("settings_set tool (#1473)", () => {
     assert.equal(conflicts.length, 1);
     const finalVal = JSON.parse(readFileSync(settingsFile, "utf8")).advisor_interval_turns;
     assert.ok(finalVal === 11 || finalVal === 19);
+  });
+
+  it("serializes updateSettingsTransaction against concurrent addDangerousAllowlistEntry processes", async () => {
+    const settingsFile = join(projectDir, ".pi", "pi-config-settings.json");
+    writeFileSync(settingsFile, JSON.stringify({ dco: false }), "utf8");
+
+    const tsxBin = join(process.cwd(), "node_modules", ".bin", "tsx");
+    const settingsMod = join(process.cwd(), "extensions", "orchestrator", "project-settings.ts");
+    const bashPolicyMod = join(process.cwd(), "extensions", "orchestrator", "bash-policy.ts");
+
+    const spawnScript = (script: string) =>
+      new Promise<string>((resolve, reject) => {
+        const child = spawn(tsxBin, ["-e", script], {
+          cwd: process.cwd(),
+          env: { ...process.env },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (d) => { out += String(d); });
+        child.stderr.on("data", (d) => { err += String(d); });
+        child.on("close", (code) => {
+          if (code !== 0) return reject(new Error(`child exited ${code}: ${err}`));
+          resolve(out.trim().split("\n").pop() ?? "");
+        });
+      });
+
+    const p1 = spawnScript(`
+      import { updateSettingsTransaction } from ${JSON.stringify(settingsMod)};
+      const res = updateSettingsTransaction(${JSON.stringify(projectDir)}, "project", [{ key: "dco", value: true }]);
+      console.log(JSON.stringify(res));
+    `);
+    const p2 = spawnScript(`
+      import { addDangerousAllowlistEntry } from ${JSON.stringify(bashPolicyMod)};
+      const res = addDangerousAllowlistEntry(${JSON.stringify(projectDir)}, "sudo reboot", "project");
+      console.log(JSON.stringify(res));
+    `);
+
+    const [out1, out2] = await Promise.all([p1, p2]);
+    assert.equal(JSON.parse(out1).ok, true);
+    assert.equal(JSON.parse(out2).ok, true);
+    const onDisk = JSON.parse(readFileSync(settingsFile, "utf8"));
+    assert.equal(onDisk.dco, true);
+    assert.ok(Array.isArray(onDisk.dangerous_command_allowlist));
+    assert.ok(onDisk.dangerous_command_allowlist.includes("sudo reboot"));
+  });
+
+  it("promotes a stale dead-process visit snapshot without stalling during deduplicated updateSetting", () => {
+    const settingsFile = join(projectDir, ".pi", "pi-config-settings.json");
+    writeFileSync(settingsFile, JSON.stringify({ dco: false }), "utf8");
+    const staleSnapshot = `${settingsFile}.bak.visit-999999`;
+    writeFileSync(staleSnapshot, JSON.stringify({ dco: false, trail_enable: false }), "utf8");
+
+    beginSettingsEditSession();
+    const started = Date.now();
+    try {
+      const res = updateSetting(projectDir, "project", "dco", true, { dedupeBackup: true });
+      const elapsed = Date.now() - started;
+      assert.equal(res.ok, true);
+      assert.ok(elapsed < 500, `expected fast locked recovery without stall, took ${elapsed}ms`);
+      assert.equal(existsSync(staleSnapshot), false);
+      assert.deepEqual(
+        JSON.parse(readFileSync(`${settingsFile}.bak.1`, "utf8")),
+        { dco: false, trail_enable: false },
+      );
+    } finally {
+      endSettingsEditSession();
+    }
+  });
+
+  it("synchronizes missing-file resets under the cross-process settings lock", () => {
+    const settingsFile = join(projectDir, ".pi", "pi-config-settings.json");
+    assert.equal(existsSync(settingsFile), false);
+    // Hold the lock with the live PID so a missing-file reset cannot bypass locking via an unlocked fast path
+    writeFileSync(`${settingsFile}.bak.lock`, String(process.pid), "utf8");
+    try {
+      const lockedRes = updateSettingsTransaction(projectDir, "project", [
+        { key: "dco", value: undefined, expected: { exists: false } },
+      ]);
+      assert.equal(lockedRes.ok, false);
+      if (!lockedRes.ok) assert.equal(lockedRes.reason, "write_error");
+    } finally {
+      rmSync(`${settingsFile}.bak.lock`, { force: true });
+    }
+
+    const unlockedRes = updateSettingsTransaction(projectDir, "project", [
+      { key: "dco", value: undefined, expected: { exists: false } },
+    ]);
+    assert.equal(unlockedRes.ok, true);
+    if (unlockedRes.ok) assert.equal(unlockedRes.changed, false);
   });
 
   it("emits orchestrator settings-changed event after approved update", async () => {

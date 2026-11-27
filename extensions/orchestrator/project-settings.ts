@@ -1387,8 +1387,8 @@ function visitSnapshotPath(filePath: string): string {
 /** Reusable 4-byte buffer for synchronous lock backoff. */
 const sleepBuf = new Int32Array(new SharedArrayBuffer(4));
 
-/** Serialize chain mutations across processes with an O_EXCL pid lockfile. */
-function withChainLock<T>(filePath: string, fn: () => T): T {
+/** Serialize read-modify-write and backup-chain mutations across processes with an O_EXCL pid lockfile. */
+export function withSettingsFileLock<T>(filePath: string, fn: () => T): T {
   const lockPath = `${filePath}.bak.lock`;
   let locked = false;
   try {
@@ -1462,10 +1462,10 @@ function promoteSnapshotLocked(snapshotPath: string, filePath: string): void {
 function promoteSnapshot(snapshotPath: string): void {
   const filePath = snapshotPath.replace(/\.bak\.visit-\d+$/, "");
   if (!existsSync(snapshotPath)) return;
-  withChainLock(filePath, () => promoteSnapshotLocked(snapshotPath, filePath));
+  withSettingsFileLock(filePath, () => promoteSnapshotLocked(snapshotPath, filePath));
 }
 
-function reapStaleVisitSnapshots(filePath: string): void {
+function reapStaleVisitSnapshots(filePath: string, lockHeld = false): void {
   const dir = dirname(filePath);
   const marker = `${basename(filePath)}.bak.visit-`;
   let entries: string[] = [];
@@ -1486,7 +1486,12 @@ function reapStaleVisitSnapshots(filePath: string): void {
       /* dead owner — promote snapshot */
     }
     try {
-      promoteSnapshot(join(dir, name));
+      const snapshotPath = join(dir, name);
+      if (lockHeld) {
+        if (existsSync(snapshotPath)) promoteSnapshotLocked(snapshotPath, filePath);
+      } else {
+        promoteSnapshot(snapshotPath);
+      }
       log.info("settings_visit_snapshot_recovered", { filePath, pid });
     } catch (e: unknown) {
       log.warn("settings_visit_snapshot_recover_failed", {
@@ -1547,7 +1552,7 @@ function rotateSettingsBackupsLocked(filePath: string, count: number): void {
 
 function rotateSettingsBackups(filePath: string, count: number): void {
   if (count <= 0) return;
-  withChainLock(filePath, () => rotateSettingsBackupsLocked(filePath, count));
+  withSettingsFileLock(filePath, () => rotateSettingsBackupsLocked(filePath, count));
 }
 
 /**
@@ -1584,7 +1589,7 @@ export function writeSettingsFile(
     if (options.dedupeBackup === true && editSessionDepth > 0) {
       if (shouldBackUp(filePath, true) && count > 0) {
         try {
-          reapStaleVisitSnapshots(filePath);
+          reapStaleVisitSnapshots(filePath, Boolean(options.lockHeld));
           copyFileSync(filePath, visitSnapshotPath(filePath));
           backedUpInSession.add(filePath);
           visitSnapshots.add(visitSnapshotPath(filePath));
@@ -1714,16 +1719,6 @@ export function updateSettingsTransaction(
     prepared.push({ key, clearing, validatedValue, expected });
   }
 
-  // Fast path: deleting unset keys when no settings file exists (avoid creating .pi or lockfile).
-  if (!existsSync(filePath) && prepared.every((m) => m.clearing)) {
-    for (const m of prepared) {
-      if (m.expected && m.expected.exists) {
-        return { ok: false, reason: "conflict", file: filePath, error: `${m.key} changed on disk before saving` };
-      }
-    }
-    return { ok: true, file: filePath, changed: false };
-  }
-
   const dir = dirname(filePath);
   if (process.env.NODE_TEST_CONTEXT !== undefined && !isInsideTempTree(filePath)) {
     const real = nearestRealPath(filePath);
@@ -1737,7 +1732,7 @@ export function updateSettingsTransaction(
 
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    return withChainLock(filePath, (): UpdateSettingResult => {
+    return withSettingsFileLock(filePath, (): UpdateSettingResult => {
       const current = readSettingsFile(filePath);
       if (current === null) {
         return {
