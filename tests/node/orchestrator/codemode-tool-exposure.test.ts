@@ -310,6 +310,7 @@ describe("Pi 1.6 tool exposure, namespaces, and annotations (#1451)", () => {
         worktree_status: { exposure: "codemode", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false } },
         daemon_manage: { exposure: "codemode", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
         list_models: { exposure: "codemode", annotations: ro },
+        settings_get: { exposure: "codemode", annotations: ro },
         cron_manage: { exposure: "codemode", annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
         session_search: { exposure: "codemode", annotations: ro },
         skill_adopt: { exposure: "deferred", annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },

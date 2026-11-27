@@ -46,6 +46,7 @@ import { registerReviewUI } from "./review-ui.js";
 import { registerSessionSearch } from "./session-search.js";
 import { closeStateDbs } from "./state-db.js";
 import { registerSettingsTui } from "./settings-tui.js";
+import { registerSettingsTools } from "./settings-tools.js";
 import { buildSituationReport } from "./situation-report.js";
 import { listTopics } from "./memory-tree.js";
 import { registerMarkdownTransformer } from "./markdown-transformer.js";
@@ -236,6 +237,7 @@ export default function (pi: ExtensionAPI) {
   registerTmpCleanup(pi);
   registerSessionSearch(pi);
   registerSettingsTui(pi);
+  registerSettingsTools(pi);
   registerMarkdownTransformer(pi);
   // Register session spill LAST among tool_result hooks so enforcement, trail,
   // review-learning, pr-retro, and skill-maintenance inspect full outputs first (#1420).

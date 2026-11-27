@@ -46,13 +46,15 @@ project file -> global file -> environment variable -> default
 
 | Parameter | Type | Default | Description | Effect |
 |---|---|---|---|---|
-| `/pi-config-settings` | slash command | none | Opens an interactive settings TUI over the same keys. | Saves to the file for the scope you are editing (project or global), and shows the valid values and env var for every key. |
+| `/pi-config-settings` | slash command | none | Opens an interactive settings TUI with a scrollable left category sidebar, cross-category search, and strict Project/Global scope isolation (`Tab`). | Global scope shows and edits strictly Global values (`G`/`D`, never leaking Project overrides); Project scope shows Project overrides (`P`) plus inherited `G`/`E`/`D` values. |
+| `settings_get` | LLM tool (`codemode`, `runtime` namespace) | read-only | Query a single `key`, filter by `category`, or set `only_overrides: true`. | Returns exact effective value, per-scope (`env`/`project`/`global`/`default`) values, active `source`, `global_only`, and description. |
+| `settings_set` | LLM tool (`model-only`, `destructiveHint: true`) | approval-gated | Update (`action: "set"`) or unset (`action: "reset"`) a setting in `global` or `project` scope. | Validates against `settings-keys.json`, enforces `global_only`, prompts in the local interactive terminal via `ctx.ui.select(..., { blockedKind: "permission" })` (never bridged over unauthenticated browser WebSockets) with a complete un-truncated diff and security banner on protected keys, verifies no concurrent edit occurred before writing, clears paired model keys when providers change, and fails closed in headless/browser/subagent sessions. Direct file edits to `pi-config-settings.json` remain hard-blocked. |
 
 ```text
 /pi-config-settings
 ```
 
-Use it when you would rather not guess an env var name or a numeric range — the TUI shows the valid values for every key. For the internals — source indicators, smart pickers, and how writes are performed — see [Project Settings Internals](project-settings.html).
+Use `/pi-config-settings` (or PiDash's **Settings** drawer tab) when you would rather not guess an env var name or a numeric range — typing immediately searches across all categories. For the internals — source indicators, smart pickers, and how writes are performed — see [Project Settings Internals](project-settings.html).
 
 ## Git & Workflow Keys
 
