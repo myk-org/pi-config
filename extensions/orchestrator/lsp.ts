@@ -19,15 +19,17 @@
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 import { acquireTokenFileLock } from "../shared/file-lock.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { createLogger, type Logger } from "../shared/logger.js";
 import {
   loadGlobalSettings,
@@ -48,6 +50,9 @@ export const DEFAULT_KILL_GRACE_MS = 300;
 export const DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 2;
 export const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1_000;
 export const MAX_DIAGNOSTIC_LINES = 20;
+export const DEFAULT_PENDING_INSTALL_POLL_MS = 2_000;
+export const DEFAULT_PENDING_CLAIM_TTL_MS = 5 * 60 * 1_000;
+export const DEFAULT_PROMPT_ERROR_BACKOFF_MS = 30_000;
 
 const MAX_RPC_BUFFER_BYTES = 10 * 1024 * 1024;
 const CIRCUIT_CRASH_WINDOW_MS = 60_000;
@@ -117,6 +122,8 @@ export interface LspManagerOptions {
   brokerRunDir?: string;
   envPath?: string;
   logger?: Logger;
+  /** Internal lifecycle hook invoked when `LspManager.shutdownAll()` runs. */
+  onShutdown?: () => void;
 }
 
 export interface RegisterLspOptions extends LspManagerOptions {
@@ -128,6 +135,12 @@ export interface RegisterLspOptions extends LspManagerOptions {
   installRunner?: (recipe: LspInstallRecipe) => Promise<{ ok: boolean; error?: string }>;
   /** Override executable verification after install in tests. */
   verifyInstalled?: (binary: string, envPath?: string) => string | null;
+  /** Poll interval for idle cross-process pending install checks (`0` disables watcher). */
+  pendingPollIntervalMs?: number;
+  /** Lease TTL for atomic cross-process pending install claims. */
+  pendingClaimTtlMs?: number;
+  /** Per-session retry backoff after a transient `ctx.ui.select()` failure. */
+  promptErrorBackoffMs?: number;
 }
 
 export const BUILTIN_INSTALL_RECIPES: Readonly<Record<string, LspInstallRecipe>> = Object.freeze({
@@ -517,9 +530,25 @@ const LSP_PENDING_INSTALL_TABLE_SQL = `
     server_id TEXT PRIMARY KEY,
     requested_at TEXT NOT NULL,
     source_cwd TEXT NOT NULL DEFAULT '',
-    source_role TEXT NOT NULL DEFAULT ''
+    source_role TEXT NOT NULL DEFAULT '',
+    claimed_by TEXT NOT NULL DEFAULT '',
+    claimed_at INTEGER NOT NULL DEFAULT 0
   )
 `;
+
+function ensurePendingInstallTable(db: DatabaseSync): void {
+  db.exec(LSP_PENDING_INSTALL_TABLE_SQL);
+  const cols = db
+    .prepare("PRAGMA table_info(lsp_pending_install_requests)")
+    .all() as Array<{ name?: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("claimed_by")) {
+    db.exec("ALTER TABLE lsp_pending_install_requests ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''");
+  }
+  if (!names.has("claimed_at")) {
+    db.exec("ALTER TABLE lsp_pending_install_requests ADD COLUMN claimed_at INTEGER NOT NULL DEFAULT 0");
+  }
+}
 
 export function recordPendingLspInstallRequest(
   serverId: string,
@@ -530,7 +559,7 @@ export function recordPendingLspInstallRequest(
   try {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
     withTransaction(dbPath, (db) => {
-      db.exec(LSP_PENDING_INSTALL_TABLE_SQL);
+      ensurePendingInstallTable(db);
       db.prepare(
         `INSERT INTO lsp_pending_install_requests (server_id, requested_at, source_cwd, source_role)
          VALUES (?, ?, ?, ?)
@@ -543,6 +572,76 @@ export function recordPendingLspInstallRequest(
   } catch (err: any) {
     defaultLog.warn("lsp_record_pending_install_failed", {
       serverId,
+      error: err?.message ?? String(err),
+    });
+  }
+}
+
+export function claimPendingLspInstallRequest(
+  serverId: string,
+  ownerId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+  ttlMs: number = DEFAULT_PENDING_CLAIM_TTL_MS,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!fs.existsSync(dbPath)) return false;
+  try {
+    return withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      const res = db
+        .prepare(
+          `UPDATE lsp_pending_install_requests
+           SET claimed_by = ?, claimed_at = ?
+           WHERE server_id = ? AND (claimed_by = '' OR claimed_by = ? OR claimed_at <= ?)`,
+        )
+        .run(ownerId, nowMs, serverId, ownerId, nowMs - Math.max(0, ttlMs));
+      return Number(res.changes) > 0;
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_claim_pending_install_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+    return false;
+  }
+}
+
+export function releasePendingLspInstallClaim(
+  serverId: string,
+  ownerId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): void {
+  if (!fs.existsSync(dbPath)) return;
+  try {
+    withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      db.prepare(
+        "UPDATE lsp_pending_install_requests SET claimed_by = '', claimed_at = 0 WHERE server_id = ? AND claimed_by = ?",
+      ).run(serverId, ownerId);
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_release_pending_install_claim_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+  }
+}
+
+export function releasePendingLspInstallClaimsByOwner(
+  ownerId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): void {
+  if (!fs.existsSync(dbPath)) return;
+  try {
+    withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      db.prepare(
+        "UPDATE lsp_pending_install_requests SET claimed_by = '', claimed_at = 0 WHERE claimed_by = ?",
+      ).run(ownerId);
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_release_pending_install_claims_failed", {
+      ownerId,
       error: err?.message ?? String(err),
     });
   }
@@ -585,7 +684,7 @@ export function clearPendingLspInstallRequest(
   if (!fs.existsSync(dbPath)) return;
   try {
     withTransaction(dbPath, (db) => {
-      db.exec(LSP_PENDING_INSTALL_TABLE_SQL);
+      ensurePendingInstallTable(db);
       db.prepare("DELETE FROM lsp_pending_install_requests WHERE server_id = ?").run(serverId);
     });
   } catch (err: any) {
@@ -593,6 +692,31 @@ export function clearPendingLspInstallRequest(
       serverId,
       error: err?.message ?? String(err),
     });
+  }
+}
+
+function isPendingLspInstallClaimedByOther(
+  serverId: string,
+  ownerId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+  ttlMs: number = DEFAULT_PENDING_CLAIM_TTL_MS,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!fs.existsSync(dbPath)) return false;
+  try {
+    const db = openStateDb(dbPath);
+    const row = db
+      .prepare("SELECT claimed_by, claimed_at FROM lsp_pending_install_requests WHERE server_id = ?")
+      .get(serverId) as { claimed_by?: string; claimed_at?: number } | undefined;
+    if (!row) return false;
+    const claimedBy = typeof row.claimed_by === "string" ? row.claimed_by : "";
+    const claimedAt = Number(row.claimed_at ?? 0);
+    return claimedBy !== "" && claimedBy !== ownerId && claimedAt > nowMs - Math.max(0, ttlMs);
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (msg.includes("no such table") || msg.includes("no such column")) return false;
+    defaultLog.debug("lsp_check_pending_claim_failed", { serverId, dbPath, error: msg });
+    return false;
   }
 }
 
@@ -1537,6 +1661,7 @@ export class LspManager {
   private readonly brokerRunDir: string;
   private readonly envPath?: string;
   private readonly log: Logger;
+  private readonly onShutdown?: () => void;
   private exitHookRegistered = false;
   private shuttingDown = false;
   private readonly onProcessExit = (): void => {
@@ -1566,6 +1691,7 @@ export class LspManager {
     this.brokerRunDir = options.brokerRunDir ?? getDefaultLspBrokerRunDir();
     this.envPath = options.envPath;
     this.log = options.logger ?? defaultLog;
+    this.onShutdown = options.onShutdown;
   }
 
   private circuitKey(worktreeRoot: string, server: ResolvedLspServer): string {
@@ -1966,6 +2092,7 @@ export class LspManager {
 
   async shutdownAll(): Promise<void> {
     this.shuttingDown = true;
+    this.onShutdown?.();
     while (this.allClients.size > 0 || this.replacing.size > 0) {
       const pendingReplaces = [...this.replacing.values()];
       const active = [...this.allClients];
@@ -1986,28 +2113,81 @@ export class LspManager {
 
 export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}): { manager: LspManager } {
   const log = options.logger ?? defaultLog;
-  // Default to the shared per-worktree UNIX-socket broker in production registration
-  // so main session, COMS peers, and editing subagents share 1 warm LSP server per worktree.
-  const manager = new LspManager({ useBroker: true, ...options });
   const checkSubagent = options.isSubagentChild ?? (() => process.env.PI_SUBAGENT_CHILD === "1");
   const installRunner = options.installRunner ?? ((recipe) => runLspServerInstall(recipe, options.envPath));
   const verifyInstalled = options.verifyInstalled ?? ((binary, envPath) => findExecutableOnPath(binary, envPath));
+  const pendingPollIntervalMs = options.pendingPollIntervalMs ?? DEFAULT_PENDING_INSTALL_POLL_MS;
+  const claimTtlMs = options.pendingClaimTtlMs ?? DEFAULT_PENDING_CLAIM_TTL_MS;
+  const promptErrorBackoffMs = options.promptErrorBackoffMs ?? DEFAULT_PROMPT_ERROR_BACKOFF_MS;
+  const claimOwnerId = `${process.pid}-${randomUUID()}`;
   const warnedUntrustedProject = new Set<string>();
   const promptedThisSession = new Set<string>();
   const promptInFlight = new Map<string, Promise<boolean>>();
+  const promptRetryAfter = new Map<string, number>();
   let shuttingDown = false;
   let drainingPendingPrompts = false;
+  let hasPendingClaims = false;
+  let lastInteractiveCtx: any = null;
+  let pendingPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  const isPromptBackedOff = (serverId: string): boolean => {
+    const until = promptRetryAfter.get(serverId);
+    if (until === undefined) return false;
+    if (Date.now() < until) return true;
+    promptRetryAfter.delete(serverId);
+    return false;
+  };
+
+  const stopPendingPollTimer = (): void => {
+    if (pendingPollTimer) {
+      clearInterval(pendingPollTimer);
+      pendingPollTimer = null;
+    }
+  };
+
+  const cleanupRegistration = (): void => {
+    shuttingDown = true;
+    stopPendingPollTimer();
+    lastInteractiveCtx = null;
+    if (hasPendingClaims) {
+      hasPendingClaims = false;
+      releasePendingLspInstallClaimsByOwner(
+        claimOwnerId,
+        options.installPrefsDbPath ?? getDefaultLspPrefsDbPath(),
+      );
+    }
+  };
+
+  // Default to the shared per-worktree UNIX-socket broker in production registration
+  // so main session, COMS peers, and editing subagents share 1 warm LSP server per worktree.
+  const manager = new LspManager({
+    useBroker: true,
+    ...options,
+    onShutdown: () => {
+      cleanupRegistration();
+      options.onShutdown?.();
+    },
+  });
 
   const promptAndInstallMissingServer = async (
     serverId: string,
     ctx: any,
     prefsDbPath: string,
     sourceRole?: string,
+    fromPendingQueue = false,
   ): Promise<boolean> => {
     const recipe = BUILTIN_INSTALL_RECIPES[serverId];
-    if (!recipe) return false;
+    if (!recipe) {
+      if (fromPendingQueue) releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+      return false;
+    }
 
-    if (promptedThisSession.has(serverId) || isLspInstallDismissed(serverId, prefsDbPath)) {
+    if (
+      promptedThisSession.has(serverId) ||
+      isLspInstallDismissed(serverId, prefsDbPath) ||
+      isPromptBackedOff(serverId)
+    ) {
+      if (fromPendingQueue) releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
       return false;
     }
 
@@ -2017,7 +2197,12 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
     }
 
     const runPrompt = (async (): Promise<boolean> => {
-      if (promptedThisSession.has(serverId) || isLspInstallDismissed(serverId, prefsDbPath)) {
+      if (
+        promptedThisSession.has(serverId) ||
+        isLspInstallDismissed(serverId, prefsDbPath) ||
+        isPromptBackedOff(serverId)
+      ) {
+        if (fromPendingQueue) releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
         return false;
       }
 
@@ -2032,52 +2217,63 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
       try {
         choice = await ctx.ui.select(title, [installChoice, notNowChoice, dismissChoice]);
       } catch (err: any) {
-        log.debug("lsp_install_prompt_failed", { serverId, error: err?.message });
-        promptedThisSession.add(serverId);
-        clearPendingLspInstallRequest(serverId, prefsDbPath);
+        log.warn("lsp_install_prompt_failed", { serverId, error: err?.message ?? String(err) });
+        releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+        promptRetryAfter.set(serverId, Date.now() + Math.max(0, promptErrorBackoffMs));
         return false;
       }
 
+      if (shuttingDown) {
+        releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+        return false;
+      }
+
+      promptRetryAfter.delete(serverId);
       promptedThisSession.add(serverId);
-      clearPendingLspInstallRequest(serverId, prefsDbPath);
 
       if (choice === dismissChoice) {
         dismissLspInstallPermanently(serverId, prefsDbPath);
+        clearPendingLspInstallRequest(serverId, prefsDbPath);
         log.info("lsp_install_prompt_dismissed_permanently", { serverId });
         return false;
       }
 
       if (choice !== installChoice) {
+        clearPendingLspInstallRequest(serverId, prefsDbPath);
         log.info("lsp_install_prompt_skipped_session", { serverId });
         return false;
       }
 
-      ctx.ui?.notify?.(`Installing ${recipe.label}...`, "info");
-      log.info("lsp_install_started", { serverId, command: recipe.displayCmd });
-      const result = await installRunner(recipe);
-      if (!result.ok) {
-        log.warn("lsp_install_failed", { serverId, error: result.error });
-        ctx.ui?.notify?.(`Failed to install ${recipe.label}: ${result.error || "unknown error"}`, "warning");
-        return false;
-      }
+      try {
+        ctx.ui?.notify?.(`Installing ${recipe.label}...`, "info");
+        log.info("lsp_install_started", { serverId, command: recipe.displayCmd });
+        const result = await installRunner(recipe);
+        if (!result.ok) {
+          log.warn("lsp_install_failed", { serverId, error: result.error });
+          ctx.ui?.notify?.(`Failed to install ${recipe.label}: ${result.error || "unknown error"}`, "warning");
+          return false;
+        }
 
-      const verified = verifyInstalled(recipe.binary, options.envPath ?? getDefaultLspSearchPath());
-      if (!verified) {
-        log.warn("lsp_install_binary_not_on_path", { serverId, binary: recipe.binary });
-        ctx.ui?.notify?.(
-          `Installed ${recipe.label}, but "${recipe.binary}" is not yet on PATH.`,
-          "warning",
-        );
-        return false;
-      }
+        const verified = verifyInstalled(recipe.binary, options.envPath ?? getDefaultLspSearchPath());
+        if (!verified) {
+          log.warn("lsp_install_binary_not_on_path", { serverId, binary: recipe.binary });
+          ctx.ui?.notify?.(
+            `Installed ${recipe.label}, but "${recipe.binary}" is not yet on PATH.`,
+            "warning",
+          );
+          return false;
+        }
 
-      log.info("lsp_install_verified", {
-        serverId,
-        binary: verified,
-        ...(sourceRole ? { sourceRole } : {}),
-      });
-      ctx.ui?.notify?.(`Installed ${recipe.label} — LSP diagnostics active.`, "info");
-      return true;
+        log.info("lsp_install_verified", {
+          serverId,
+          binary: verified,
+          ...(sourceRole ? { sourceRole } : {}),
+        });
+        ctx.ui?.notify?.(`Installed ${recipe.label} — LSP diagnostics active.`, "info");
+        return true;
+      } finally {
+        clearPendingLspInstallRequest(serverId, prefsDbPath);
+      }
     })();
 
     promptInFlight.set(serverId, runPrompt);
@@ -2107,6 +2303,12 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
 
     // Interactive TUI: ask user once with 3 clear choices
     if (isInteractiveTuiForLspPrompt(ctx, checkSubagent())) {
+      if (
+        isPromptBackedOff(missingId) ||
+        isPendingLspInstallClaimedByOther(missingId, claimOwnerId, prefsDbPath, claimTtlMs)
+      ) {
+        return null;
+      }
       const installed = await promptAndInstallMissingServer(missingId, ctx, prefsDbPath);
       return installed ? manager.getDiagnosticsForFile(cwd, filePath, overrides) : null;
     }
@@ -2130,6 +2332,7 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
     if (
       shuttingDown ||
       drainingPendingPrompts ||
+      !isLiveExtensionCtx(ctx) ||
       !isInteractiveTuiForLspPrompt(ctx, checkSubagent()) ||
       !resolveTrustedLspEnabled()
     ) {
@@ -2149,19 +2352,27 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
           !BUILTIN_INSTALL_RECIPES[req.serverId] ||
           req.serverId in overrides ||
           isLspInstallDismissed(req.serverId, prefsDbPath) ||
-          isBuiltinServerInstalled(req.serverId, options.envPath) ||
-          promptedThisSession.has(req.serverId)
+          isBuiltinServerInstalled(req.serverId, options.envPath)
         ) {
           clearPendingLspInstallRequest(req.serverId, prefsDbPath);
           continue;
         }
+
+        if (promptedThisSession.has(req.serverId) || isPromptBackedOff(req.serverId)) {
+          continue;
+        }
+
+        if (!claimPendingLspInstallRequest(req.serverId, claimOwnerId, prefsDbPath, claimTtlMs)) {
+          continue;
+        }
+        hasPendingClaims = true;
 
         log.info("lsp_pending_install_prompt_draining", {
           serverId: req.serverId,
           sourceRole: req.sourceRole,
           sourceCwd: req.sourceCwd,
         });
-        await promptAndInstallMissingServer(req.serverId, ctx, prefsDbPath, req.sourceRole);
+        await promptAndInstallMissingServer(req.serverId, ctx, prefsDbPath, req.sourceRole, true);
       }
     } catch (err: any) {
       log.warn("lsp_pending_install_drain_error", { error: err?.message ?? String(err) });
@@ -2170,8 +2381,58 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
     }
   };
 
+  const ensureIdlePendingWatcher = (ctx: any): void => {
+    if (
+      shuttingDown ||
+      pendingPollIntervalMs <= 0 ||
+      !isLiveExtensionCtx(ctx) ||
+      !isInteractiveTuiForLspPrompt(ctx, checkSubagent())
+    ) {
+      return;
+    }
+    lastInteractiveCtx = ctx;
+    if (pendingPollTimer) return;
+
+    pendingPollTimer = setInterval(() => {
+      if (shuttingDown || drainingPendingPrompts) return;
+      const liveCtx = lastInteractiveCtx;
+      if (!liveCtx || !isLiveExtensionCtx(liveCtx)) {
+        lastInteractiveCtx = null;
+        stopPendingPollTimer();
+        return;
+      }
+      if (!isInteractiveTuiForLspPrompt(liveCtx, checkSubagent())) {
+        return;
+      }
+      if (typeof liveCtx.isIdle === "function") {
+        let idle = false;
+        try {
+          idle = liveCtx.isIdle() === true;
+        } catch {
+          lastInteractiveCtx = null;
+          stopPendingPollTimer();
+          return;
+        }
+        if (!idle) return;
+      }
+      void drainPendingLspInstallPrompts(liveCtx);
+    }, pendingPollIntervalMs);
+    pendingPollTimer.unref();
+  };
+
+  pi.on("session_start", async (_event, ctx) => {
+    ensureIdlePendingWatcher(ctx);
+    if (
+      isLiveExtensionCtx(ctx) &&
+      (typeof (ctx as any)?.isIdle !== "function" || (ctx as any).isIdle() === true)
+    ) {
+      await drainPendingLspInstallPrompts(ctx);
+    }
+  });
+
   pi.on("tool_result", async (event, ctx): Promise<ToolResultEventResult | undefined> => {
     try {
+      ensureIdlePendingWatcher(ctx);
       const toolName = (event as any).toolName as string;
       if (toolName === "subagent") {
         await drainPendingLspInstallPrompts(ctx);
@@ -2231,15 +2492,17 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
   });
 
   pi.on("turn_end", async (_event, ctx) => {
+    ensureIdlePendingWatcher(ctx);
     await drainPendingLspInstallPrompts(ctx);
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    ensureIdlePendingWatcher(ctx);
     await drainPendingLspInstallPrompts(ctx);
   });
 
   pi.on("session_shutdown", async () => {
-    shuttingDown = true;
+    cleanupRegistration();
     log.debug("lsp_session_shutdown", { active: manager.activeCount });
     await manager.shutdownAll();
   });
