@@ -54,6 +54,7 @@ const MAX_ASSISTANT_SNIPPET_CHARS = 1_200;
 const MAX_TOOL_SNIPPET_CHARS = 400;
 const MAX_NOTE_CHARS = 600;
 const MAX_SESSIONS = 32;
+const MAX_PENDING_INPUTS = 32;
 
 const BOUNDARY_TAG_RE = /<(\/?(?:user_goal|goal_status|ask_user_decision|active_tasks|transcript_delta)\b)/gi;
 
@@ -178,6 +179,11 @@ interface PendingAdvisorNote {
   createdAt: number;
 }
 
+interface PendingInputRecord {
+  text: string;
+  kind: "human" | "synthetic";
+}
+
 interface AdvisorSessionState {
   generation: number;
   turnSeq: number;
@@ -190,7 +196,7 @@ interface AdvisorSessionState {
   latestUserGoalAnswerSnippet: string;
   latestAskUserDecision: string;
   currentRunTrigger: TurnTrigger;
-  pendingSyntheticPrompt: string | null;
+  pendingInputs: PendingInputRecord[];
   recentTurns: TurnDeltaEntry[];
   inFlight: boolean;
   /** Number of underlying provider completion promises still unsettled (survives timeout race). */
@@ -743,7 +749,7 @@ export function registerAdvisor(pi: ExtensionAPI, opts: AdvisorOptions = {}): vo
       latestUserGoalAnswerSnippet: "",
       latestAskUserDecision: "",
       currentRunTrigger: "system",
-      pendingSyntheticPrompt: null,
+      pendingInputs: [],
       recentTurns: [],
       inFlight: false,
       pendingRequests: 0,
@@ -768,23 +774,38 @@ export function registerAdvisor(pi: ExtensionAPI, opts: AdvisorOptions = {}): vo
     }
   };
 
+  const consumePendingInput = (
+    state: AdvisorSessionState,
+    prompt: string,
+  ): PendingInputRecord | null => {
+    const normalized = prompt.trim();
+    if (!normalized || state.pendingInputs.length === 0) return null;
+    let idx = state.pendingInputs.findIndex((entry) => normalized === entry.text);
+    if (idx < 0) {
+      idx = state.pendingInputs.findIndex((entry) => normalized.startsWith(entry.text));
+    }
+    if (idx < 0) return null;
+    return state.pendingInputs.splice(idx, 1)[0] ?? null;
+  };
+
   pi.on("input", (event, ctx) => {
     const state = getState(ctx);
+    const text = typeof event?.text === "string" ? event.text.trim() : "";
+    if (!text) {
+      // Never record "" for non-string/image-only content (it would match any later prompt).
+      return;
+    }
+    let kind: "human" | "synthetic" = "human";
     if (event?.source === "extension") {
-      const text = typeof event.text === "string" ? event.text.trim() : "";
-      if (!text) {
-        // Never record "" for non-string/image-only content (it would match any later prompt).
-        state.pendingSyntheticPrompt = null;
-        return;
-      }
       if (consumeHumanRelayedPrompt(text, resolveBridgeSessionKey(ctx))) {
-        state.pendingSyntheticPrompt = null;
         log.debug("advisor_human_relayed_prompt_recognized", { chars: text.length });
-        return;
+      } else {
+        kind = "synthetic";
       }
-      state.pendingSyntheticPrompt = text;
-    } else {
-      state.pendingSyntheticPrompt = null;
+    }
+    state.pendingInputs.push({ text, kind });
+    if (state.pendingInputs.length > MAX_PENDING_INPUTS) {
+      state.pendingInputs.splice(0, state.pendingInputs.length - MAX_PENDING_INPUTS);
     }
   });
 
@@ -792,15 +813,20 @@ export function registerAdvisor(pi: ExtensionAPI, opts: AdvisorOptions = {}): vo
     const cwd = ctx?.cwd || process.cwd();
     const state = getState(ctx);
 
+    let matchedSynthetic: string | null = null;
     if (event?.messageType === "user" && typeof event.prompt === "string" && event.prompt.trim()) {
-      // Clean up any queued human-relayed marker if the host skipped the `input` hook.
-      if (consumeHumanRelayedPrompt(event.prompt, resolveBridgeSessionKey(ctx))) {
-        state.pendingSyntheticPrompt = null;
+      const matched = consumePendingInput(state, event.prompt);
+      if (matched) {
+        if (matched.kind === "synthetic") {
+          matchedSynthetic = matched.text;
+        }
+      } else {
+        // Clean up any queued human-relayed marker if the host skipped the `input` hook.
+        consumeHumanRelayedPrompt(event.prompt, resolveBridgeSessionKey(ctx));
       }
     }
 
-    const trigger = classifyTurnTrigger(event, state.pendingSyntheticPrompt);
-    state.pendingSyntheticPrompt = null;
+    const trigger = classifyTurnTrigger(event, matchedSynthetic);
     state.currentRunTrigger = trigger;
 
     if (
