@@ -14,7 +14,7 @@ import { createRequire } from "node:module";
 import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import {
-  authorizeSupervisedPeerBrowserAccess,
+  buildSessionUpdatedBroadcast,
   clearPendingUiRequests,
   createAsyncAgentRegistry,
   disconnectPidashSession,
@@ -27,6 +27,7 @@ import {
   reconcileActiveAsyncAgents,
   registerPidashSession,
   resetSessionViewState,
+  shouldDeliverSupervisedPeerBroadcast,
   shouldNotifyWorktreeChange,
   updatePidashSession,
   type PiClient,
@@ -74,14 +75,14 @@ function getActiveSessions(): SessionInfo[] {
 }
 
 function sendToWatchers(sessionId: string, eventOrRaw: object | string) {
-  const targetSession = piClients.get(sessionId)?.session;
+  const session = piClients.get(sessionId)?.session;
   sendToMatchingBrowsers(
     (browser, watchId) =>
       watchId === sessionId
-      && authorizeSupervisedPeerBrowserAccess({
-        targetSession,
+      && shouldDeliverSupervisedPeerBroadcast({
+        session,
         remoteAddress: browserRemoteAddrMap.get(browser),
-      }).allowed,
+      }),
     eventOrRaw,
   );
 }
@@ -89,10 +90,10 @@ function sendToWatchers(sessionId: string, eventOrRaw: object | string) {
 function broadcastAuthorizedBrowsers(session: SessionInfo, eventOrRaw: object | string) {
   sendToMatchingBrowsers(
     (browser) =>
-      authorizeSupervisedPeerBrowserAccess({
-        targetSession: session,
+      shouldDeliverSupervisedPeerBroadcast({
+        session,
         remoteAddress: browserRemoteAddrMap.get(browser),
-      }).allowed,
+      }),
     eventOrRaw,
   );
 }
@@ -137,7 +138,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     if (parsed.comsPurpose !== undefined) piClient.session.comsPurpose = parsed.comsPurpose || undefined;
     if (parsed.comsProject !== undefined) piClient.session.comsProject = parsed.comsProject || undefined;
     updatePidashSession(piClient.session, parsed);
-    broadcastToBrowsers({ type: "session_updated", session: piClient.session });
+    broadcastToBrowsers(buildSessionUpdatedBroadcast(piClient.session, parsed));
     return;
   }
 

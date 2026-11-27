@@ -52,6 +52,36 @@ export function authorizeSupervisedPeerBrowserAccess(opts: {
   return { allowed: true };
 }
 
+/**
+ * Predicate deciding whether a browser connection is authorized to receive
+ * live events or broadcasts originating from `session`.
+ */
+export function shouldDeliverSupervisedPeerBroadcast(opts: {
+  session: Pick<SessionInfo, "supervisedPeer"> | null | undefined;
+  remoteAddress: string | undefined | null;
+}): boolean {
+  return authorizeSupervisedPeerBrowserAccess({
+    targetSession: opts.session,
+    remoteAddress: opts.remoteAddress,
+  }).allowed;
+}
+
+/**
+ * Build a `session_updated` wire payload that preserves explicit `null` clears
+ * for COMS identity fields across JSON serialization while keeping the
+ * server-side `SessionInfo` fields as `undefined`.
+ */
+export function buildSessionUpdatedBroadcast(
+  session: SessionInfo,
+  parsed?: { comsName?: unknown; comsPurpose?: unknown; comsProject?: unknown },
+): { type: "session_updated"; session: Record<string, unknown> } {
+  const wire: Record<string, unknown> = { ...session };
+  if (parsed?.comsName === null) wire.comsName = null;
+  if (parsed?.comsPurpose === null) wire.comsPurpose = null;
+  if (parsed?.comsProject === null) wire.comsProject = null;
+  return { type: "session_updated", session: wire };
+}
+
 export function handlePidashBrowserWatch(opts: {
   ws: { send: (data: string) => void };
   watchId: string | null;
@@ -73,7 +103,12 @@ export function handlePidashBrowserWatch(opts: {
       reason: auth.reason,
     });
     try {
-      ws.send(JSON.stringify({ type: "notification", level: "warning", message: auth.reason }));
+      ws.send(JSON.stringify({
+        type: "watch_denied",
+        sessionId: watchId,
+        reason: auth.reason,
+        message: auth.reason,
+      }));
     } catch {}
     return null;
   }

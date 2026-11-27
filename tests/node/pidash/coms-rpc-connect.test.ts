@@ -23,11 +23,20 @@ import { registerPidiff } from "../../../extensions/pidiff/pidiff.ts";
 import { setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
 import {
   authorizeSupervisedPeerBrowserAccess,
+  buildSessionUpdatedBroadcast,
   handlePidashBrowserMessage,
   handlePidashBrowserWatch,
   registerPidashSession,
+  shouldDeliverSupervisedPeerBroadcast,
   type PiClient,
 } from "../../../scripts/pidash-session-state.ts";
+import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
+import { createRoot } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
+import { useMessageHandler } from "../../../extensions/pidash/pidash-ui/src/hooks/useMessageHandler.ts";
+import { mergeSessionUpdate } from "../../../extensions/pidash/pidash-ui/src/hooks/useSessions.ts";
+import type { ChatMessage } from "../../../extensions/pidash/pidash-ui/src/types.ts";
+import type { SessionInfo } from "../../../extensions/shared/types.ts";
+import { installReactDomShim } from "./react-dom-shim.mjs";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 function createHarness(flags: Record<string, unknown> = {}) {
@@ -706,7 +715,9 @@ describe("supervised peer browser authorization (#1470)", () => {
     });
     assert.equal(watchId, null);
     assert.equal(browserSent.length, 1);
-    assert.equal(browserSent[0].type, "notification");
+    assert.equal(browserSent[0].type, "watch_denied");
+    assert.equal(browserSent[0].sessionId, "peer-1");
+    assert.equal(typeof browserSent[0].reason, "string");
   });
 
   it("blocks LAN browser prompts targeting supervised peer", () => {
@@ -799,6 +810,195 @@ describe("supervised peer browser authorization (#1470)", () => {
       remoteAddress: undefined,
     });
     assert.equal(res.allowed, false);
+  });
+
+  it("allows loopback browser to receive supervised peer broadcasts", () => {
+    assert.equal(
+      shouldDeliverSupervisedPeerBroadcast({
+        session: { supervisedPeer: true },
+        remoteAddress: "127.0.0.1",
+      }),
+      true,
+    );
+  });
+
+  it("blocks LAN browser from receiving supervised peer broadcasts", () => {
+    assert.equal(
+      shouldDeliverSupervisedPeerBroadcast({
+        session: { supervisedPeer: true },
+        remoteAddress: "192.168.1.42",
+      }),
+      false,
+    );
+  });
+
+  it("blocks supervised peer broadcasts when remoteAddress is missing", () => {
+    assert.equal(
+      shouldDeliverSupervisedPeerBroadcast({
+        session: { supervisedPeer: true },
+        remoteAddress: undefined,
+      }),
+      false,
+    );
+  });
+
+  it("allows LAN browser to receive interactive tui broadcasts", () => {
+    assert.equal(
+      shouldDeliverSupervisedPeerBroadcast({
+        session: { supervisedPeer: undefined },
+        remoteAddress: "192.168.1.42",
+      }),
+      true,
+    );
+  });
+
+  it("serializes explicit null COMS fields in session_updated broadcast on stop", () => {
+    const session: SessionInfo = {
+      sessionId: "s-1",
+      pid: 1,
+      cwd: "/repo",
+      branch: "main",
+      model: "m",
+      startedAt: "now",
+      lastActivity: 0,
+      active: true,
+    };
+    const wire = JSON.parse(
+      JSON.stringify(
+        buildSessionUpdatedBroadcast(session, { comsName: null, comsPurpose: null, comsProject: null }),
+      ),
+    ) as { type: string; session: Record<string, unknown> };
+    assert.equal(wire.type, "session_updated");
+    assert.equal(wire.session.comsName, null);
+    assert.equal(wire.session.comsPurpose, null);
+    assert.equal(wire.session.comsProject, null);
+  });
+
+  it("removes COMS metadata from browser session state when session_updated sends null", () => {
+    const prev: SessionInfo = {
+      sessionId: "s-1",
+      pid: 1,
+      cwd: "/repo",
+      branch: "main",
+      model: "m",
+      startedAt: "now",
+      lastActivity: 0,
+      active: true,
+      comsName: "lead",
+      comsPurpose: "coord",
+      comsProject: "pi-config",
+    };
+    const next = mergeSessionUpdate(prev, {
+      sessionId: "s-1",
+      comsName: null as unknown as string,
+      comsPurpose: null as unknown as string,
+      comsProject: null as unknown as string,
+    });
+    assert.equal(next.comsName, undefined);
+    assert.equal(next.comsPurpose, undefined);
+    assert.equal(next.comsProject, undefined);
+    assert.equal("comsProject" in next, false);
+  });
+
+  it("renders read-only notice in useMessageHandler on matching watch_denied", async () => {
+    const { container } = installReactDomShim();
+    let emit: (ev: Record<string, unknown>) => void = () => {};
+    let latestMessages: ChatMessage[] = [];
+    const peerSession: SessionInfo = {
+      sessionId: "peer-1",
+      pid: 1,
+      cwd: "/repo",
+      branch: "main",
+      model: "m",
+      startedAt: "now",
+      lastActivity: 0,
+      active: true,
+      supervisedPeer: true,
+    };
+    const notifications = {
+      permission: "denied" as NotificationPermission,
+      supported: false,
+      preferences: { enabled: false, sound: false, sessionEnd: false, awaitingInput: false },
+      setPreference: () => {},
+      requestPermission: () => {},
+    } as any;
+
+    function Probe() {
+      const state = useMessageHandler(
+        (handler) => { emit = handler as any; return () => {}; },
+        peerSession,
+        notifications,
+        () => {},
+      );
+      latestMessages = state.messages;
+      return null;
+    }
+
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(createElement(Probe)));
+      await act(async () => {
+        emit({
+          type: "watch_denied",
+          sessionId: "peer-1",
+          reason: "Supervised headless peers can only be watched or controlled from localhost clients.",
+        });
+      });
+      assert.equal(latestMessages.length, 1);
+      assert.equal(latestMessages[0].role, "system");
+      assert.match(latestMessages[0].text, /localhost clients/);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("ignores watch_denied frame for a different sessionId", async () => {
+    const { container } = installReactDomShim();
+    let emit: (ev: Record<string, unknown>) => void = () => {};
+    let latestMessages: ChatMessage[] = [];
+    const tuiSession: SessionInfo = {
+      sessionId: "tui-1",
+      pid: 1,
+      cwd: "/repo",
+      branch: "main",
+      model: "m",
+      startedAt: "now",
+      lastActivity: 0,
+      active: true,
+    };
+    const notifications = {
+      permission: "denied" as NotificationPermission,
+      supported: false,
+      preferences: { enabled: false, sound: false, sessionEnd: false, awaitingInput: false },
+      setPreference: () => {},
+      requestPermission: () => {},
+    } as any;
+
+    function Probe() {
+      const state = useMessageHandler(
+        (handler) => { emit = handler as any; return () => {}; },
+        tuiSession,
+        notifications,
+        () => {},
+      );
+      latestMessages = state.messages;
+      return null;
+    }
+
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(createElement(Probe)));
+      await act(async () => {
+        emit({
+          type: "watch_denied",
+          sessionId: "peer-other",
+          reason: "Denied for peer-other",
+        });
+      });
+      assert.equal(latestMessages.length, 0);
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 });
 
@@ -941,6 +1141,160 @@ describe("supervised peer periodic status scaling (#1470)", () => {
       assert.equal(upd.gitDirty, true);
       assert.equal(upd.gitChanges, 2);
       assert.ok(gitStatusCalls >= 2);
+    } finally {
+      emitPi("session_shutdown", {}, ctx);
+      await closeServer(server, sockets);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fetches fresh git status on consecutive supervised rpc polls with slow git fetch", async () => {
+    const dir = makeTempDir("pidash-rpc-cadence-");
+    const server = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const sockets = new WebSocketServer({ server, path: "/ws/pi" });
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    let gitStatusCalls = 0;
+
+    // Simulate a slow git fetch (25ms) so completion time is meaningfully after poll start.
+    const fetchGitStatus = async () => {
+      const callNum = ++gitStatusCalls;
+      await new Promise((r) => setTimeout(r, 25));
+      return { branch: "main", dirty: callNum > 1, changes: callNum - 1 };
+    };
+
+    const { pi, emitPi } = createHarness({ coms: true, cname: "peer-cadence", project: "pi-config" });
+    const ctx = makeCtx("rpc", { cwd: dir });
+
+    try {
+      const port = await listenHttp(server);
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidash_enable: true, pidash_port: port }));
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      registerPidash(pi, {
+        periodicStatusTickMs: 20,
+        rpcStatusIntervalMs: 80,
+        fetchGitStatus,
+      });
+
+      const registerFrame = waitForFrame(sockets, (p) => p.type === "register");
+      emitPi("session_start", { reason: "startup" }, ctx);
+      await registerFrame;
+
+      // Expect BOTH the first periodic update (changes: 1) AND the very next cadence update (changes: 2)
+      // within ~260ms, proving the second poll is not served from a stale completion-time cache.
+      const secondUpdate = waitForFrame(sockets, (p) => p.type === "update_info" && p.gitChanges === 2, 600);
+      const upd = await secondUpdate;
+      assert.equal(upd.gitChanges, 2);
+      assert.ok(gitStatusCalls >= 3);
+    } finally {
+      emitPi("session_shutdown", {}, ctx);
+      await closeServer(server, sockets);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips worktree summary scan on supervised rpc session switch", async () => {
+    const dir = makeTempDir("pidash-rpc-switch-wt-");
+    const server = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const sockets = new WebSocketServer({ server, path: "/ws/pi" });
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    let worktreeSummaryCalls = 0;
+
+    const fetchGitStatus = async () => ({ branch: "main", dirty: false, changes: 0 });
+    const fetchWorktreeSummary = async () => {
+      worktreeSummaryCalls++;
+      return { worktreeCount: 2, worktreeDirtyCount: 1, inLinkedWorktree: false };
+    };
+
+    const { pi, emitPi } = createHarness({ coms: true, cname: "peer-switch", project: "pi-config" });
+    const ctx = makeCtx("rpc", { cwd: dir });
+
+    try {
+      const port = await listenHttp(server);
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidash_enable: true, pidash_port: port }));
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      registerPidash(pi, {
+        periodicStatusTickMs: 25,
+        rpcStatusIntervalMs: 500,
+        fetchGitStatus,
+        fetchWorktreeSummary,
+      });
+
+      const registerFrame = waitForFrame(sockets, (p) => p.type === "register");
+      emitPi("session_start", { reason: "startup" }, ctx);
+      await registerFrame;
+
+      const switchFrame = waitForFrame(sockets, (p) => p.type === "session_switch");
+      emitPi("session_start", { reason: "new" }, ctx);
+      await switchFrame;
+      await new Promise((r) => setTimeout(r, 80));
+
+      assert.equal(worktreeSummaryCalls, 0);
+    } finally {
+      emitPi("session_shutdown", {}, ctx);
+      await closeServer(server, sockets);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates cached git status on supervised rpc session switch", async () => {
+    const dir = makeTempDir("pidash-rpc-switch-git-");
+    const server = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const sockets = new WebSocketServer({ server, path: "/ws/pi" });
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    let currentChanges = 0;
+
+    const fetchGitStatus = async () => ({
+      branch: "main",
+      dirty: currentChanges > 0,
+      changes: currentChanges,
+    });
+
+    const { pi, emitPi } = createHarness({ coms: true, cname: "peer-switch-git", project: "pi-config" });
+    const ctx = makeCtx("rpc", { cwd: dir });
+
+    try {
+      const port = await listenHttp(server);
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidash_enable: true, pidash_port: port }));
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      registerPidash(pi, {
+        periodicStatusTickMs: 25,
+        rpcStatusIntervalMs: 5000,
+        fetchGitStatus,
+      });
+
+      const registerFrame = waitForFrame(sockets, (p) => p.type === "register");
+      emitPi("session_start", { reason: "startup" }, ctx);
+      const reg = await registerFrame;
+      assert.equal(reg.gitDirty, false);
+
+      // Mutate repo state while shared cache TTL (2500ms) is still warm, then switch sessions.
+      currentChanges = 3;
+      const freshUpdate = waitForFrame(sockets, (p) => p.type === "update_info" && p.gitChanges === 3, 2000);
+      emitPi("session_start", { reason: "resume" }, ctx);
+      const upd = await freshUpdate;
+      assert.equal(upd.gitDirty, true);
+      assert.equal(upd.gitChanges, 3);
     } finally {
       emitPi("session_shutdown", {}, ctx);
       await closeServer(server, sockets);

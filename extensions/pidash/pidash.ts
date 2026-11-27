@@ -171,8 +171,23 @@ const sharedGitStatusCaches = new WeakMap<
 >();
 
 /**
+ * Invalidate any cached git status entry for `cwd` (e.g. on session switch)
+ * so subsequent reads fetch fresh repository state rather than reusing a prior
+ * visit's cached snapshot.
+ */
+export function invalidateSharedPeerGitStatus(
+  cwd: string,
+  fetcher: (dir: string) => Promise<GitStatus> = getGitStatus,
+): void {
+  const cache = sharedGitStatusCaches.get(fetcher);
+  if (cache) cache.delete(path.resolve(cwd));
+}
+
+/**
  * Coalesce and cache git status scans by resolved checkout directory so multiple
  * supervised RPC peers sharing a repository checkout do not multiply scans.
+ * Expiry is measured from fetch start so periodic polls at a larger cadence
+ * always observe fresh data rather than stalling on a prior fetch's completion time.
  */
 export async function getSharedPeerGitStatus(
   cwd: string,
@@ -185,30 +200,35 @@ export async function getSharedPeerGitStatus(
     cache = new Map();
     sharedGitStatusCaches.set(fetcher, cache);
   }
-  const now = Date.now();
+  const startedAt = Date.now();
   const existing = cache.get(key);
   if (existing) {
-    if (existing.value !== undefined && now < existing.expiresAt) {
+    if (existing.value !== undefined && startedAt < existing.expiresAt) {
       return existing.value;
     }
     if (existing.inFlight) {
       return existing.inFlight;
     }
   }
+  const entry: SharedGitStatusEntry = {
+    value: existing?.value,
+    expiresAt: existing?.expiresAt ?? 0,
+  };
   const inFlight = fetcher(cwd).then((value) => {
-    const completedAt = Date.now();
-    if (cache!.size >= SHARED_GIT_STATUS_CACHE_MAX && !cache!.has(key)) {
-      const oldestKey = cache!.keys().next().value;
-      if (oldestKey !== undefined) cache!.delete(oldestKey);
+    if (cache!.get(key) === entry) {
+      cache!.set(key, { value, expiresAt: startedAt + Math.max(0, ttlMs) });
     }
-    cache!.set(key, { value, expiresAt: completedAt + Math.max(0, ttlMs) });
     return value;
   }, (err) => {
-    const cur = cache!.get(key);
-    if (cur?.inFlight === inFlight) cache!.delete(key);
+    if (cache!.get(key) === entry) cache!.delete(key);
     throw err;
   });
-  cache.set(key, { value: existing?.value, expiresAt: existing?.expiresAt ?? 0, inFlight });
+  entry.inFlight = inFlight;
+  if (cache.size >= SHARED_GIT_STATUS_CACHE_MAX && !cache.has(key)) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) cache.delete(oldestKey);
+  }
+  cache.set(key, entry);
   return inFlight;
 }
 
@@ -937,10 +957,11 @@ export function registerPidash(
         tuiIntervalMs: periodicStatusTickMs,
         rpcIntervalMs: rpcStatusIntervalMs,
       });
+      const sharedCacheTtlMs = Math.max(0, Math.floor(policy.intervalMs / 2));
       const [git, worktrees] = await Promise.all([
         policy.pollWorktrees
           ? fetchGitStatus(ctx.cwd)
-          : getSharedPeerGitStatus(ctx.cwd, policy.intervalMs, fetchGitStatus),
+          : getSharedPeerGitStatus(ctx.cwd, sharedCacheTtlMs, fetchGitStatus),
         policy.pollWorktrees
           ? fetchWorktreeSummary(ctx.cwd, { includeDirty: policy.includeInitialWorktreeDirty })
           : Promise.resolve(null),
@@ -1331,10 +1352,11 @@ export function registerPidash(
       inFlight = true;
       try {
         const shouldScanDirty = policy.pollWorktrees && now - lastWorktreeDirtyScanAt >= WORKTREE_DIRTY_POLL_INTERVAL_MS;
+        const sharedCacheTtlMs = Math.max(0, Math.floor(policy.intervalMs / 2));
         const [git, wtSummary] = await Promise.all([
           policy.pollWorktrees
             ? fetchGitStatus(ctx.cwd)
-            : getSharedPeerGitStatus(ctx.cwd, policy.intervalMs, fetchGitStatus),
+            : getSharedPeerGitStatus(ctx.cwd, sharedCacheTtlMs, fetchGitStatus),
           policy.pollWorktrees
             ? fetchWorktreeSummary(ctx.cwd, {
                 includeDirty: shouldScanDirty,
@@ -1411,7 +1433,13 @@ export function registerPidash(
       lastWorktreeSummary = { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
       lastWorktreeDirtyScanAt = 0;
       lastStatusPollAt = 0;
+      invalidateSharedPeerGitStatus(switchCtx.cwd, fetchGitStatus);
       const switchEpoch = sessionEpoch;
+      const switchWs = client.ws;
+      const switchPolicy = getPeriodicStatusPolicy(switchCtx, registrationEnv, {
+        tuiIntervalMs: periodicStatusTickMs,
+        rpcIntervalMs: rpcStatusIntervalMs,
+      });
       client.send({
         type: "session_switch",
         sessionId,
@@ -1430,14 +1458,44 @@ export function registerPidash(
       log.debug(`session_switch sent: cwd=${switchCtx.cwd}`);
       void (async () => {
         try {
-          const wtSummary = await getWorktreeSummary(switchCtx.cwd, { includeDirty: true });
-          if (client.shuttingDown || !client.connected || switchEpoch !== sessionEpoch || wtSummary === null) return;
-          lastWorktreeDirtyScanAt = Date.now();
-          publishWorktreeSummary(wtSummary, switchEpoch);
+          const git = await fetchGitStatus(switchCtx.cwd);
+          const gitChanged = shouldPublishPeriodicGitStatus({
+            shuttingDown: client.shuttingDown,
+            connected: client.connected,
+            sameSocket: client.ws === switchWs,
+            startEpoch: switchEpoch,
+            currentEpoch: sessionEpoch,
+            lastGitStatus,
+            nextGitStatus: git,
+          });
+          if (gitChanged) {
+            lastGitStatus = git;
+            lastStatusPollAt = Date.now();
+            switchWs.send(JSON.stringify({
+              type: "update_info",
+              branch: git.branch,
+              gitDirty: git.dirty,
+              gitChanges: git.changes,
+            }));
+          }
         } catch (e: any) {
-          log.debug("session_switch_worktree_summary_failed", { error: e?.message || String(e) });
+          log.debug("session_switch_git_status_failed", { error: e?.message || String(e) });
         }
       })();
+      if (switchPolicy.pollWorktrees) {
+        void (async () => {
+          try {
+            const wtSummary = await fetchWorktreeSummary(switchCtx.cwd, {
+              includeDirty: switchPolicy.includeInitialWorktreeDirty,
+            });
+            if (client.shuttingDown || !client.connected || switchEpoch !== sessionEpoch || wtSummary === null) return;
+            lastWorktreeDirtyScanAt = Date.now();
+            publishWorktreeSummary(wtSummary, switchEpoch);
+          } catch (e: any) {
+            log.debug("session_switch_worktree_summary_failed", { error: e?.message || String(e) });
+          }
+        })();
+      }
     }
   }
 
