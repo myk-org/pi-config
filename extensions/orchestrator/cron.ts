@@ -23,7 +23,7 @@ export const CRON_QUIET_NOOP_PROMPT_SUFFIX =
 const EDITABLE_CRON_FIELDS = ["description", "task", "model", "interval_seconds", "at_hour", "at_minute", "quiet_on_noop"] as const;
 
 const log = createLogger("cron");
-export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; /** "provider/model-id" or bare "model-id"; undefined inherits the normal resolution chain. */ model?: string; /** Paused by the user: kept, never armed (issue #1087). */ paused?: boolean; /** Suppress parent followUp chat turn when a successful worker replies starting with `[NOOP]`. */ quiet_on_noop?: boolean; /** Number of completed/executed runs recorded for this cron. */ runCount?: number; /** Outcome of the most recent completed run. */ lastOutcome?: CronRunOutcome; /** Worker run id that last updated `lastOutcome`, used for idempotent/late-result reconciliation. */ lastRunId?: string; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
+export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; /** "provider/model-id" or bare "model-id"; undefined inherits the normal resolution chain. */ model?: string; /** Paused by the user: kept, never armed (issue #1087). */ paused?: boolean; /** Suppress parent followUp chat turn when a successful worker replies starting with `[NOOP]`. */ quiet_on_noop?: boolean; /** Number of completed/executed runs recorded for this cron. */ runCount?: number; /** Outcome of the most recent completed run. */ lastOutcome?: CronRunOutcome; /** Worker run id that last updated `lastOutcome`, used for idempotent/late-result reconciliation. */ lastRunId?: string; /** Start timestamp of the completed run that last updated `lastOutcome`. */ lastOutcomeStartedAt?: number; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
 type Timer = ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>;
 const durable = (scope: CronScope) => scope === "project";
 let sessionStore = "";
@@ -46,6 +46,7 @@ function validateSessionCronTask(task: unknown): asserts task is CronTask {
   if (value.runCount !== undefined && (!Number.isInteger(value.runCount) || value.runCount < 0)) throw new Error("Invalid session cron runCount");
   if (value.lastOutcome !== undefined && value.lastOutcome !== "delivered" && value.lastOutcome !== "noop" && value.lastOutcome !== "error") throw new Error("Invalid session cron lastOutcome");
   if (value.lastRunId !== undefined && (typeof value.lastRunId !== "string" || !value.lastRunId)) throw new Error("Invalid session cron lastRunId");
+  if (value.lastOutcomeStartedAt !== undefined && !Number.isFinite(value.lastOutcomeStartedAt)) throw new Error("Invalid session cron lastOutcomeStartedAt");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid session cron timestamp");
 }
 function writeSessionTasks(file: string, tasks: Iterable<CronTask>) {
@@ -77,6 +78,7 @@ function syncTaskFields(target: CronTask, source: CronTask): void {
   target.runCount = source.runCount;
   target.lastOutcome = source.lastOutcome;
   target.lastRunId = source.lastRunId;
+  target.lastOutcomeStartedAt = source.lastOutcomeStartedAt;
   target.lastRun = source.lastRun;
   target.nextRun = source.nextRun;
   target.leader = source.leader;
@@ -230,6 +232,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
   }
   interface CronRunCompletionEvent {
     cronTaskId: string;
+    cronCwd?: string;
     runId: string;
     startedAt?: number;
     quietOnNoop: boolean;
@@ -239,17 +242,18 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
   }
   /**
    * Record completion outcome (`delivered`, `noop`, `error`) and run history by stable cron UUID.
-   * Works across scope moves, `/reload`, late result ingestion, and leader handoffs without
-   * mutating dispatch-start `lastRun` or clobbering peer edits.
+   * Works across scope moves, `/reload`, project switches, late result ingestion, and leader handoffs
+   * without mutating dispatch-start `lastRun` or clobbering peer edits.
    */
   function recordCronRunOutcome(event: CronRunCompletionEvent) {
     const suppressed = event.quietOnNoop && !event.isError && isCronNoopOutput(event.text);
     const outcome: CronRunOutcome = event.isError ? "error" : suppressed ? "noop" : "delivered";
     const live = tasks.get(event.cronTaskId);
     if (!live) {
-      if (ctx?.cwd) {
+      const fallbackCwd = event.cronCwd || ctx?.cwd;
+      if (fallbackCwd) {
         try {
-          const res = recordDurableCronRunOutcome(projectStore(ctx.cwd), {
+          const res = recordDurableCronRunOutcome(projectStore(fallbackCwd), {
             id: event.cronTaskId,
             runId: event.runId,
             startedAt: event.startedAt,
@@ -281,6 +285,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
       live.runCount = next.runCount;
       live.lastOutcome = next.lastOutcome;
       live.lastRunId = next.lastRunId;
+      live.lastOutcomeStartedAt = next.lastOutcomeStartedAt;
       if (sessionStore) {
         try { writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session")); }
         catch (error: any) { log.error("cron_run_outcome_session_persist_failed", { id: qualifyCronId(live), error: error?.message || String(error) }); }
@@ -298,6 +303,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
           live.runCount = res.runCount;
           live.lastOutcome = res.lastOutcome;
           live.lastRunId = res.lastRunId;
+          live.lastOutcomeStartedAt = res.lastOutcomeStartedAt;
         }
       } catch (error: any) {
         log.error("cron_run_outcome_durable_persist_failed", { id: qualifyCronId(live), runId: event.runId, error: error?.message || String(error) });
@@ -839,6 +845,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
     if (typeof ev.cronTaskId !== "string" || !ev.cronTaskId || typeof ev.runId !== "string" || !ev.runId) return;
     recordCronRunOutcome({
       cronTaskId: ev.cronTaskId,
+      cronCwd: typeof ev.cronCwd === "string" && ev.cronCwd ? ev.cronCwd : undefined,
       runId: ev.runId,
       startedAt: typeof ev.startedAt === "number" ? ev.startedAt : undefined,
       quietOnNoop: ev.quietOnNoop === true,

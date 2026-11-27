@@ -39,6 +39,8 @@ export interface DurableCronTask {
   lastOutcome?: CronRunOutcome;
   /** Worker run id that last updated `lastOutcome`, used for idempotent/late-result reconciliation. */
   lastRunId?: string;
+  /** Start timestamp of the completed run that last updated `lastOutcome` (separate from dispatch `lastRun`). */
+  lastOutcomeStartedAt?: number;
 }
 export interface CronRunOutcomeUpdate {
   id: string;
@@ -48,12 +50,12 @@ export interface CronRunOutcomeUpdate {
   isLate?: boolean;
 }
 /**
- * Pure, idempotent update of cron run history (`runCount`, `lastOutcome`, `lastRunId`).
- * Preserves `lastRun` (dispatch start time) and avoids double-counting on late-result
- * reconciliation or duplicate delivery events.
+ * Pure, idempotent update of cron run history (`runCount`, `lastOutcome`, `lastRunId`, `lastOutcomeStartedAt`).
+ * Preserves `lastRun` (dispatch start time) and compares completion order against `lastOutcomeStartedAt`
+ * rather than `lastRun` so overlapping dispatches never hide a completed run's outcome.
  */
 export function applyCronRunOutcomeUpdate<
-  T extends Pick<DurableCronTask, "lastRun" | "runCount" | "lastOutcome" | "lastRunId">,
+  T extends Pick<DurableCronTask, "lastRun" | "runCount" | "lastOutcome" | "lastRunId" | "lastOutcomeStartedAt">,
 >(task: T, update: Omit<CronRunOutcomeUpdate, "id">): T {
   if (task.lastRunId === update.runId) {
     return { ...task, lastOutcome: update.outcome };
@@ -62,12 +64,20 @@ export function applyCronRunOutcomeUpdate<
     return task;
   }
   const nextCount = (task.runCount ?? 0) + 1;
-  const isOlderThanLatest =
-    update.startedAt !== undefined && task.lastRun !== undefined && update.startedAt < task.lastRun;
-  if (isOlderThanLatest) {
+  const isOlderThanLatestCompleted =
+    update.startedAt !== undefined
+    && task.lastOutcomeStartedAt !== undefined
+    && update.startedAt < task.lastOutcomeStartedAt;
+  if (isOlderThanLatestCompleted) {
     return { ...task, runCount: nextCount };
   }
-  return { ...task, runCount: nextCount, lastOutcome: update.outcome, lastRunId: update.runId };
+  return {
+    ...task,
+    runCount: nextCount,
+    lastOutcome: update.outcome,
+    lastRunId: update.runId,
+    ...(update.startedAt !== undefined ? { lastOutcomeStartedAt: update.startedAt } : {}),
+  };
 }
 export interface DurableCronEnvelope { version: 1; tasks: DurableCronTask[]; }
 export type DurableCronReadOutcome =
@@ -264,6 +274,7 @@ export function validateDurableCronTask(task: unknown): asserts task is DurableC
   if (value.runCount !== undefined && (!Number.isInteger(value.runCount) || value.runCount < 0)) throw new Error("Invalid durable cron runCount");
   if (value.lastOutcome !== undefined && value.lastOutcome !== "delivered" && value.lastOutcome !== "noop" && value.lastOutcome !== "error") throw new Error("Invalid durable cron lastOutcome");
   if (value.lastRunId !== undefined && (typeof value.lastRunId !== "string" || !value.lastRunId)) throw new Error("Invalid durable cron lastRunId");
+  if (value.lastOutcomeStartedAt !== undefined && !Number.isFinite(value.lastOutcomeStartedAt)) throw new Error("Invalid durable cron lastOutcomeStartedAt");
 }
 function validate(tasks: DurableCronTask[]) { for (const task of tasks) validateDurableCronTask(task); }
 function atomicWrite(file: string, content: string) {
@@ -338,7 +349,7 @@ export function setDurableCronPaused(store: string, id: string, paused: boolean)
 export function recordDurableCronRunOutcome(
   store: string,
   update: CronRunOutcomeUpdate,
-): { found: boolean; runCount?: number; lastOutcome?: CronRunOutcome; lastRunId?: string } {
+): { found: boolean; runCount?: number; lastOutcome?: CronRunOutcome; lastRunId?: string; lastOutcomeStartedAt?: number } {
   if (!fs.existsSync(store)) return { found: false };
   let found = false;
   let updated: DurableCronTask | undefined;
@@ -357,7 +368,13 @@ export function recordDurableCronRunOutcome(
     found,
     runCount: updated?.runCount,
   });
-  return { found, runCount: updated?.runCount, lastOutcome: updated?.lastOutcome, lastRunId: updated?.lastRunId };
+  return {
+    found,
+    runCount: updated?.runCount,
+    lastOutcome: updated?.lastOutcome,
+    lastRunId: updated?.lastRunId,
+    lastOutcomeStartedAt: updated?.lastOutcomeStartedAt,
+  };
 }
 export function acquireLeaderLock(store: string, instanceId: string, deps: StartTokenDeps = startTokenDeps): CronLockOwner | null { return acquireDirectoryLock(lockPath(store, "leader"), instanceId, true, deps); }
 export function isLeaderLockCurrent(store: string, owner: CronLockOwner): boolean {

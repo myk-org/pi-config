@@ -940,10 +940,11 @@ export function registerAsyncAgents(
     if (asyncState.poller.unref) asyncState.poller.unref();
   }
 
-  function emitCronRunCompleted(job: AsyncJob, opts: { isError: boolean; isLate: boolean }) {
-    if (!job.cronTaskId) return;
-    safeEmit("cron:run-completed", {
+  function emitCronRunCompleted(job: AsyncJob, opts: { isError: boolean; isLate: boolean }): boolean {
+    if (!job.cronTaskId) return true;
+    return safeEmit("cron:run-completed", {
       cronTaskId: job.cronTaskId,
+      cronCwd: job.cwd || job.projectCwd,
       runId: job.id,
       startedAt: job.startedAt,
       quietOnNoop: job.quietOnNoop === true,
@@ -1031,13 +1032,21 @@ export function registerAsyncAgents(
         if (fireHook && !withholdChainHook) fireOnComplete(job);
         job.delivered = true;
       } else if (shouldSuppressQuietNoop(job, noIngestedResult)) {
-        safeEmit("subagents:completed", { id: job.id, result: job.output || "" });
-        recordDelivered(job.id);
-        job.delivered = true;
-        if (isLate) job.lateResultSent = true;
-        log.info("deliver_suppressed_quiet_noop", { job: job.id, name: job.name, isLate });
-        emitCronRunCompleted(job, { isError: false, isLate });
-        if (fireHook && !withholdChainHook) fireOnComplete(job);
+        if (!getLiveAsyncCtx()) {
+          // Stale or absent live context: leave undelivered so the replacement instance can
+          // restore and deliver/record this quiet run after /reload.
+          log.debug("deliver_quiet_noop_deferred_no_live_ctx", { job: job.id, name: job.name });
+        } else if (emitCronRunCompleted(job, { isError: false, isLate })) {
+          safeEmit("subagents:completed", { id: job.id, result: job.output || "" });
+          recordDelivered(job.id);
+          job.delivered = true;
+          if (isLate) job.lateResultSent = true;
+          log.info("deliver_suppressed_quiet_noop", { job: job.id, name: job.name, isLate });
+          if (fireHook && !withholdChainHook) fireOnComplete(job);
+        } else {
+          // Stale event bus after /reload: do not consume the result file so the live instance recovers it.
+          log.warn("deliver_quiet_noop_deferred_stale_bus", { job: job.id, name: job.name });
+        }
       } else if (getLiveAsyncCtx()) {
         const displayName = job.name || job.agent;
         const resultStatus = job.status === "complete" ? "✅ completed" : "❌ failed";

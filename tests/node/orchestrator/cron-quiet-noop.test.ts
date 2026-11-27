@@ -43,6 +43,7 @@ const NOW = 500_000;
 interface IntegratedHarness {
   cwd: string;
   clock: { now: number };
+  events: EventEmitter;
   messages: Array<{ message: any; options: any }>;
   terminalNotifies: Array<{ title: string; body: string }>;
   spawnedCalls: Array<{ agentName: string; task: string; options: any }>;
@@ -53,6 +54,7 @@ interface IntegratedHarness {
   triggerPoller: () => void;
   flushShortTimers: () => Promise<void>;
   finishJob: (id: string, output: string, opts?: { success?: boolean; exitCode?: number }) => void;
+  switchProject: (newCwd: string) => void;
   shutdown: (reason?: string) => void;
   restore: () => void;
 }
@@ -189,6 +191,7 @@ function createIntegratedHarness(
   const harness: IntegratedHarness = {
     cwd,
     clock,
+    events,
     messages,
     terminalNotifies,
     spawnedCalls,
@@ -215,6 +218,14 @@ function createIntegratedHarness(
       }
     },
     finishJob,
+    switchProject(newCwd: string) {
+      const switchedCtx = {
+        ...ctx,
+        cwd: newCwd,
+        sessionManager: { getCwd: () => newCwd, getSessionId: () => sessionId },
+      };
+      for (const fn of handlers.get("session_start") ?? []) fn({}, switchedCtx);
+    },
     shutdown,
     restore() {
       try {
@@ -786,6 +797,7 @@ describe("cron run history reliability regressions (Qodo R1)", () => {
       runCount: 1,
       lastOutcome: "delivered",
       lastRunId: "worker-newer",
+      lastOutcomeStartedAt: 2_000,
     };
     fs.writeFileSync(store, JSON.stringify({ version: 1, tasks: [seed] }));
 
@@ -925,11 +937,11 @@ describe("cron run history reliability regressions (Qodo R1)", () => {
     assert.equal(h.messages.length, 1);
   });
 
-  it("reconciles late result through deliverJobResult after phantom timeout fallback", async () => {
+  it("records error outcome when the phantom timeout fallback delivers", async () => {
     const h = createIntegratedHarness();
     await h.execTool({
       action: "add",
-      description: "late result watch",
+      description: "timeout fallback watch",
       task: "check status",
       interval_seconds: 60,
       quiet_on_noop: true,
@@ -937,27 +949,135 @@ describe("cron run history reliability regressions (Qodo R1)", () => {
     await h.fireCronTimer();
 
     const job = h.asyncApi.getAsyncJobs()[0];
-    // Mark terminal with old timestamps, then advance past phantom timeout (30s) without a result file.
     fs.writeFileSync(
       path.join(job.workerDir, "status.json"),
       JSON.stringify({ runId: job.id, state: "complete", startedAt: NOW, lastUpdate: NOW }),
     );
     h.clock.now = NOW + 120_000;
     h.triggerPoller();
-    // Advance clock past waitForResultFiles's 2000ms deadline so its short poll timer resolves immediately.
     h.clock.now += 5_000;
     await h.flushShortTimers();
 
     assert.equal(h.messages.length, 1);
     assert.equal(h.cron.getCronTasks()[0].runCount, 1);
     assert.equal(h.cron.getCronTasks()[0].lastOutcome, "error");
+  });
 
-    // Late result arrives with [NOOP]: reconciles outcome without double-counting or second chat turn.
+  it("reconciles a late noop result without double-counting after timeout fallback", async () => {
+    const h = createIntegratedHarness();
+    await h.execTool({
+      action: "add",
+      description: "late noop watch",
+      task: "check status",
+      interval_seconds: 60,
+      quiet_on_noop: true,
+    });
+    await h.fireCronTimer();
+
+    const job = h.asyncApi.getAsyncJobs()[0];
+    fs.writeFileSync(
+      path.join(job.workerDir, "status.json"),
+      JSON.stringify({ runId: job.id, state: "complete", startedAt: NOW, lastUpdate: NOW }),
+    );
+    h.clock.now = NOW + 120_000;
+    h.triggerPoller();
+    h.clock.now += 5_000;
+    await h.flushShortTimers();
+
     h.finishJob(job.id, "[NOOP] late clean result");
     await h.flushShortTimers();
 
     assert.equal(h.messages.length, 1);
     assert.equal(h.cron.getCronTasks()[0].runCount, 1);
     assert.equal(h.cron.getCronTasks()[0].lastOutcome, "noop");
+  });
+
+  it("records completed outcome when a newer overlapping dispatch already advanced lastRun", () => {
+    const dispatchedAgain = {
+      lastRun: 2_000,
+      runCount: 0,
+      lastOutcome: undefined,
+      lastRunId: undefined,
+      lastOutcomeStartedAt: undefined,
+    };
+    const updated = applyCronRunOutcomeUpdate(dispatchedAgain, {
+      runId: "worker-first",
+      startedAt: 1_000,
+      outcome: "noop",
+      isLate: false,
+    });
+    assert.equal(updated.runCount, 1);
+    assert.equal(updated.lastOutcome, "noop");
+    assert.equal(updated.lastRunId, "worker-first");
+    assert.equal(updated.lastOutcomeStartedAt, 1_000);
+    assert.equal(updated.lastRun, 2_000);
+  });
+
+  it("keeps a quiet noop result undelivered when a stale pre-reload event bus rejects emit", async () => {
+    const h = createIntegratedHarness();
+    await h.execTool({
+      action: "add",
+      description: "stale bus watch",
+      task: "check status",
+      interval_seconds: 60,
+      quiet_on_noop: true,
+    });
+    await h.fireCronTimer();
+
+    const job = h.asyncApi.getAsyncJobs()[0];
+    // Simulate a stale extension instance whose event bus throws assertActive after /reload.
+    h.events.emit = (() => {
+      throw new Error("Extension instance is no longer active");
+    }) as any;
+
+    h.finishJob(job.id, "[NOOP] stale instance saw this");
+    await h.flushShortTimers();
+
+    assert.equal(job.delivered, undefined);
+    const status = JSON.parse(fs.readFileSync(path.join(job.workerDir, "status.json"), "utf-8"));
+    assert.equal(status.delivered, undefined);
+  });
+
+  it("updates the original durable project store when the session switches projects mid-run", async () => {
+    const origCwd = makeTempDir("pi-cron-proj-a-");
+    const nextCwd = makeTempDir("pi-cron-proj-b-");
+    const h = createIntegratedHarness({ cwd: origCwd, sessionId: "sess-switch-proj" });
+    await h.execTool({
+      action: "add",
+      persist: true,
+      description: "proj-a watch",
+      task: "check proj-a",
+      interval_seconds: 60,
+      quiet_on_noop: true,
+    });
+    await h.fireCronTimer();
+
+    const job = h.asyncApi.getAsyncJobs()[0];
+    h.switchProject(nextCwd);
+
+    // Worker finishes in the original results dir after switching cwd to proj-b.
+    const origTmp = path.join(origCwd, ".pi", "tmp");
+    const origResDir = fs.readdirSync(origTmp).find((e) => e.startsWith(`async-results-pid-${process.pid}`))!;
+    fs.writeFileSync(
+      path.join(job.workerDir, "status.json"),
+      JSON.stringify({ runId: job.id, state: "running", pid: process.pid }),
+    );
+    fs.writeFileSync(
+      path.join(origTmp, origResDir, `${job.id}.json`),
+      JSON.stringify({ id: job.id, agent: "worker", task: "cron check", success: true, output: "[NOOP] proj-a ok", durationMs: 10, exitCode: 0 }),
+    );
+    // Also mirror into current project's result dir so the poller ingests the retained job.
+    const nextTmp = path.join(nextCwd, ".pi", "tmp");
+    const nextResDir = fs.readdirSync(nextTmp).find((e) => e.startsWith(`async-results-pid-${process.pid}`))!;
+    fs.writeFileSync(
+      path.join(nextTmp, nextResDir, `${job.id}.json`),
+      JSON.stringify({ id: job.id, agent: "worker", task: "cron check", success: true, output: "[NOOP] proj-a ok", durationMs: 10, exitCode: 0 }),
+    );
+    h.triggerPoller();
+    await h.flushShortTimers();
+
+    const origStored = readDurableCronStore(path.join(origCwd, ".pi", "cron", "crons.json")).tasks[0];
+    assert.equal(origStored.runCount, 1);
+    assert.equal(origStored.lastOutcome, "noop");
   });
 });
