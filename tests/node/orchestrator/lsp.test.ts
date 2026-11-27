@@ -9,8 +9,10 @@ import {
   BUILTIN_LSP_SERVERS,
   MAX_DIAGNOSTIC_LINES,
   LspManager,
+  acquirePendingLspInstallClaim,
   claimPendingLspInstallRequest,
   clearPendingLspInstallRequest,
+  clearPendingLspInstallRequestIfOwned,
   detectLanguageId,
   dismissLspInstallPermanently,
   encodeJsonRpcMessage,
@@ -23,6 +25,7 @@ import {
   registerLsp,
   releasePendingLspInstallClaim,
   releasePendingLspInstallClaimsByOwner,
+  renewPendingLspInstallClaim,
   resolveServerForFile,
   resolveTrustedLspEnabled,
   resolveTrustedLspServers,
@@ -1235,6 +1238,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       // Wait until the stale versioned publish (160ms) has been processed, before the stale unversioned publish (230ms)
       await new Promise((r) => setTimeout(r, 80));
 
+      (manager as any).timeoutMs = 800;
       writeFileSync(file, "line1\nNEW_ERR\n");
       const nextRes = await fire(
         "tool_result",
@@ -1344,6 +1348,7 @@ describe("LSP diagnostics integration (#1445)", () => {
       const oldPid = manager.getActivePids()[0];
       assert.ok(oldPid);
 
+      (manager as any).timeoutMs = 800;
       writeFileSync(unversionedFile, "line1\nNEW_ERR\n");
       await fire(
         "tool_result",
@@ -2400,6 +2405,7 @@ recordPendingLspInstallRequest(
         envPath: "",
         installPrefsDbPath: prefsDbPath,
         pendingPollIntervalMs: 0,
+        verifyInstalled: () => "/fake/bin/typescript-language-server",
         installRunner: async () => {
           tui1InstallCalls++;
           markInstallStarted();
@@ -2625,6 +2631,382 @@ recordPendingLspInstallRequest(
 
       await tui1.fire("agent_end", {}, ctx);
       assert.equal(selectCalls, 2);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("atomically claims direct TUI edits so concurrent TUI drainers cannot race", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      writeFileSync(join(testDir, "direct.go"), "package main\n");
+
+      assert.equal(acquirePendingLspInstallClaim("unknown-server", "owner-a", {}, prefsDbPath), false);
+      assert.equal(acquirePendingLspInstallClaim("go", "owner-a", { sourceCwd: testDir, sourceRole: "tui" }, prefsDbPath, 5000, 10_000), true);
+      assert.equal(acquirePendingLspInstallClaim("go", "owner-b", { sourceCwd: testDir, sourceRole: "tui" }, prefsDbPath, 5000, 10_100), false);
+      assert.equal(clearPendingLspInstallRequestIfOwned("go", "owner-b", prefsDbPath), false);
+      assert.equal(clearPendingLspInstallRequestIfOwned("go", "owner-a", prefsDbPath), true);
+
+      let markPromptOpen!: () => void;
+      let resolveSelect!: (choice: string) => void;
+      const promptOpen = new Promise<void>((r) => {
+        markPromptOpen = r;
+      });
+      const selectPromise = new Promise<string>((r) => {
+        resolveSelect = r;
+      });
+
+      let tui1Selects = 0;
+      let tui2Selects = 0;
+
+      const tui1 = createMockPi();
+      const { manager: m1 } = registerDirectLsp(tui1.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+      });
+      activeManagers.push(m1);
+
+      const tui2 = createMockPi();
+      const { manager: m2 } = registerDirectLsp(tui2.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+      });
+      activeManagers.push(m2);
+
+      const ctx1 = {
+        cwd: testDir,
+        hasUI: true,
+        mode: "tui",
+        ui: {
+          select: async () => {
+            tui1Selects++;
+            markPromptOpen();
+            return selectPromise;
+          },
+        },
+      };
+      const ctx2 = {
+        cwd: testDir,
+        hasUI: true,
+        mode: "tui",
+        ui: {
+          select: async (_title: string, choices: string[]) => {
+            tui2Selects++;
+            return choices[1];
+          },
+        },
+      };
+
+      const directEdit = tui1.fire(
+        "tool_result",
+        { toolName: "write", input: { path: "direct.go" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        ctx1,
+      );
+      await promptOpen;
+      await tui2.fire("agent_end", {}, ctx2);
+      await tui2.fire(
+        "tool_result",
+        { toolName: "write", input: { path: "direct.go" }, isError: false, content: [{ type: "text", text: "ok" }] },
+        ctx2,
+      );
+
+      resolveSelect("Not now");
+      await directEdit;
+
+      assert.equal(tui1Selects, 1);
+      assert.equal(tui2Selects, 0);
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("renews claim lease during long prompt so another TUI cannot steal it past TTL", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+
+      let markPromptOpen!: () => void;
+      let resolveSelect!: (choice: string) => void;
+      const promptOpen = new Promise<void>((r) => {
+        markPromptOpen = r;
+      });
+      const selectPromise = new Promise<string>((r) => {
+        resolveSelect = r;
+      });
+
+      const tui1 = createMockPi();
+      const { manager: m1 } = registerDirectLsp(tui1.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+        pendingClaimTtlMs: 60,
+      });
+      activeManagers.push(m1);
+
+      const drain1 = tui1.fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async () => {
+              markPromptOpen();
+              return selectPromise;
+            },
+          },
+        },
+      );
+      await promptOpen;
+      await new Promise((r) => setTimeout(r, 110));
+      assert.equal(claimPendingLspInstallRequest("go", "intruder", prefsDbPath, 60), false);
+      resolveSelect("Not now");
+      await drain1;
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("aborts install without deleting row when claim ownership is lost during prompt", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("python", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+
+      let markPromptOpen!: () => void;
+      let resolveSelect!: (choice: string) => void;
+      const promptOpen = new Promise<void>((r) => {
+        markPromptOpen = r;
+      });
+      const selectPromise = new Promise<string>((r) => {
+        resolveSelect = r;
+      });
+
+      let installCalls = 0;
+      const tui = createMockPi();
+      const { manager } = registerDirectLsp(tui.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+        pendingClaimTtlMs: 0,
+        installRunner: async () => {
+          installCalls++;
+          return { ok: true };
+        },
+      });
+      activeManagers.push(manager);
+
+      const drain = tui.fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async (_title: string, choices: string[]) => {
+              markPromptOpen();
+              const chosen = await selectPromise;
+              return chosen === "install" ? choices[0] : choices[1];
+            },
+            notify: () => {},
+          },
+        },
+      );
+      await promptOpen;
+      // Steal ownership while prompt is open (ttlMs = 0)
+      assert.equal(claimPendingLspInstallRequest("python", "new-owner", prefsDbPath, 0), true);
+      assert.equal(renewPendingLspInstallClaim("python", "stale-owner", prefsDbPath), false);
+      assert.equal(renewPendingLspInstallClaim("python", "new-owner", prefsDbPath), true);
+
+      resolveSelect("install");
+      await drain;
+
+      assert.equal(installCalls, 0);
+      assert.deepEqual(
+        listPendingLspInstallRequests(prefsDbPath).map((r) => r.serverId),
+        ["python"],
+      );
+      // Row is still owned by new-owner
+      assert.equal(claimPendingLspInstallRequest("python", "third-owner", prefsDbPath, 60_000), false);
+    });
+
+    it("retains in-flight installer claims across session_shutdown so another TUI cannot start a second installer", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("typescript", { sourceCwd: testDir, sourceRole: "coms-peer" }, prefsDbPath);
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "coms-peer" }, prefsDbPath);
+
+      // Direct helper check for excludeServerIds
+      assert.equal(claimPendingLspInstallRequest("go", "owner-x", prefsDbPath, 60_000), true);
+      assert.equal(claimPendingLspInstallRequest("typescript", "owner-x", prefsDbPath, 60_000), true);
+      releasePendingLspInstallClaimsByOwner("owner-x", prefsDbPath, new Set(["typescript"]));
+      assert.equal(claimPendingLspInstallRequest("go", "owner-y", prefsDbPath, 60_000), true);
+      assert.equal(claimPendingLspInstallRequest("typescript", "owner-y", prefsDbPath, 60_000), false);
+      releasePendingLspInstallClaim("go", "owner-y", prefsDbPath);
+      releasePendingLspInstallClaim("typescript", "owner-x", prefsDbPath);
+
+      let markInstallStarted!: () => void;
+      let finishInstall!: (res: { ok: boolean }) => void;
+      const installStarted = new Promise<void>((r) => {
+        markInstallStarted = r;
+      });
+      const installPromise = new Promise<{ ok: boolean }>((r) => {
+        finishInstall = r;
+      });
+
+      let tui2Selects = 0;
+      const tui1 = createMockPi();
+      const { manager: m1 } = registerDirectLsp(tui1.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+        pendingClaimTtlMs: 60,
+        verifyInstalled: () => "/fake/bin/typescript-language-server",
+        installRunner: async () => {
+          markInstallStarted();
+          return installPromise;
+        },
+      });
+      activeManagers.push(m1);
+
+      const tui2 = createMockPi();
+      const { manager: m2 } = registerDirectLsp(tui2.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+      });
+      activeManagers.push(m2);
+
+      // Clear go so only typescript runs in this drain
+      clearPendingLspInstallRequest("go", prefsDbPath);
+
+      const tui1Drain = tui1.fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async (_title: string, choices: string[]) => choices[0],
+            notify: () => {},
+          },
+        },
+      );
+      await installStarted;
+
+      // Shut down tui1 while installer is still running and wait longer than TTL
+      await tui1.fire("session_shutdown", {}, { cwd: testDir });
+      await new Promise((r) => setTimeout(r, 90));
+
+      await tui2.fire(
+        "agent_end",
+        {},
+        {
+          cwd: testDir,
+          hasUI: true,
+          mode: "tui",
+          ui: {
+            select: async (_title: string, choices: string[]) => {
+              tui2Selects++;
+              return choices[1];
+            },
+          },
+        },
+      );
+      assert.equal(tui2Selects, 0);
+
+      finishInstall({ ok: true });
+      await tui1Drain;
+      assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
+    });
+
+    it("retains pending request while releasing claim on failed installRunner", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+
+      let tui1Selects = 0;
+      const tui1 = createMockPi();
+      const { manager: m1 } = registerDirectLsp(tui1.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+        promptErrorBackoffMs: 60,
+        verifyInstalled: () => null,
+        installRunner: async () => {
+          throw new Error("network down");
+        },
+      });
+      activeManagers.push(m1);
+
+      const ctx1 = {
+        cwd: testDir,
+        hasUI: true,
+        mode: "tui",
+        ui: {
+          select: async (_title: string, choices: string[]) => {
+            tui1Selects++;
+            return choices[0];
+          },
+          notify: () => {},
+        },
+      };
+
+      await tui1.fire("agent_end", {}, ctx1);
+      assert.equal(tui1Selects, 1);
+      assert.deepEqual(
+        listPendingLspInstallRequests(prefsDbPath).map((r) => r.serverId),
+        ["go"],
+      );
+      // Another owner can immediately claim it
+      assert.equal(claimPendingLspInstallRequest("go", "other-tui", prefsDbPath, 60_000), true);
+      releasePendingLspInstallClaim("go", "other-tui", prefsDbPath);
+      // Local backoff suppresses immediate retry in tui1
+      await tui1.fire("agent_end", {}, ctx1);
+      assert.equal(tui1Selects, 1);
+    });
+
+    it("retains pending request with retry backoff when installed binary is unverified", async () => {
+      writeGlobalSettings({ lsp_enabled: true });
+      recordPendingLspInstallRequest("go", { sourceCwd: testDir, sourceRole: "rpc" }, prefsDbPath);
+
+      let tui1Selects = 0;
+      let attempt = 0;
+      const tui1 = createMockPi();
+      const { manager: m1 } = registerDirectLsp(tui1.pi, {
+        envPath: "",
+        installPrefsDbPath: prefsDbPath,
+        pendingPollIntervalMs: 0,
+        promptErrorBackoffMs: 60,
+        verifyInstalled: () => (attempt >= 2 ? "/fake/bin/gopls" : null),
+        installRunner: async () => {
+          attempt++;
+          return { ok: true };
+        },
+      });
+      activeManagers.push(m1);
+
+      const ctx1 = {
+        cwd: testDir,
+        hasUI: true,
+        mode: "tui",
+        ui: {
+          select: async (_title: string, choices: string[]) => {
+            tui1Selects++;
+            return choices[0];
+          },
+          notify: () => {},
+        },
+      };
+
+      // Attempt 1: installRunner returns ok, verifyInstalled returns null -> row retained, backoff active
+      await tui1.fire("agent_end", {}, ctx1);
+      assert.equal(tui1Selects, 1);
+      assert.deepEqual(
+        listPendingLspInstallRequests(prefsDbPath).map((r) => r.serverId),
+        ["go"],
+      );
+      // Local backoff suppresses immediate retry
+      await tui1.fire("agent_end", {}, ctx1);
+      assert.equal(tui1Selects, 1);
+
+      // Attempt 2 after backoff: installRunner returns ok, binary verified -> row cleared
+      await new Promise((r) => setTimeout(r, 80));
+      await tui1.fire("agent_end", {}, ctx1);
+      assert.equal(tui1Selects, 2);
       assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
     });
   });
