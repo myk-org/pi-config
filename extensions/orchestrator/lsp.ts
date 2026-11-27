@@ -135,7 +135,8 @@ export const BUILTIN_INSTALL_RECIPES: Readonly<Record<string, LspInstallRecipe>>
     serverId: "typescript",
     label: "typescript-language-server",
     binary: "typescript-language-server",
-    displayCmd: "npm install -g typescript typescript-language-server",
+    // Pin typescript@6 because typescript@7+ removed lib/tsserver.js required by typescript-language-server.
+    displayCmd: "npm install -g typescript@6 typescript-language-server",
     prereq: "npm",
   },
   python: {
@@ -485,7 +486,7 @@ export async function runLspServerInstall(
         await execFileAsync(prereqBin, ["config", "set", "prefix", prefixDir], { timeout: 10_000 });
       }
       prependDirToProcessPath(path.join(prefixDir, "bin"));
-      await execFileAsync(prereqBin, ["install", "-g", "typescript", "typescript-language-server"], {
+      await execFileAsync(prereqBin, ["install", "-g", "typescript@6", "typescript-language-server"], {
         timeout: 180_000,
       });
       return { ok: true };

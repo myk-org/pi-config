@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  BUILTIN_INSTALL_RECIPES,
   LspManager,
   dismissLspInstallPermanently,
   findMissingBuiltinServerId,
@@ -441,6 +442,13 @@ describe("shared per-worktree LSP broker (#1445)", () => {
   // ── Lazy user-confirmed missing-server TUI install prompt ─────────
 
   describe("lazy missing-server install prompt", () => {
+    it("pins typescript@6 alongside typescript-language-server in the TypeScript install recipe", () => {
+      assert.equal(
+        BUILTIN_INSTALL_RECIPES.typescript?.displayCmd,
+        "npm install -g typescript@6 typescript-language-server",
+      );
+    });
+
     it("identifies a missing built-in server only when no binary or override matches", () => {
       assert.equal(findMissingBuiltinServerId(join(testDir, "app.py"), {}, ""), "python");
       assert.equal(findMissingBuiltinServerId(join(testDir, "app.ts"), {}, ""), "typescript");

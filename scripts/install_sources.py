@@ -15,8 +15,9 @@ PI_VERTEX_NPM = "npm:@myk-org/pi-vertex-claude"
 PI_CONFIG_NPM = "npm:pi-orchestrator-config"
 MYK_PI_TOOLS_INSTALL_CMD = "uv tool install --python 3.14 --upgrade myk-pi-tools"
 BASEDPYRIGHT_INSTALL_CMD = "uv tool install --upgrade basedpyright"
-TS_LSP_NPM_PACKAGES = ("typescript", "typescript-language-server")
-TS_LSP_INSTALL_CMD = "npm install -g typescript typescript-language-server"
+# Pin typescript@6 because typescript@7+ removed lib/tsserver.js required by typescript-language-server.
+TS_LSP_NPM_PACKAGES = ("typescript@6", "typescript-language-server")
+TS_LSP_INSTALL_CMD = "npm install -g typescript@6 typescript-language-server"
 GOPLS_INSTALL_CMD = "go install golang.org/x/tools/gopls@latest"
 # Live npm install tree (pi unpacks packages here — not a git clone).
 PI_NPM_PKG_DIR = "$HOME/.pi/agent/npm/node_modules/pi-orchestrator-config"

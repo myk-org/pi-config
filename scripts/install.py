@@ -62,8 +62,8 @@ except ModuleNotFoundError:
     PI_CONFIG_NPM = "npm:pi-orchestrator-config"
     MYK_PI_TOOLS_INSTALL_CMD = "uv tool install --python 3.14 --upgrade myk-pi-tools"
     BASEDPYRIGHT_INSTALL_CMD = "uv tool install --upgrade basedpyright"
-    TS_LSP_NPM_PACKAGES = ("typescript", "typescript-language-server")
-    TS_LSP_INSTALL_CMD = "npm install -g typescript typescript-language-server"
+    TS_LSP_NPM_PACKAGES = ("typescript@6", "typescript-language-server")
+    TS_LSP_INSTALL_CMD = "npm install -g typescript@6 typescript-language-server"
     GOPLS_INSTALL_CMD = "go install golang.org/x/tools/gopls@latest"
 
     def create_logger(name: str = "install") -> logging.Logger:
@@ -956,7 +956,7 @@ def build_steps(prereqs: dict[str, bool]) -> list[Step]:
         [
             Tool(
                 "typescript-language-server",
-                "TypeScript/JavaScript LSP (typescript + typescript-language-server)",
+                "TypeScript/JavaScript LSP (typescript@6 + typescript-language-server)",
                 installed=bool(_find_npm_bin("typescript-language-server")),
                 disabled=nd,
                 install_cmd=TS_LSP_INSTALL_CMD,

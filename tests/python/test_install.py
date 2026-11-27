@@ -1643,7 +1643,7 @@ def test_install_typescript_lsp_uses_writable_npm_prefix(monkeypatch: pytest.Mon
     monkeypatch.setattr(install.subprocess, "run", fake_run)
 
     install.install_typescript_lsp()
-    assert seen == [["npm", "install", "-g", "typescript", "typescript-language-server"]]
+    assert seen == [["npm", "install", "-g", "typescript@6", "typescript-language-server"]]
 
 
 def test_install_gopls_runs_go_install_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1852,4 +1852,4 @@ def test_install_standalone_fallback_matches_install_sources_lsp_constants() -> 
     assert f'BASEDPYRIGHT_INSTALL_CMD = "{install_sources.BASEDPYRIGHT_INSTALL_CMD}"' in fallback_section
     assert f'TS_LSP_INSTALL_CMD = "{install_sources.TS_LSP_INSTALL_CMD}"' in fallback_section
     assert f'GOPLS_INSTALL_CMD = "{install_sources.GOPLS_INSTALL_CMD}"' in fallback_section
-    assert 'TS_LSP_NPM_PACKAGES = ("typescript", "typescript-language-server")' in fallback_section
+    assert 'TS_LSP_NPM_PACKAGES = ("typescript@6", "typescript-language-server")' in fallback_section
