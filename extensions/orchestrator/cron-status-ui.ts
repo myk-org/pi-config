@@ -8,6 +8,7 @@ import {
   cronDetailRows,
   cronStateLabel,
   filterCronTasksByScope,
+  formatCronQuietBadge,
   formatCronSchedule,
   formatCronScheduleInput,
   formatLastRunLabel,
@@ -44,6 +45,7 @@ export {
   cronDetailRows,
   cronStateLabel,
   filterCronTasksByScope,
+  formatCronQuietBadge,
   formatCronSchedule,
   formatCronScheduleInput,
   formatLastRunLabel,
@@ -331,9 +333,11 @@ export async function openCronStatusOverlay(
         listItems: () => filterCronTasksByScope(deps.listTasks(), scopeFilter),
         rowParts: (task, theme) => {
           const now = Date.now();
+          const quietBadge = formatCronQuietBadge(task);
           const rightParts = [
             // An active row keeps today's text; only a paused row gains a state label.
             ...(task.paused ? [theme.fg("warning", cronStateLabel(task))] : []),
+            ...(quietBadge ? [theme.fg("dim", quietBadge)] : []),
             theme.fg("muted", formatCronSchedule(task)),
             theme.fg("dim", formatLastRunLabel(task, now)),
             theme.fg("muted", formatNextRunLabel(task, now)),

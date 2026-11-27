@@ -12,10 +12,18 @@ import { parseModelOverride } from "./parse-model-override.js";
 import { openCronStatusOverlay } from "./cron-status-ui.js";
 import { setSlot } from "./status-bar.js";
 import { isBrowserDispatch } from "../shared/live-ctx.js";
-import { acquireLeaderLock, durableCronSupported, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, readDurableCronStoreOutcome, refreshLeaderLock, releaseLeaderLock, setDurableCronPaused, validateDurableCronTask, type CronLockOwner, type CronScope, type DurableCronTask } from "./cron-store.js";
+import { acquireLeaderLock, durableCronSupported, isCronNoopOutput, isLeaderLockCurrent, mutateDurableCronStore, readDurableCronStore, readDurableCronStoreOutcome, refreshLeaderLock, releaseLeaderLock, setDurableCronPaused, validateDurableCronTask, type CronLockOwner, type CronRunOutcome, type CronScope, type DurableCronTask } from "./cron-store.js";
+
+export { isCronNoopOutput, type CronRunOutcome } from "./cron-store.js";
+
+/** Concise instruction appended to worker prompts when `quiet_on_noop` is enabled. */
+export const CRON_QUIET_NOOP_PROMPT_SUFFIX =
+  '\n\nIf nothing changed or requires attention since the last run, reply with a single line starting with [NOOP] (optionally followed by a brief reason, e.g. "[NOOP] no changes").';
+
+const EDITABLE_CRON_FIELDS = ["description", "task", "model", "interval_seconds", "at_hour", "at_minute", "quiet_on_noop"] as const;
 
 const log = createLogger("cron");
-export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; /** "provider/model-id" or bare "model-id"; undefined inherits the normal resolution chain. */ model?: string; /** Paused by the user: kept, never armed (issue #1087). */ paused?: boolean; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
+export interface CronTask { id: string; scope: CronScope; cwd: string; description: string; task: string; intervalMs?: number; atHour?: number; atMinute?: number; /** "provider/model-id" or bare "model-id"; undefined inherits the normal resolution chain. */ model?: string; /** Paused by the user: kept, never armed (issue #1087). */ paused?: boolean; /** Suppress parent followUp chat turn when a successful worker replies starting with `[NOOP]`. */ quiet_on_noop?: boolean; /** Number of completed/executed runs recorded for this cron. */ runCount?: number; /** Outcome of the most recent completed run. */ lastOutcome?: CronRunOutcome; createdAt: number; lastRun?: number; nextRun?: number; leader?: boolean; }
 type Timer = ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>;
 const durable = (scope: CronScope) => scope === "project";
 let sessionStore = "";
@@ -34,6 +42,9 @@ function validateSessionCronTask(task: unknown): asserts task is CronTask {
   validateSchedule({ interval_seconds: value.intervalMs === undefined ? undefined : value.intervalMs / 1000, at_hour: value.atHour, at_minute: value.atMinute });
   if (value.model !== undefined && (typeof value.model !== "string" || !parseModelOverride(value.model))) throw new Error("Invalid session cron model");
   if (value.paused !== undefined && typeof value.paused !== "boolean") throw new Error("Invalid session cron paused flag");
+  if (value.quiet_on_noop !== undefined && typeof value.quiet_on_noop !== "boolean") throw new Error("Invalid session cron quiet_on_noop flag");
+  if (value.runCount !== undefined && (!Number.isInteger(value.runCount) || value.runCount < 0)) throw new Error("Invalid session cron runCount");
+  if (value.lastOutcome !== undefined && value.lastOutcome !== "delivered" && value.lastOutcome !== "noop" && value.lastOutcome !== "error") throw new Error("Invalid session cron lastOutcome");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid session cron timestamp");
 }
 function writeSessionTasks(file: string, tasks: Iterable<CronTask>) {
@@ -61,6 +72,9 @@ function syncTaskFields(target: CronTask, source: CronTask): void {
   target.atMinute = source.atMinute;
   target.model = source.model;
   target.paused = source.paused;
+  target.quiet_on_noop = source.quiet_on_noop;
+  target.runCount = source.runCount;
+  target.lastOutcome = source.lastOutcome;
   target.lastRun = source.lastRun;
   target.nextRun = source.nextRun;
   target.leader = source.leader;
@@ -83,8 +97,8 @@ function validateSchedule(details: any) {
   if (minute !== undefined && hour === undefined) throw new Error("at_minute requires at_hour");
 }
 function applyCronPatch<T extends CronTask | DurableCronTask>(current: T, details: any): { updated: T; scheduleChanged: boolean } {
-  const hasEdit = ["description", "task", "model", "interval_seconds", "at_hour", "at_minute"].some((key) => details[key] !== undefined);
-  if (!hasEdit) throw new Error("at least one field to update is required (description, task, model, interval_seconds, at_hour, at_minute)");
+  const hasEdit = EDITABLE_CRON_FIELDS.some((key) => details[key] !== undefined);
+  if (!hasEdit) throw new Error(`at least one field to update is required (${EDITABLE_CRON_FIELDS.join(", ")})`);
 
   const taskText = details.task !== undefined ? details.task : current.task;
   if (typeof taskText !== "string" || !taskText.trim()) throw new Error("task must be a non-empty string");
@@ -93,6 +107,11 @@ function applyCronPatch<T extends CronTask | DurableCronTask>(current: T, detail
   if (typeof description !== "string" || !description.trim()) throw new Error("description must be a non-empty string");
 
   const model = details.model !== undefined ? normalizeModel(details.model) : current.model;
+
+  if (details.quiet_on_noop !== undefined && typeof details.quiet_on_noop !== "boolean") {
+    throw new Error("quiet_on_noop must be a boolean");
+  }
+  const quiet_on_noop = details.quiet_on_noop !== undefined ? details.quiet_on_noop : current.quiet_on_noop;
 
   let intervalMs = current.intervalMs;
   let atHour = current.atHour;
@@ -127,6 +146,7 @@ function applyCronPatch<T extends CronTask | DurableCronTask>(current: T, detail
     atHour,
     atMinute,
     model,
+    ...(quiet_on_noop !== undefined ? { quiet_on_noop } : {}),
     nextRun: scheduleChanged ? undefined : current.nextRun,
   };
   return { updated, scheduleChanged };
@@ -179,10 +199,10 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
   const stores = () => ctx ? [{ scope: "project" as const, file: projectStore(ctx.cwd) }] : [];
   function updateStatus() {
     try { if (ctx?.hasUI) setSlot("crons", formatCronStatusSlot([...tasks.values()], ctx.ui.theme), ctx); } catch {}
-    pi.events.emit("pidash:cron-status", { count: tasks.size, tasks: [...tasks.values()].map(t => ({ id: qualifyCronId(t), scope: t.scope, description: t.description, schedule: formatCronSchedule(t), lastRun: t.lastRun, nextRun: t.nextRun, leader: t.leader, paused: t.paused === true })) });
+    pi.events.emit("pidash:cron-status", { count: tasks.size, tasks: [...tasks.values()].map(t => ({ id: qualifyCronId(t), scope: t.scope, description: t.description, schedule: formatCronSchedule(t), lastRun: t.lastRun, nextRun: t.nextRun, leader: t.leader, paused: t.paused === true, quiet_on_noop: t.quiet_on_noop === true, runCount: t.runCount, lastOutcome: t.lastOutcome })) });
   }
-  /** Persist run timestamps without clobbering peer edits, `paused`, or a changed schedule (#1089, #1381). */
-  function persist(task: CronTask, kind: "lastRun" | "nextRun"): boolean {
+  /** Persist run timestamps/outcomes without clobbering peer edits, `paused`, or a changed schedule (#1089, #1381, #1452). */
+  function persist(task: CronTask, kind: "lastRun" | "nextRun" | "runOutcome"): boolean {
     try {
       if (task.scope === "session") { if (sessionStore) writeSessionTasks(sessionStore, [...tasks.values()].filter(t => t.scope === "session")); return true; }
       const file = projectStore(task.cwd);
@@ -192,12 +212,18 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
         return false;
       }
       let scheduleMismatch = false;
+      let persistedRunCount: number | undefined;
       mutateDurableCronStore(file, old => old.map(t => {
         if (t.id !== task.id) return t;
         if (kind === "lastRun") return { ...t, lastRun: task.lastRun } as DurableCronTask;
+        if (kind === "runOutcome") {
+          persistedRunCount = Math.max((t.runCount ?? 0) + 1, task.runCount ?? 1);
+          return { ...t, lastRun: task.lastRun, runCount: persistedRunCount, lastOutcome: task.lastOutcome } as DurableCronTask;
+        }
         if (!sameSchedule(t, task)) { scheduleMismatch = true; return t; }
         return { ...t, nextRun: task.nextRun } as DurableCronTask;
       }));
+      if (kind === "runOutcome" && persistedRunCount !== undefined) task.runCount = persistedRunCount;
       if (scheduleMismatch) {
         log.info("cron_persist_schedule_mismatch", { id: qualifyCronId(task) });
         syncStore("project", file);
@@ -205,6 +231,26 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
       }
       return true;
     } catch (error: any) { log.error("cron_persist_failed", qualifyCronId(task), error?.message || error); return false; }
+  }
+  /** Record completion outcome (`delivered`, `noop`, `error`) and run history for a cron execution. */
+  function recordCronRunOutcome(id: string, scope: CronScope, quietOnNoop: boolean, result: { text: string; isError: boolean }) {
+    const live = tasks.get(id);
+    if (!live || live.scope !== scope) {
+      log.debug("cron_run_outcome_skipped_missing", { id: `${scope === "project" ? "persist" : "session"}:${id}` });
+      return;
+    }
+    const suppressed = quietOnNoop && !result.isError && isCronNoopOutput(result.text);
+    const outcome: CronRunOutcome = result.isError ? "error" : suppressed ? "noop" : "delivered";
+    live.lastRun = Date.now();
+    live.runCount = (live.runCount ?? 0) + 1;
+    live.lastOutcome = outcome;
+    persist(live, "runOutcome");
+    updateStatus();
+    if (suppressed) {
+      log.info("cron_noop_suppressed", { id: qualifyCronId(live), runCount: live.runCount, preview: result.text.trim().slice(0, 120) });
+    } else {
+      log.debug("cron_run_completed", { id: qualifyCronId(live), outcome, runCount: live.runCount });
+    }
   }
   /** Write only the `paused` flag of the stored record; true when it reached the store. */
   function persistPaused(task: CronTask, paused: boolean): boolean {
@@ -252,7 +298,12 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
           log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
           election(); return;
         }
-        pi.sendUserMessage(cmd, { deliverAs: "followUp" }); return;
+        pi.sendUserMessage(cmd, { deliverAs: "followUp" });
+        task.runCount = (task.runCount ?? 0) + 1;
+        task.lastOutcome = "delivered";
+        persist(task, "runOutcome");
+        updateStatus();
+        return;
       }
       const { discoverAgents } = await import("./agents.js");
       if (!isCurrent()) { log.debug("cron_execution_fenced", { id: qualifyCronId(task), reason: "stale_timer" }); return; }
@@ -268,16 +319,33 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
           log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
           election(); return;
         }
-        pi.sendUserMessage(liveCmd, { deliverAs: "followUp" }); return;
+        pi.sendUserMessage(liveCmd, { deliverAs: "followUp" });
+        task.runCount = (task.runCount ?? 0) + 1;
+        task.lastOutcome = "delivered";
+        persist(task, "runOutcome");
+        updateStatus();
+        return;
       }
       const liveExplicit = parseModelOverride(task.model);
-      log.debug("cron_dispatch", { id: qualifyCronId(task), model: task.model || "inherit" });
+      const quietOnNoop = task.quiet_on_noop === true;
+      log.debug("cron_dispatch", { id: qualifyCronId(task), model: task.model || "inherit", quiet_on_noop: quietOnNoop });
       const { agents } = discoverAgents(task.cwd, "user");
       if (durable(task.scope) && !refreshLeaderLock(projectStore(task.cwd), owned.get(projectStore(task.cwd))!)) {
         log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
         election(); return;
       }
-      spawnAsyncAgent("worker", liveCmd, task.cwd, agents, { name: `Cron: ${task.description.slice(0, 40)}`, ...(liveExplicit ? { explicit: liveExplicit } : {}) });
+      const workerPrompt = quietOnNoop ? `${liveCmd}${CRON_QUIET_NOOP_PROMPT_SUFFIX}` : liveCmd;
+      const taskId = task.id;
+      const taskScope = task.scope;
+      const spawned = spawnAsyncAgent("worker", workerPrompt, task.cwd, agents, {
+        name: `Cron: ${task.description.slice(0, 40)}`,
+        ...(liveExplicit ? { explicit: liveExplicit } : {}),
+        ...(quietOnNoop ? { quietOnNoop: true } : {}),
+        onComplete: (result: { text: string; isError: boolean }) => recordCronRunOutcome(taskId, taskScope, quietOnNoop, result),
+      });
+      if (spawned?.error) {
+        log.warn("cron_spawn_failed", { id: qualifyCronId(task), error: spawned.error });
+      }
     } catch (error: any) { log.error("cron_execute_failed", qualifyCronId(task), error?.message || error); }
   }
   function stop(id: string) { const timer = timers.get(id); if (timer) { clearTimeout(timer as any); clearInterval(timer as any); timers.delete(id); } }
@@ -372,7 +440,8 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
     }
     if (durable(scope) && !durableCronSupported()) throw new Error("Persistent cron scheduling is unavailable on this platform");
     validateSchedule(details);
-    const task: CronTask = { id: randomUUID(), scope, cwd: ctx?.cwd || process.cwd(), description: details.description || details.task.slice(0, 60), task: details.task, intervalMs: details.interval_seconds !== undefined ? details.interval_seconds * 1000 : undefined, atHour: details.at_hour, atMinute: details.at_minute ?? (details.at_hour !== undefined ? 0 : undefined), model: normalizeModel(details.model), createdAt: Date.now(), leader: scope === "session" };
+    if (details.quiet_on_noop !== undefined && typeof details.quiet_on_noop !== "boolean") throw new Error("quiet_on_noop must be a boolean");
+    const task: CronTask = { id: randomUUID(), scope, cwd: ctx?.cwd || process.cwd(), description: details.description || details.task.slice(0, 60), task: details.task, intervalMs: details.interval_seconds !== undefined ? details.interval_seconds * 1000 : undefined, atHour: details.at_hour, atMinute: details.at_minute ?? (details.at_hour !== undefined ? 0 : undefined), model: normalizeModel(details.model), ...(details.quiet_on_noop !== undefined ? { quiet_on_noop: details.quiet_on_noop } : {}), createdAt: Date.now(), leader: scope === "session" };
     if (!task.task || (!task.intervalMs && task.atHour === undefined)) throw new Error("task and a schedule are required");
     if (durable(scope)) mutateDurableCronStore(projectStore(task.cwd), old => [...old, task as DurableCronTask]);
     tasks.set(task.id, task);
@@ -404,8 +473,8 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
       return existing;
     }
     // Fail fast on missing update fields before acquiring the durable flock.
-    if (!["description", "task", "model", "interval_seconds", "at_hour", "at_minute"].some((key) => details[key] !== undefined)) {
-      throw new Error("at least one field to update is required (description, task, model, interval_seconds, at_hour, at_minute)");
+    if (!EDITABLE_CRON_FIELDS.some((key) => details[key] !== undefined)) {
+      throw new Error(`at least one field to update is required (${EDITABLE_CRON_FIELDS.join(", ")})`);
     }
     const file = projectStore(ctx?.cwd || process.cwd());
     let updated: DurableCronTask | undefined;
@@ -477,15 +546,27 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
     const result = setPaused(qualified, !task.paused);
     return { ok: result.ok, paused: result.paused };
   }
-  pi.registerTool({ name: "cron_manage", label: "Cron Manage", exposure: "codemode", namespace: TOOL_NAMESPACES.runtime, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }, description: "Manage scheduled tasks (add, list, edit, pause, resume, remove). Use edit with id to modify an existing cron in place (preserves ID, history, and paused state; pass only changed fields, or model=\"\" to clear a pinned model). Use pause/resume with id to temporarily stop or re-arm a cron without deleting it (resume starts a fresh interval). Set persist=true on add to keep a task across Pi sessions in this project. Set model to \"provider/model-id\" (or a bare \"model-id\") to pin that cron's model.", parameters: Type.Object({ action: Type.Union([Type.Literal("add"), Type.Literal("list"), Type.Literal("edit"), Type.Literal("pause"), Type.Literal("resume"), Type.Literal("remove")]), persist: Type.Optional(Type.Boolean()), description: Type.Optional(Type.String()), task: Type.Optional(Type.String()), model: Type.Optional(Type.String()), interval_seconds: Type.Optional(Type.Number()), at_hour: Type.Optional(Type.Number()), at_minute: Type.Optional(Type.Number()), id: Type.Optional(Type.String()) }), async execute(_id: string, params: any) {
+  function formatCronListLine(t: CronTask): string {
+    const parts = [
+      qualifyCronId(t),
+      formatCronSchedule(t),
+      t.description,
+      t.model || "inherited model",
+      cronStateLabel(t),
+    ];
+    if (t.quiet_on_noop) parts.push("quiet");
+    if (t.lastOutcome) parts.push(`last: ${t.lastOutcome}`);
+    return parts.join(" | ");
+  }
+  pi.registerTool({ name: "cron_manage", label: "Cron Manage", exposure: "codemode", namespace: TOOL_NAMESPACES.runtime, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }, description: "Manage scheduled tasks (add, list, edit, pause, resume, remove). Use edit with id to modify an existing cron in place (preserves ID, history, and paused state; pass only changed fields, or model=\"\" to clear a pinned model). Use pause/resume with id to temporarily stop or re-arm a cron without deleting it (resume starts a fresh interval). Set persist=true on add to keep a task across Pi sessions in this project. Set model to \"provider/model-id\" (or a bare \"model-id\") to pin that cron's model. Set quiet_on_noop=true on add/edit for monitoring crons so a successful worker replying with `[NOOP]` records history silently without sending a followUp chat turn (failures and non-`[NOOP]` results always deliver).", parameters: Type.Object({ action: Type.Union([Type.Literal("add"), Type.Literal("list"), Type.Literal("edit"), Type.Literal("pause"), Type.Literal("resume"), Type.Literal("remove")]), persist: Type.Optional(Type.Boolean()), description: Type.Optional(Type.String()), task: Type.Optional(Type.String()), model: Type.Optional(Type.String()), interval_seconds: Type.Optional(Type.Number()), at_hour: Type.Optional(Type.Number()), at_minute: Type.Optional(Type.Number()), quiet_on_noop: Type.Optional(Type.Boolean({ description: "When true, instruct the worker to reply starting with [NOOP] when nothing changed, and suppress the parent followUp chat turn on successful [NOOP] replies (default: false). Failures and non-[NOOP] replies always deliver." })), id: Type.Optional(Type.String()) }), async execute(_id: string, params: any) {
     const scope: CronScope = params.persist ? "project" : "session";
     try {
       if (params.action === "add" && (ctx?.mode === "print" || ctx?.mode === "json")) return { content: [{ type: "text", text: "Error: Cron scheduling is unavailable in one-shot mode." }] };
-      if (params.action === "add") { const task = add(scope, params); return { content: [{ type: "text", text: `Cron ${qualifyCronId(task)} created: ${formatCronSchedule(task)} → ${task.description}${task.model ? ` [${task.model}]` : ""}` }] }; }
+      if (params.action === "add") { const task = add(scope, params); return { content: [{ type: "text", text: `Cron ${qualifyCronId(task)} created: ${formatCronSchedule(task)} → ${task.description}${task.model ? ` [${task.model}]` : ""}${task.quiet_on_noop ? " (quiet)" : ""}` }] }; }
       if (params.action === "edit") {
         const task = edit(params.id || "", params);
         if (!task) return { content: [{ type: "text", text: "Task not found." }] };
-        return { content: [{ type: "text", text: `Cron ${qualifyCronId(task)} updated: ${formatCronSchedule(task)} → ${task.description}${task.model ? ` [${task.model}]` : ""}${task.paused ? " (paused)" : ""}` }] };
+        return { content: [{ type: "text", text: `Cron ${qualifyCronId(task)} updated: ${formatCronSchedule(task)} → ${task.description}${task.model ? ` [${task.model}]` : ""}${task.quiet_on_noop ? " (quiet)" : ""}${task.paused ? " (paused)" : ""}` }] };
       }
       if (params.action === "pause" || params.action === "resume") {
         const wantPaused = params.action === "pause";
@@ -498,7 +579,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
       }
       if (params.action === "remove") return { content: [{ type: "text", text: remove(params.id || "") ? "Cron removed." : "Task not found." }] };
       const selected = [...tasks.values()].filter(t => !params.persist || t.scope === "project");
-      return { content: [{ type: "text", text: selected.length ? selected.map(t => `${qualifyCronId(t)} | ${formatCronSchedule(t)} | ${t.description} | ${t.model || "inherited model"} | ${cronStateLabel(t)}`).join("\n") : "No scheduled tasks." }] };
+      return { content: [{ type: "text", text: selected.length ? selected.map(formatCronListLine).join("\n") : "No scheduled tasks." }] };
     } catch (error: any) { return { content: [{ type: "text", text: `Error: ${error.message}` }] }; }
   }, } as any);
   /** Move a cron safely between session and durable project storage, preserving all task fields. */
@@ -616,9 +697,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
   function formatCronPlainText(): string {
     const all = [...tasks.values()];
     if (all.length === 0) return "No scheduled tasks.";
-    return all
-      .map(t => `${qualifyCronId(t)} | ${formatCronSchedule(t)} | ${t.description} | ${t.model || "inherited model"} | ${cronStateLabel(t)}`)
-      .join("\n");
+    return all.map(formatCronListLine).join("\n");
   }
   pi.registerCommand("cron", {
     description: "Open the cron tasks TUI overlay",

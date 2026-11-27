@@ -47,6 +47,7 @@ import { setSlot } from "./status-bar.js";
 import { getSetting } from "./project-settings.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { sendSystemNote } from "../shared/system-note.js";
+import { isCronNoopOutput } from "./cron-store.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -78,6 +79,8 @@ export interface AsyncJob {
   lateResultSent?: boolean;
   sideEffectsApplied?: boolean;
   fireAndForget?: boolean;
+  /** When true, a successful worker whose trimmed output starts with `[NOOP]` suppresses parent followUp delivery. */
+  quietOnNoop?: boolean;
   /** One-shot: fires once with the ingested result text. Used by async chains to feed {previous}. */
   onComplete?: (result: { text: string; isError: boolean }) => void;
   /** Set when the empty timeout fallback withheld this job's chain hook for the late result. */
@@ -417,6 +420,17 @@ function resolvePrBaseInfo(cwd: string): { baseBranch: string; hasPr: string } {
  *  Recording is independent of the extension instance: after /reload the ctx is gone, and gating the
  *  status write on it made a failed agent vanish from the task list. Delivery needs a live ctx.
  *  Pure so the decision is testable without spawning a process. */
+export function shouldSuppressQuietNoop(
+  job: Pick<AsyncJob, "quietOnNoop" | "status" | "output" | "killOrigin">,
+  noIngestedResult = false,
+): boolean {
+  return job.quietOnNoop === true
+    && job.status === "complete"
+    && !job.killOrigin
+    && !noIngestedResult
+    && isCronNoopOutput(job.output);
+}
+
 export function planSpawnExitRecovery(args: { status: string; hasLiveCtx: boolean }): { record: boolean; deliver: boolean } {
   if (args.status === "complete" || args.status === "failed") return { record: false, deliver: false };
   return { record: true, deliver: args.hasLiveCtx };
@@ -430,7 +444,7 @@ export function registerAsyncAgents(
     discoverAgents?: (cwd: string, scope: "both") => Pick<AgentDiscoveryResult, "agents">;
   } = {},
 ): {
-  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
+  spawnAsyncAgent: (agentName: string, task: string, cwd: string, agents: AgentConfig[], options?: { fireAndForget?: boolean; quietOnNoop?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState }) => { id: string; error?: string; model?: string };
   killAsyncAgent: (target: string, origin?: AsyncKillOrigin) => { killed: string[]; errors: string[] };
   reviveAsyncJob: (jobRef: AsyncStatusJobView | string) => Promise<ReviveJobResult>;
   /** The full job record: callers read `taskStorePath` and the delivery flags off it. */
@@ -1001,6 +1015,13 @@ export function registerAsyncAgents(
       if (job.fireAndForget) {
         if (fireHook && !withholdChainHook) fireOnComplete(job);
         job.delivered = true;
+      } else if (shouldSuppressQuietNoop(job, noIngestedResult)) {
+        safeEmit("subagents:completed", { id: job.id, result: job.output || "" });
+        recordDelivered(job.id);
+        job.delivered = true;
+        if (isLate) job.lateResultSent = true;
+        log.info("deliver_suppressed_quiet_noop", { job: job.id, name: job.name, isLate });
+        if (fireHook && !withholdChainHook) fireOnComplete(job);
       } else if (getLiveAsyncCtx()) {
         const displayName = job.name || job.agent;
         const resultStatus = job.status === "complete" ? "✅ completed" : "❌ failed";
@@ -1143,9 +1164,11 @@ export function registerAsyncAgents(
       job.updatedAt = Date.now();
       preserveReviewerOutput(job, typeof data.output === "string" ? data.output : JSON.stringify(data.output ?? ""));
 
-      // Notify terminal per-agent (lightweight, non-conversational)
-      const displayName = job.name || data.agent;
-      terminalNotify("pi", `Async agent ${displayName} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
+      // Notify terminal per-agent (lightweight, non-conversational) — skip on quiet [NOOP] runs
+      if (!shouldSuppressQuietNoop(job)) {
+        const displayName = job.name || data.agent;
+        terminalNotify("pi", `Async agent ${displayName} ${data.success ? "completed" : "failed"} (${formatDuration(data.durationMs)})`);
+      }
 
       // Track reviewer completion for review loop enforcement
       let processResultSideEffectsOk = true;
@@ -1237,7 +1260,7 @@ export function registerAsyncAgents(
     task: string,
     cwd: string,
     agents: AgentConfig[],
-    options?: { fireAndForget?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState },
+    options?: { fireAndForget?: boolean; quietOnNoop?: boolean; name?: string; parentModelId?: string; parentProvider?: string; groupId?: string; taskId?: string; projectCwd?: string; sessionId?: string; onComplete?: (result: { text: string; isError: boolean }) => void; persistSession?: boolean; explicit?: { model?: string; provider?: string }; chain?: AsyncChainState },
   ): { id: string; error?: string; model?: string } {
     const agent = agents.find(a => a.name === agentName);
     if (!agent) return { id: "", error: `Unknown agent: "${agentName}"` };
@@ -1303,6 +1326,7 @@ export function registerAsyncAgents(
     fs.writeFileSync(path.join(workerDir, "session.json"), JSON.stringify({
       resultsDir: ASYNC_RESULTS_DIR,
       fireAndForget: options?.fireAndForget || false,
+      quietOnNoop: options?.quietOnNoop === true,
       parentPid: process.pid,
       parentStartTime,
       name: options?.name || null,
@@ -1400,6 +1424,7 @@ export function registerAsyncAgents(
       startedAt: Date.now(),
       updatedAt: Date.now(),
       fireAndForget: options?.fireAndForget,
+      quietOnNoop: options?.quietOnNoop === true || undefined,
       onComplete: options?.onComplete,
       groupId: options?.groupId,
       taskId: options?.taskId,
@@ -1643,6 +1668,7 @@ export function registerAsyncAgents(
             lateResultSent: status.lateResultSent === true || undefined,
             sideEffectsApplied: isComplete && alreadySent,
             fireAndForget: marker.fireAndForget || false,
+            quietOnNoop: marker.quietOnNoop === true || undefined,
             taskId: marker.taskId || undefined,
             taskStorePath: marker.taskStorePath || undefined,
             cwd: marker.cwd || undefined,

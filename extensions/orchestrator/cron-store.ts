@@ -8,6 +8,13 @@ import { parseModelOverride } from "./parse-model-override.js";
 import { createLogger } from "../shared/logger.js";
 
 export type CronScope = "session" | "project";
+export type CronRunOutcome = "delivered" | "noop" | "error";
+
+/** True when a completed quiet_on_noop cron worker output starts with `[NOOP]` (case-insensitive). */
+export function isCronNoopOutput(output: unknown): boolean {
+  return typeof output === "string" && /^\[noop\]/i.test(output.trim());
+}
+
 export interface DurableCronTask {
   id: string;
   scope: "project";
@@ -24,6 +31,12 @@ export interface DurableCronTask {
   nextRun?: number;
   /** Paused by the user: the definition is kept, no timer is armed (issue #1087). */
   paused?: boolean;
+  /** Suppress parent followUp chat delivery when a successful worker replies starting with `[NOOP]`. */
+  quiet_on_noop?: boolean;
+  /** Number of completed/executed runs recorded for this cron. */
+  runCount?: number;
+  /** Outcome of the most recent completed run. */
+  lastOutcome?: CronRunOutcome;
 }
 export interface DurableCronEnvelope { version: 1; tasks: DurableCronTask[]; }
 export type DurableCronReadOutcome =
@@ -216,6 +229,9 @@ export function validateDurableCronTask(task: unknown): asserts task is DurableC
   if (value.model !== undefined && (typeof value.model !== "string" || !parseModelOverride(value.model))) throw new Error("Invalid durable cron model");
   if ((value.lastRun !== undefined && !Number.isFinite(value.lastRun)) || (value.nextRun !== undefined && !Number.isFinite(value.nextRun))) throw new Error("Invalid durable cron timestamp");
   if (value.paused !== undefined && typeof value.paused !== "boolean") throw new Error("Invalid durable cron paused flag");
+  if (value.quiet_on_noop !== undefined && typeof value.quiet_on_noop !== "boolean") throw new Error("Invalid durable cron quiet_on_noop flag");
+  if (value.runCount !== undefined && (!Number.isInteger(value.runCount) || value.runCount < 0)) throw new Error("Invalid durable cron runCount");
+  if (value.lastOutcome !== undefined && value.lastOutcome !== "delivered" && value.lastOutcome !== "noop" && value.lastOutcome !== "error") throw new Error("Invalid durable cron lastOutcome");
 }
 function validate(tasks: DurableCronTask[]) { for (const task of tasks) validateDurableCronTask(task); }
 function atomicWrite(file: string, content: string) {
