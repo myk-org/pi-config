@@ -20,8 +20,18 @@ export function parseTypedSetting(raw: string, def: SettingsKey): { value: unkno
     if (!pattern.test(raw.trim())) return { value: null, error: "not a number" };
     const n = t === "int" ? Number.parseInt(raw, 10) : Number(raw);
     if (!Number.isFinite(n)) return { value: null, error: "not a number" };
-    if (def.min !== undefined && n < def.min) return { value: null, error: `min ${def.min}` };
-    if (def.max !== undefined && n > def.max) return { value: null, error: `max ${def.max}` };
+    const allowedZero = def.allow_zero === true && n === 0;
+    if (!allowedZero) {
+      if (def.min !== undefined && n < def.min) {
+        return { value: null, error: def.allow_zero ? `0 or ${def.min}-${def.max ?? "∞"}` : `min ${def.min}` };
+      }
+      if (def.max !== undefined && n > def.max) {
+        return {
+          value: null,
+          error: def.allow_zero && def.min !== undefined ? `0 or ${def.min}-${def.max}` : `max ${def.max}`,
+        };
+      }
+    }
     return { value: n };
   }
   if (t === "port") {

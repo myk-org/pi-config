@@ -463,6 +463,8 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
         if meta.get("strict_digits"):
             return _parse_review_loop_max_cycles(value)
         if isinstance(value, int) and not isinstance(value, bool):
+            if meta.get("allow_zero") and value == 0:
+                return 0
             min_val = meta.get("min", 0)
             max_val = meta.get("max", 2**53)
             return value if min_val <= value <= max_val else None
@@ -646,6 +648,8 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
                     n = int(env_val.strip(), 10)
                 except (ValueError, TypeError):
                     return default
+                if meta.get("allow_zero") and n == 0:
+                    return 0
                 min_val = meta.get("min", 0)
                 max_val = meta.get("max", 2**53)
                 if min_val <= n <= max_val:
