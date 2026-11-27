@@ -346,6 +346,17 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
     syncTaskFields(task, { ...stored, leader: task.leader });
     return task.paused === true ? "paused" : "active";
   }
+  function dispatchCronCommand(command: string): void {
+    try {
+      if (typeof (pi as any).appendEntry === "function") {
+        (pi as any).appendEntry("cron-user-message", { command });
+      }
+      (pi as any).events?.emit?.("cron:dispatch-command", { command });
+    } catch (err: any) {
+      log.warn("cron_provenance_record_failed", { error: err?.message || String(err) });
+    }
+    pi.sendUserMessage(command, { deliverAs: "followUp" });
+  }
   async function execute(task: CronTask, isCurrent: () => boolean) {
     let dispatched = false;
     let runStartedAt = 0;
@@ -366,7 +377,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
           log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
           election(); return;
         }
-        pi.sendUserMessage(cmd, { deliverAs: "followUp" });
+        dispatchCronCommand(cmd);
         recordCronRunOutcome({
           cronTaskId: task.id,
           runId: randomUUID(),
@@ -392,7 +403,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
           log.warn("cron_execution_fenced", { id: qualifyCronId(task), reason: "leader_lease_lost_before_dispatch" });
           election(); return;
         }
-        pi.sendUserMessage(liveCmd, { deliverAs: "followUp" });
+        dispatchCronCommand(liveCmd);
         recordCronRunOutcome({
           cronTaskId: task.id,
           runId: randomUUID(),

@@ -26,7 +26,7 @@ from unittest.mock import patch
 
 import pytest
 
-from myk_pi_tools.coderabbit.rate_limit import compute_remaining_wait
+from myk_pi_tools.coderabbit.rate_limit import RateLimitStatus, compute_remaining_wait
 from myk_pi_tools.coderabbit.utils import SUMMARY_MARKER
 from myk_pi_tools.db.query import ReviewDB, _format_table
 from myk_pi_tools.pr import resolved_threads
@@ -254,6 +254,7 @@ class TestPollAddressReuse1276:
             patch.object(poll, "get_pr_info", return_value=("o", "r", "5")),
             patch.object(poll, "validate_owner_repo", return_value=True),
             patch.object(poll, "find_summary_comment", side_effect=fake_find),
+            patch.object(poll, "detect_rate_limit", return_value=(RateLimitStatus(rate_limited=False), "")),
             patch.object(poll, "fetch_run", side_effect=fake_fetch),
             patch.object(poll.time, "sleep"),
             patch("builtins.print"),
@@ -286,6 +287,7 @@ class TestPollAddressReuse1276:
             patch.object(poll, "get_pr_info", return_value=("o", "r", "5")),
             patch.object(poll, "validate_owner_repo", return_value=True),
             patch.object(poll, "find_summary_comment", side_effect=fake_find),
+            patch.object(poll, "detect_rate_limit", return_value=(RateLimitStatus(rate_limited=False), "")),
             patch.object(poll, "fetch_run", side_effect=fake_fetch),
             patch.object(poll.time, "sleep"),
             patch("builtins.print"),
