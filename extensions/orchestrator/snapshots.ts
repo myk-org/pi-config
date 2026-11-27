@@ -492,11 +492,19 @@ export async function captureShadowTree(
   return res.ok && res.tree ? res.tree : null;
 }
 
-/** Parse `git diff-tree -r --no-commit-id --raw --no-renames -z <from> <to>` output. */
-export function parseDiffTreeRawZ(stdout: string): SnapshotDiff {
+interface DetailedSnapshotDiff extends SnapshotDiff {
+  /** Paths present in targetTree and absent from expectedTree (status A). */
+  added: string[];
+  /** Paths present in both trees with modified content, mode, or type (status M/T). */
+  modified: string[];
+}
+
+function parseDiffTreeDetailed(stdout: string): DetailedSnapshotDiff {
   const restored: string[] = [];
   const removed: string[] = [];
-  if (!stdout) return { restored, removed };
+  const added: string[] = [];
+  const modified: string[] = [];
+  if (!stdout) return { restored, removed, added, modified };
 
   const tokens = stdout.split("\0");
   for (let i = 0; i + 1 < tokens.length; i += 2) {
@@ -515,10 +523,20 @@ export function parseDiffTreeRawZ(stdout: string): SnapshotDiff {
     const code = status[0];
     if (code === "D") {
       removed.push(filePath);
-    } else if (code === "A" || code === "M" || code === "T") {
+    } else if (code === "A") {
       restored.push(filePath);
+      added.push(filePath);
+    } else if (code === "M" || code === "T") {
+      restored.push(filePath);
+      modified.push(filePath);
     }
   }
+  return { restored, removed, added, modified };
+}
+
+/** Parse `git diff-tree -r --no-commit-id --raw --no-renames -z <from> <to>` output. */
+export function parseDiffTreeRawZ(stdout: string): SnapshotDiff {
+  const { restored, removed } = parseDiffTreeDetailed(stdout);
   return { restored, removed };
 }
 
@@ -527,7 +545,7 @@ async function diffShadowTrees(
   fromTree: string,
   toTree: string,
   opts: SnapshotGitOptions,
-): Promise<{ ok: true; diff: SnapshotDiff } | { ok: false; error: string }> {
+): Promise<{ ok: true; diff: DetailedSnapshotDiff } | { ok: false; error: string }> {
   const git = opts.runGit ?? runGitAsync;
   const timeoutMs = resolveSnapshotTimeoutMs(opts.timeoutMs);
   const diffRes = await git(
@@ -545,30 +563,83 @@ async function diffShadowTrees(
         : "Failed to compute snapshot diff",
     };
   }
-  return { ok: true, diff: parseDiffTreeRawZ(diffRes.stdout) };
+  return { ok: true, diff: parseDiffTreeDetailed(diffRes.stdout) };
 }
 
-async function rollbackRemovedFiles(
+async function rollbackPartialRestore(
   repoRoot: string,
+  realRoot: string,
+  rootDev: number,
   expectedTree: string,
   removedPaths: readonly string[],
+  modifiedPaths: readonly string[],
+  addedPaths: readonly string[],
   opts: SnapshotGitOptions,
-): Promise<void> {
-  if (removedPaths.length === 0) return;
-  const git = opts.runGit ?? runGitAsync;
-  const timeoutMs = resolveSnapshotTimeoutMs(opts.timeoutMs);
-  try {
-    await withTempIndex(async (indexPath) => {
-      const env: NodeJS.ProcessEnv = { GIT_INDEX_FILE: indexPath };
-      const readRes = await git(["read-tree", expectedTree], repoRoot, env, timeoutMs);
-      if (readRes.code !== 0) return;
-      const stdin = `${removedPaths.join("\0")}\0`;
-      await git(["checkout-index", "-f", "--stdin", "-z"], repoRoot, env, timeoutMs, stdin);
-    });
-    log.warn("snapshot_restore_rolled_back", { repoRoot, count: removedPaths.length });
-  } catch (e: any) {
-    log.error("snapshot_rollback_failed", { repoRoot, error: e?.message || String(e) });
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const pathsToCheckout = [...removedPaths, ...modifiedPaths];
+  if (pathsToCheckout.length === 0 && addedPaths.length === 0) return { ok: true };
+
+  const errors: string[] = [];
+
+  // 1. Remove any newly created paths (absent from expectedTree) that may have been written before failure.
+  for (const relPath of addedPaths) {
+    try {
+      const { absPath, missingParent } = assertConfinedRepoPath(realRoot, rootDev, relPath, {
+        allowMissingLeaf: false,
+      });
+      if (missingParent) continue;
+      unlinkSync(absPath);
+      pruneEmptyParentDirs(realRoot, rootDev, relPath);
+    } catch (e: any) {
+      if (e?.code !== "ENOENT") {
+        errors.push(`remove ${relPath}: ${e?.message || String(e)}`);
+      }
+    }
   }
+
+  // 2. Restore both deleted paths and potentially overwritten modified paths from expectedTree.
+  if (pathsToCheckout.length > 0) {
+    const git = opts.runGit ?? runGitAsync;
+    const timeoutMs = resolveSnapshotTimeoutMs(opts.timeoutMs);
+    try {
+      for (const relPath of pathsToCheckout) {
+        assertConfinedRepoPath(realRoot, rootDev, relPath, { allowMissingLeaf: true });
+      }
+      const checkoutRollbackErr = await withTempIndex<string | null>(async (indexPath) => {
+        const env: NodeJS.ProcessEnv = { GIT_INDEX_FILE: indexPath };
+        const readRes = await git(["read-tree", expectedTree], repoRoot, env, timeoutMs);
+        if (readRes.code !== 0) {
+          return readRes.timedOut
+            ? `rollback git read-tree timed out after ${timeoutMs}ms`
+            : `rollback git read-tree failed (exit ${readRes.code})`;
+        }
+        const stdin = `${pathsToCheckout.join("\0")}\0`;
+        const coRes = await git(["checkout-index", "-f", "--stdin", "-z"], repoRoot, env, timeoutMs, stdin);
+        if (coRes.code !== 0) {
+          return coRes.timedOut
+            ? `rollback git checkout-index timed out after ${timeoutMs}ms`
+            : `rollback git checkout-index failed (exit ${coRes.code})`;
+        }
+        return null;
+      });
+      if (checkoutRollbackErr) errors.push(checkoutRollbackErr);
+    } catch (e: any) {
+      errors.push(e?.message || String(e));
+    }
+  }
+
+  if (errors.length > 0) {
+    const error = errors.join("; ");
+    log.error("snapshot_rollback_failed", { repoRoot, error });
+    return { ok: false, error };
+  }
+
+  log.warn("snapshot_restore_rolled_back", {
+    repoRoot,
+    restoredCount: pathsToCheckout.length,
+    removedAddedCount: addedPaths.length,
+  });
+  return { ok: true };
 }
 
 /**
@@ -610,7 +681,7 @@ export async function restoreShadowTree(
   if (!turnDiffRes.ok) {
     return { ok: false, restored: [], removed: [], error: turnDiffRes.error };
   }
-  const { restored, removed } = turnDiffRes.diff;
+  const { restored, removed, added, modified } = turnDiffRes.diff;
   if (restored.length === 0 && removed.length === 0) {
     return { ok: true, restored: [], removed: [] };
   }
@@ -728,12 +799,22 @@ export async function restoreShadowTree(
     } catch (e: any) {
       if (e?.code !== "ENOENT") {
         log.error("snapshot_unlink_failed", { relPath, error: e?.message || String(e) });
-        await rollbackRemovedFiles(repoRoot, expectedTree, actuallyRemoved, opts);
+        const rb = await rollbackPartialRestore(
+          repoRoot,
+          realRoot,
+          rootDev,
+          expectedTree,
+          actuallyRemoved,
+          [],
+          [],
+          opts,
+        );
+        const rbNote = rb.ok ? "" : ` (rollback failed: ${rb.error})`;
         return {
           ok: false,
           restored: [],
           removed: [],
-          error: `Failed to remove ${relPath}: ${e?.message || String(e)}`,
+          error: `Failed to remove ${relPath}: ${e?.message || String(e)}${rbNote}`,
         };
       }
     }
@@ -764,13 +845,33 @@ export async function restoreShadowTree(
         return null;
       });
       if (checkoutErr) {
-        await rollbackRemovedFiles(repoRoot, expectedTree, actuallyRemoved, opts);
-        return { ok: false, restored: [], removed: [], error: checkoutErr };
+        const rb = await rollbackPartialRestore(
+          repoRoot,
+          realRoot,
+          rootDev,
+          expectedTree,
+          actuallyRemoved,
+          modified,
+          added,
+          opts,
+        );
+        const rbNote = rb.ok ? "" : ` (rollback failed: ${rb.error})`;
+        return { ok: false, restored: [], removed: [], error: `${checkoutErr}${rbNote}` };
       }
     } catch (e: any) {
       log.error("snapshot_restore_exception", { repoRoot, error: e?.message || String(e) });
-      await rollbackRemovedFiles(repoRoot, expectedTree, actuallyRemoved, opts);
-      return { ok: false, restored: [], removed: [], error: e?.message || String(e) };
+      const rb = await rollbackPartialRestore(
+        repoRoot,
+        realRoot,
+        rootDev,
+        expectedTree,
+        actuallyRemoved,
+        modified,
+        added,
+        opts,
+      );
+      const rbNote = rb.ok ? "" : ` (rollback failed: ${rb.error})`;
+      return { ok: false, restored: [], removed: [], error: `${e?.message || String(e)}${rbNote}` };
     }
   }
 
@@ -987,11 +1088,21 @@ export function registerSnapshots(pi: ExtensionAPI, opts: RegisterSnapshotsOptio
     let originallyIgnored: string[] = [];
     if (pending.preIgnored.size > 0) {
       const turnDiff = await diffShadowTrees(pending.repoRoot, pending.preTree, postRes.tree, gitOpts);
-      if (turnDiff.ok) {
-        originallyIgnored = [...turnDiff.diff.restored, ...turnDiff.diff.removed].filter((p) =>
-          isCoveredByIgnoredEntries(p, pending.preIgnored),
+      if (!turnDiff.ok) {
+        const reason = turnDiff.error || "failed to diff turn trees for ignored-file protection";
+        state.lastCaptureError = reason;
+        log.warn("snapshot_post_turn_diff_failed", { repoRoot: pending.repoRoot, reason });
+        emitOutput(
+          pi,
+          ctx,
+          `Post-turn snapshot capture failed (${reason}) — this turn was not recorded for /undo.`,
+          "warning",
         );
+        return;
       }
+      originallyIgnored = [...turnDiff.diff.restored, ...turnDiff.diff.removed].filter((p) =>
+        isCoveredByIgnoredEntries(p, pending.preIgnored),
+      );
     }
 
     state.undoStack.push({

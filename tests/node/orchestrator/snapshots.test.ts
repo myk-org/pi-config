@@ -378,36 +378,92 @@ describe("orchestrator turn snapshots (/undo & /redo)", () => {
     assert.equal(readFileSync(join(repo, "item", "child.txt"), "utf-8"), "child content\n");
   });
 
-  it("rolls back already-removed files if checkout-index fails mid-restore", async () => {
+  it("rolls back deletions, partially overwritten files, and newly created files if checkout-index fails mid-restore, and reports rollback failures", async () => {
     const repo = initRepo(makeTempDir("pi-snap-rollback-"));
+    writeFileSync(join(repo, "deleted-in-turn.txt"), "will be re-added by undo\n");
+    git(repo, ["add", "deleted-in-turn.txt"]);
+    git(repo, ["commit", "-q", "-m", "add deleted-in-turn"]);
+
     const preTree = await captureShadowTree(repo);
     assert.ok(preTree);
 
     writeFileSync(join(repo, "README.md"), "# mutated\n");
+    rmSync(join(repo, "deleted-in-turn.txt"));
     writeFileSync(join(repo, "added-in-turn.txt"), "keep on rollback\n");
     const postTree = await captureShadowTree(repo);
     assert.ok(postTree);
 
-    const failingCheckoutGit: typeof runGitAsync = async (args, cwd, env, timeoutMs, input) => {
-      if (args[0] === "checkout-index" && env?.GIT_INDEX_FILE) {
-        // Fail the first checkout-index call (restore), allow rollback checkout-index.
-        if (!failOnceDone) {
-          failOnceDone = true;
-          return { stdout: "", stderr: "simulated checkout failure", code: 1 };
-        }
+    // Simulate checkout-index partially overwriting README.md and creating deleted-in-turn.txt before failing.
+    let failOnceDone = false;
+    const partialCheckoutGit: typeof runGitAsync = async (args, cwd, env, timeoutMs, input) => {
+      if (args[0] === "checkout-index" && env?.GIT_INDEX_FILE && !failOnceDone) {
+        failOnceDone = true;
+        writeFileSync(join(repo, "README.md"), "# partially overwritten by failed checkout\n");
+        writeFileSync(join(repo, "deleted-in-turn.txt"), "partially created by failed checkout\n");
+        return { stdout: "", stderr: "simulated partial checkout failure", code: 1 };
       }
       return runGitAsync(args, cwd, env, timeoutMs, input);
     };
-    let failOnceDone = false;
 
-    const res = await restoreShadowTree(repo, postTree, preTree, { runGit: failingCheckoutGit });
+    const res = await restoreShadowTree(repo, postTree, preTree, { runGit: partialCheckoutGit });
     assert.equal(res.ok, false);
     assert.match(res.error ?? "", /Failed to restore files/);
+    assert.doesNotMatch(res.error ?? "", /rollback failed/);
     assert.equal(
       readFileSync(join(repo, "added-in-turn.txt"), "utf-8"),
       "keep on rollback\n",
       "removed file must be rolled back when checkout fails",
     );
+    assert.equal(
+      readFileSync(join(repo, "README.md"), "utf-8"),
+      "# mutated\n",
+      "partially overwritten file must be rolled back to expectedTree",
+    );
+    assert.equal(
+      existsSync(join(repo, "deleted-in-turn.txt")),
+      false,
+      "partially created file absent from expectedTree must be removed on rollback",
+    );
+
+    // Also verify rollback failure is surfaced explicitly in the returned error.
+    const doubleFailGit: typeof runGitAsync = async (args, cwd, env, timeoutMs, input) => {
+      if (args[0] === "checkout-index" && env?.GIT_INDEX_FILE) {
+        return { stdout: "", stderr: "checkout always fails", code: 1 };
+      }
+      return runGitAsync(args, cwd, env, timeoutMs, input);
+    };
+    const res2 = await restoreShadowTree(repo, postTree, preTree, { runGit: doubleFailGit });
+    assert.equal(res2.ok, false);
+    assert.match(res2.error ?? "", /Failed to restore files.*rollback failed: rollback git checkout-index failed/);
+  });
+
+  it("refuses to record an undo entry if post-turn diff fails when pre-turn ignored files exist", async () => {
+    const repo = initRepo(makeTempDir("pi-snap-diff-fail-"));
+    writeFileSync(join(repo, "secret.ignored"), "must never be unlinked\n");
+
+    const failingDiffGit: typeof runGitAsync = async (args, cwd, env, timeoutMs, input) => {
+      if (args[0] === "diff-tree") {
+        return { stdout: "", stderr: "simulated diff-tree failure", code: 1 };
+      }
+      return runGitAsync(args, cwd, env, timeoutMs, input);
+    };
+
+    const harness = createHarness();
+    registerSnapshots(harness.pi, { runGit: failingDiffGit });
+    const ctx = harness.makeCtx(repo);
+
+    await runTurn(harness, ctx, "Remove ignore rule", "edit", () => {
+      writeFileSync(join(repo, ".gitignore"), ".env\n.pi/\n");
+    });
+
+    assert.equal(harness.notifications.length, 1);
+    assert.equal(harness.notifications[0]!.level, "warning");
+    assert.match(harness.notifications[0]!.msg, /Post-turn snapshot capture failed/);
+
+    // No undo entry should have been recorded, and secret.ignored must stay intact.
+    await harness.commands.get("undo")!.handler("", ctx);
+    assert.match(harness.notifications.at(-1)!.msg, /Nothing to undo.*last snapshot capture failed/);
+    assert.equal(readFileSync(join(repo, "secret.ignored"), "utf-8"), "must never be unlinked\n");
   });
 
   it("rejects symlinked parent directories pointing outside the repository before delete or checkout", async () => {
