@@ -204,16 +204,15 @@ describe("ensureCodemodeActive (#1447)", () => {
     assert.equal(getActive().includes("codemode"), true);
   });
 
-  it("applies project defaultTools only when trusted, and lets CLI +codemode override settings", () => {
+  it("ignores project defaultTools when the project is untrusted", () => {
     const agentDir = createTempDir("codemode-agent-");
     const cwd = createTempDir("codemode-cwd-");
     mkdirSync(join(cwd, ".pi"), { recursive: true });
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["-codemode"] }));
 
-    // Untrusted project cannot suppress codemode
-    const untrusted = makeToolApi();
+    const { pi } = makeToolApi();
     assert.equal(
-      ensureCodemodeActive(untrusted.pi, {
+      ensureCodemodeActive(pi, {
         agentDir,
         cwd,
         projectTrusted: false,
@@ -222,11 +221,17 @@ describe("ensureCodemodeActive (#1447)", () => {
       }),
       true,
     );
+  });
 
-    // Trusted project suppresses codemode
-    const trusted = makeToolApi();
+  it("suppresses codemode when a trusted project excludes it in defaultTools", () => {
+    const agentDir = createTempDir("codemode-agent-");
+    const cwd = createTempDir("codemode-cwd-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["-codemode"] }));
+
+    const { pi } = makeToolApi();
     assert.equal(
-      ensureCodemodeActive(trusted.pi, {
+      ensureCodemodeActive(pi, {
         agentDir,
         cwd,
         projectTrusted: true,
@@ -235,11 +240,17 @@ describe("ensureCodemodeActive (#1447)", () => {
       }),
       false,
     );
+  });
 
-    // Explicit CLI --tools +codemode overrides trusted project -codemode
-    const cliOverride = makeToolApi();
+  it("lets CLI --tools +codemode override a trusted project exclusion", () => {
+    const agentDir = createTempDir("codemode-agent-");
+    const cwd = createTempDir("codemode-cwd-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["-codemode"] }));
+
+    const { pi } = makeToolApi();
     assert.equal(
-      ensureCodemodeActive(cliOverride.pi, {
+      ensureCodemodeActive(pi, {
         agentDir,
         cwd,
         projectTrusted: true,
@@ -250,7 +261,48 @@ describe("ensureCodemodeActive (#1447)", () => {
     );
   });
 
-  it("fails soft on corrupt settings.json and still activates codemode", () => {
+  it("preserves global -codemode when a trusted project adds modifier-only defaultTools", () => {
+    const agentDir = createTempDir("codemode-agent-");
+    const cwd = createTempDir("codemode-cwd-");
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["-codemode"] }));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["-grep"] }));
+
+    // Matches Pi 1.6.1 SettingsManager.mergeDefaultTools(): modifier-only overrides append to global.
+    const { pi } = makeToolApi();
+    assert.equal(
+      ensureCodemodeActive(pi, {
+        agentDir,
+        cwd,
+        projectTrusted: true,
+        argv: ["node", "pi"],
+        isSubagentChild: false,
+      }),
+      false,
+    );
+  });
+
+  it("lets a trusted project plain defaultTools list replace global -codemode", () => {
+    const agentDir = createTempDir("codemode-agent-");
+    const cwd = createTempDir("codemode-cwd-");
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["-codemode"] }));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ defaultTools: ["read", "bash", "codemode"] }));
+
+    const { pi } = makeToolApi();
+    assert.equal(
+      ensureCodemodeActive(pi, {
+        agentDir,
+        cwd,
+        projectTrusted: true,
+        argv: ["node", "pi"],
+        isSubagentChild: false,
+      }),
+      true,
+    );
+  });
+
+  it("fails soft on corrupt settings.json", () => {
     const agentDir = createTempDir("codemode-agent-");
     writeFileSync(join(agentDir, "settings.json"), "{ invalid json");
     const { pi, getActive } = makeToolApi();

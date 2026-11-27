@@ -82,12 +82,34 @@ const CODEMODE_TOOL_NAME = "codemode";
 
 type CodemodePref = "included" | "excluded" | "unset";
 
+function isToolModifierEntry(entry: string): boolean {
+  return entry.startsWith("+") || entry.startsWith("-");
+}
+
+/**
+ * Matches Pi 1.6.1 `SettingsManager.mergeDefaultTools`: a modifier-only override
+ * (`+name`/`-name`) appends to the inherited selection; a plain-name list replaces it.
+ */
+function mergePiDefaultTools(
+  base: readonly string[] | undefined,
+  override: readonly string[] | undefined,
+): readonly string[] | undefined {
+  if (override === undefined) return base;
+  if (base === undefined || !override.every(isToolModifierEntry)) return override;
+  return [...base, ...override];
+}
+
 function parseToolListPreference(entries: readonly string[], current: CodemodePref): CodemodePref {
   const trimmed = entries.map((e) => e.trim()).filter(Boolean);
   if (trimmed.length === 0) return "excluded";
-  const isModifierList = trimmed.every((e) => e.startsWith("+") || e.startsWith("-"));
-  if (!isModifierList) {
-    return trimmed.includes(CODEMODE_TOOL_NAME) ? "included" : "excluded";
+  const hasPlain = trimmed.some((e) => !isToolModifierEntry(e));
+  if (hasPlain) {
+    let active = trimmed.includes(CODEMODE_TOOL_NAME);
+    for (const entry of trimmed) {
+      if (entry === `+${CODEMODE_TOOL_NAME}`) active = true;
+      else if (entry === `-${CODEMODE_TOOL_NAME}`) active = false;
+    }
+    return active ? "included" : "excluded";
   }
   let state = current;
   for (const entry of trimmed) {
@@ -104,7 +126,7 @@ function readDefaultToolsSetting(filePath: string): string[] | undefined {
     if (!Array.isArray(raw?.defaultTools)) return undefined;
     return raw.defaultTools.filter((v): v is string => typeof v === "string");
   } catch (err) {
-    log.debug("codemode_settings_read_failed", {
+    log.warn(`codemode_settings_read_failed (${filePath})`, {
       path: filePath,
       error: err instanceof Error ? err.message : String(err),
     });
@@ -178,17 +200,13 @@ export function ensureCodemodeActive(
     return false;
   }
 
-  let pref: CodemodePref = "unset";
   const globalTools = readDefaultToolsSetting(join(resolvePiAgentDir(options.agentDir), "settings.json"));
-  if (globalTools !== undefined) {
-    pref = parseToolListPreference(globalTools, pref);
-  }
-  if (options.projectTrusted === true && options.cwd) {
-    const projectTools = readDefaultToolsSetting(join(options.cwd, ".pi", "settings.json"));
-    if (projectTools !== undefined) {
-      pref = parseToolListPreference(projectTools, pref);
-    }
-  }
+  const projectTools =
+    options.projectTrusted === true && options.cwd
+      ? readDefaultToolsSetting(join(options.cwd, ".pi", "settings.json"))
+      : undefined;
+  const mergedTools = mergePiDefaultTools(globalTools, projectTools);
+  let pref: CodemodePref = mergedTools !== undefined ? parseToolListPreference(mergedTools, "unset") : "unset";
   const argvPref = resolveArgvCodemodePref(options.argv ?? process.argv);
   if (argvPref !== "unset") {
     pref = argvPref;
