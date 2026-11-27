@@ -21,7 +21,6 @@
     "extensions/shared/",
     "extensions/orchestrator/",
     "extensions/coms/",
-    "extensions/image-gen/",
     "extensions/pidash/*.ts",
     "extensions/pidash/pidash-ui/src/",
     "extensions/pidash/pidash-ui/index.html",
@@ -76,10 +75,10 @@
     "ws": "^8.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^1.6.0",
-    "@earendil-works/pi-ai": "^1.6.0",
-    "@earendil-works/pi-coding-agent": "^1.6.0",
-    "@earendil-works/pi-tui": "^1.6.0",
+    "@earendil-works/pi-agent-core": "^1.6.1",
+    "@earendil-works/pi-ai": "^1.6.1",
+    "@earendil-works/pi-coding-agent": "^1.6.1",
+    "@earendil-works/pi-tui": "^1.6.1",
     "@types/node": "^22.20.1",
     "jsdom": "^30.1.1",
     "tsx": "^4.0.0"

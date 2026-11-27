@@ -337,9 +337,8 @@ reliable notifications are not covered; there is no polling fallback or replay o
 | `review_status` | Read the review-loop enforcement state before committing | `worktree_path` (optional) |
 | `ask_user` | Ask the user a question with selectable options; returns the choice or free text. Its prompt guidelines require it instead of plain-text questions | `question`, `options[]` (optional) |
 | `list_models` | List available provider/model pairs for `subagent(model=...)` | `provider` (optional filter) |
-| `generate_image` | Generate an image from a structured description via Gemini; returns the file path. Needs `image_model` in `pi-config-settings.json` (or `PI_IMAGE_MODEL`) plus `GEMINI_API_KEY`/`GOOGLE_API_KEY` | `subject` (required), `action`, `scene`, `composition`, `lighting`, `style`, `text`, `aspect_ratio` (`1:1`, `3:4`, `4:3`, `9:16`, `16:9`) |
 
-More detail: [Managing Custom Agents](managing-custom-agents.html) for `subagent`, [Automating Code Reviews](automating-code-reviews.html) for `review_status`, [Image Generation](image-generation.html) for `generate_image`.
+More detail: [Managing Custom Agents](managing-custom-agents.html) for `subagent`, [Automating Code Reviews](automating-code-reviews.html) for `review_status`, and [Image Generation](image-generation.html) for generating images via Pi 1.6 native `codemode` `models.generateImages()`.
 
 ### trail_* (7 tools, on by default)
 

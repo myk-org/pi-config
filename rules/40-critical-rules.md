@@ -144,6 +144,20 @@ After presenting your analysis, respect the user's decision.
 
 ---
 
+## Image Generation
+
+Generate images **only on explicit user request** using Pi 1.6's native `codemode` image API (the standalone `generate_image` extension was retired;
+`pi-config` activates `codemode` automatically in default sessions unless explicitly excluded):
+
+1. If `codemode` is unavailable (explicitly disabled by user config/flags), inform the user and suggest enabling it (`pi --tools +codemode`).
+2. Discover an available image model with `await models.getAvailableOfType("image")`. When passing reference images for edits, pick a model whose `input` includes `"image"`.
+   If none is available, report that no configured provider exposes a suitable image model.
+3. Call `await models.generateImages(model, { input: [{ type: "text", text: prompt }] })` (set `// @options: {"timeout_ms": 300000}` — image generation can take minutes).
+4. Check `result.stopReason === "stop"` and display each image block via `image(block)` (also saves a temp file and returns its path).
+   **NEVER** print raw base64 `block.data` with `text()`, `console`, or `return`.
+
+---
+
 ## External Code Security Audit
 
 Before adopting external code from an untrusted source, delegate a full security audit to `security-auditor`

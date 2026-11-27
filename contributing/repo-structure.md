@@ -159,14 +159,11 @@ pi-config/
 │   │   ├── tool-namespaces.ts       # Shared Pi 1.6 ToolNamespace definitions (memory, coms, tasks, trail, runtime) and read-only annotation constant
 │   │   ├── widget-visibility.ts     # Shared collapse/expand widget state (expanded/collapsed, header-always-visible), globalThis reload persistence, shortcut validation/registration, and ui:toggle-all-widgets bridge
 │   │   └── ui/                      # Shared UI components and browser helpers (cn, createBrowserLogger, useSharedWebSocket) used by pidash-ui and pidiff-ui
-│   ├── providers/                  # Default model restore & thinking-level persistence extension
-│   │   ├── index.ts                # Extension entry — delegates to registerSessionRestore (skips meta invocations)
-│   │   ├── session-restore.ts      # Unified session_start / model_select / thinking_level_select / session_shutdown restore lifecycle (#1360)
-│   │   ├── restore-default-model.ts # Cold-start restore of saved default (provider-agnostic) after auth-race fallback (#753)
-│   │   └── last-thinking-level.ts  # Per-model thinking-level persistence, locking, clamping, and policy helpers
-│   └── image-gen/                   # Image generation extension (standalone)
-│       ├── index.ts                # Entry point — registers generate_image tool
-│       └── image-gen.ts            # Gemini API image generation (settings: image_model; env: GEMINI_API_KEY)
+│   └── providers/                  # Default model restore & thinking-level persistence extension
+│       ├── index.ts                # Extension entry — delegates to registerSessionRestore (skips meta invocations)
+│       ├── session-restore.ts      # Unified session_start / model_select / thinking_level_select / session_shutdown restore lifecycle (#1360)
+│       ├── restore-default-model.ts # Cold-start restore of saved default (provider-agnostic) after auth-race fallback (#753)
+│       └── last-thinking-level.ts  # Per-model thinking-level persistence, locking, clamping, and policy helpers
 ├── templates/                       # Immutable prompt templates (source files for /create-* commands)
 │   └── coms-feature-manager-prompt.md  # Coms feature manager template
 ├── prompts/                         # Prompt templates (slash commands)
