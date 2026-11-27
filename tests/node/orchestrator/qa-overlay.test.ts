@@ -18,6 +18,7 @@ import {
   QA_HINT_WIDGET_KEY,
   QaListOverlay,
   buildQaDetailLines,
+  createDetailBodyLinesGetter,
   extractAnswerSections,
   extractAnswerTitle,
   extractQaHistory,
@@ -817,23 +818,31 @@ describe("QaListOverlay & openQaOverlay", () => {
     assert.equal(pasted, 'Re: "Recommendation for Issue #2" — ');
   });
 
-  it("reuses cached body lines across repeated scroll redraws in detail reader", async () => {
-    const longAnswer = Array.from({ length: 60 }, (_, i) => `Line ${i + 1}: detail paragraph text`).join("\n");
+  it("returns identical body lines array across repeated calls with the same theme", () => {
+    const pair = extractQaHistory(sampleBranch).pairs[0];
+    const getBodyLines = createDetailBodyLinesGetter(pair);
+    const themeA = fakeTheme();
+    const themeB = fakeTheme();
+
+    const first = getBodyLines(themeA);
+    const second = getBodyLines(themeA);
+    assert.strictEqual(first, second);
+
+    const refreshed = getBodyLines(themeB);
+    assert.notStrictEqual(refreshed, first);
+    assert.deepEqual(refreshed, first);
+  });
+
+  it("reveals later lines when scrolling a long answer in detail reader", async () => {
+    const longAnswer = Array.from({ length: 40 }, (_, i) => `Line ${i + 1}: detail paragraph text`).join("\n");
     const longBranch = [
       userEntry("u1", "Give me a long answer"),
       assistantEntry("a1", [{ type: "text", text: longAnswer }]),
     ];
 
-    let boldCalls = 0;
-    const countingTheme = {
-      fg: (_c: string, v: string) => v,
-      bold: (v: string) => {
-        boldCalls += 1;
-        return v;
-      },
-    } as any;
-
     let callNum = 0;
+    let initialFrame = "";
+    let scrolledFrame = "";
     const ctx = {
       cwd: process.cwd(),
       hasUI: true,
@@ -845,7 +854,7 @@ describe("QaListOverlay & openQaOverlay", () => {
           callNum += 1;
           let doneVal: any;
           let closed = false;
-          const comp = await factory(fakeTui({ rows: 14 }), countingTheme, fakeKeybindings(), (v: any) => {
+          const comp = await factory(fakeTui({ rows: 14 }), fakeTheme(), fakeKeybindings(), (v: any) => {
             doneVal = v;
             closed = true;
           });
@@ -853,19 +862,14 @@ describe("QaListOverlay & openQaOverlay", () => {
             comp.render(80);
             comp.handleInput("\r");
           } else if (callNum === 2) {
-            boldCalls = 0;
-            comp.render(80);
-            const callsAfterFirstRender = boldCalls;
-            // Scroll 5 times: header calls bold once per render, body lines must stay cached.
-            for (let i = 0; i < 5; i++) {
+            initialFrame = comp.render(80).join("\n");
+            for (let i = 0; i < 12; i++) {
               comp.handleInput("j");
-              comp.render(80);
             }
-            // Only the 1 header bold() call per scroll render (5 extra), NOT re-running buildQaDetailLines!
-            assert.equal(boldCalls - callsAfterFirstRender, 5);
+            scrolledFrame = comp.render(80).join("\n");
             comp.handleInput("\x1b");
-          } else {
-            if (!closed) comp.handleInput("\x1b");
+          } else if (!closed) {
+            comp.handleInput("\x1b");
           }
           comp.dispose?.();
           return doneVal;
@@ -874,6 +878,9 @@ describe("QaListOverlay & openQaOverlay", () => {
     } as unknown as ExtensionCommandContext;
 
     await openQaOverlay(ctx);
+    assert.match(initialFrame, /Line 1: detail paragraph text/);
+    assert.doesNotMatch(initialFrame, /Line 14: detail paragraph text/);
+    assert.match(scrolledFrame, /Line 14: detail paragraph text/);
   });
 });
 
@@ -1150,5 +1157,65 @@ describe("qa_overlay_shortcut & buried-answer widget lifecycle", () => {
       customType: CRON_USER_MESSAGE_ENTRY_TYPE,
       data: { command: "Expanded local review prompt body" },
     });
+  });
+
+  it("preserves provenance for two queued transformed cron prompts", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+
+    const mock = createMockCtx({ cwd: tempDir, branch: [], sessionId: "sess-queue" });
+    harness.pi.events.emit("cron:dispatch-command", { command: "/review-local" });
+    harness.pi.events.emit("cron:dispatch-command", { command: "/retro" });
+    await harness.emit("input", { source: "extension", text: "/review-local" }, mock.ctx);
+    await harness.emit("input", { source: "extension", text: "/retro" }, mock.ctx);
+
+    await harness.emit(
+      "before_agent_start",
+      { messageType: "user", prompt: "Transformed review prompt 1" },
+      mock.ctx,
+    );
+    await harness.emit(
+      "before_agent_start",
+      { messageType: "user", prompt: "Transformed retro prompt 2" },
+      mock.ctx,
+    );
+
+    assert.deepEqual(harness.appendedEntries, [
+      { customType: CRON_USER_MESSAGE_ENTRY_TYPE, data: { command: "Transformed review prompt 1" } },
+      { customType: CRON_USER_MESSAGE_ENTRY_TYPE, data: { command: "Transformed retro prompt 2" } },
+    ]);
+  });
+
+  it("isolates queued cron provenance across sessions without letting unrelated prompts steal it", async () => {
+    const harness = createFakePi();
+    withSubagentChildEnv(undefined, () => {
+      registerQaOverlay(harness.pi, { cwd: tempDir });
+      return undefined;
+    });
+
+    const sessA = createMockCtx({ cwd: tempDir, branch: [], sessionId: "sess-a" });
+    const sessB = createMockCtx({ cwd: tempDir, branch: [], sessionId: "sess-b" });
+
+    harness.pi.events.emit("cron:dispatch-command", { command: "/review-local" });
+    await harness.emit("input", { source: "extension", text: "/review-local" }, sessA.ctx);
+    await harness.emit("input", { source: "interactive", text: "Human prompt in session B" }, sessB.ctx);
+    await harness.emit(
+      "before_agent_start",
+      { messageType: "user", prompt: "Human prompt in session B" },
+      sessB.ctx,
+    );
+    assert.equal(harness.appendedEntries.length, 0);
+
+    await harness.emit(
+      "before_agent_start",
+      { messageType: "user", prompt: "Expanded review prompt in session A" },
+      sessA.ctx,
+    );
+    assert.deepEqual(harness.appendedEntries, [
+      { customType: CRON_USER_MESSAGE_ENTRY_TYPE, data: { command: "Expanded review prompt in session A" } },
+    ]);
   });
 });

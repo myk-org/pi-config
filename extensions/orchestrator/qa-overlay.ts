@@ -589,6 +589,19 @@ export function buildQaDetailLines(pair: QaPair, theme: Theme): string[] {
   return lines;
 }
 
+/** Return a theme-memoized `getBodyLines` getter so `OverlayScrollDetail` reuses its wrap cache on scroll. */
+export function createDetailBodyLinesGetter(pair: QaPair): (theme: Theme) => string[] {
+  let cachedTheme: Theme | undefined;
+  let cachedLines: string[] | undefined;
+  return (theme: Theme): string[] => {
+    if (!cachedLines || cachedTheme !== theme) {
+      cachedTheme = theme;
+      cachedLines = buildQaDetailLines(pair, theme);
+    }
+    return cachedLines;
+  };
+}
+
 // ── Interactive TUI List Overlay (reuses overlay-dashboard primitives) ──
 
 export type QaListResult =
@@ -938,8 +951,7 @@ export async function openQaOverlay(
       : "↑↓/jk/PgUp/PgDn scroll · r quote answer · Esc back";
 
     let detailQuote: string | null = null;
-    let cachedDetailTheme: Theme | undefined;
-    let cachedDetailLines: string[] | undefined;
+    const getBodyLines = createDetailBodyLinesGetter(pair);
     await ctx.ui.custom<null>(
       (tui, theme, _kb, done) =>
         new OverlayScrollDetail(
@@ -950,13 +962,7 @@ export async function openQaOverlay(
             getHeader: (t) =>
               t.fg("accent", t.bold("Q&A Reader")) +
               t.fg("dim", ` · ${pair.questionPreview}`),
-            getBodyLines: (t) => {
-              if (!cachedDetailLines || cachedDetailTheme !== t) {
-                cachedDetailTheme = t;
-                cachedDetailLines = buildQaDetailLines(pair, t);
-              }
-              return cachedDetailLines;
-            },
+            getBodyLines,
             onKey: (key) => {
               if (key === "r") {
                 detailQuote = formatQuotePrefix(pair.answerTitle);
@@ -1039,10 +1045,16 @@ export function resolveConfiguredQaShortcut(cwd: string): KeyId | null {
   return normalized;
 }
 
+interface PendingUserInputRecord {
+  rawCmd: string;
+  isCron: boolean;
+}
+
 interface QaSessionState {
   dismissedAnswerId: string | null;
   hintVisible: boolean;
   overlayOpen: boolean;
+  pendingUserInputs: PendingUserInputRecord[];
 }
 
 export interface RegisterQaOverlayResult {
@@ -1064,7 +1076,6 @@ export function registerQaOverlay(
 
   const sessions = new Map<string, QaSessionState>();
   const pendingCronDispatch: string[] = [];
-  let pendingCronInput: string | null = null;
 
   const safeSessionKey = (ctx: unknown): string | null => {
     try {
@@ -1090,6 +1101,7 @@ export function registerQaOverlay(
       dismissedAnswerId: null,
       hintVisible: false,
       overlayOpen: false,
+      pendingUserInputs: [],
     };
     sessions.set(key, fresh);
     return fresh;
@@ -1225,20 +1237,28 @@ export function registerQaOverlay(
 
   pi.on("input", (event, ctx) => {
     const text = typeof event?.text === "string" ? event.text.trim() : "";
+    if (!text) return;
+    const state = getState(ctx);
+    const enqueueInput = (record: PendingUserInputRecord): void => {
+      if (!state) return;
+      if (state.pendingUserInputs.length >= 32) state.pendingUserInputs.shift();
+      state.pendingUserInputs.push(record);
+    };
+
     if (event?.source === "extension") {
-      const idx = text ? pendingCronDispatch.indexOf(text) : -1;
+      const idx = pendingCronDispatch.indexOf(text);
       if (idx >= 0) {
         pendingCronDispatch.splice(idx, 1);
-        pendingCronInput = text;
+        enqueueInput({ rawCmd: text, isCron: true });
       } else {
-        pendingCronInput = null;
+        enqueueInput({ rawCmd: text, isCron: false });
       }
       return;
     }
-    pendingCronInput = null;
-    if (!text || text.startsWith("/") || isAutomatedUserMessage(text)) return;
+
+    if (text.startsWith("/") || isAutomatedUserMessage(text)) return;
+    enqueueInput({ rawCmd: text, isCron: false });
     if (!isLiveExtensionCtx(ctx)) return;
-    const state = getState(ctx);
     if (state) state.dismissedAnswerId = null;
     clearHint(ctx);
   });
@@ -1246,22 +1266,35 @@ export function registerQaOverlay(
   pi.on("before_agent_start", (event, ctx) => {
     if (event?.messageType !== "user") return;
     const prompt = typeof event.prompt === "string" ? event.prompt : "";
-    if (pendingCronInput !== null) {
-      const rawCmd = pendingCronInput;
-      pendingCronInput = null;
-      const trimmed = prompt.trim();
-      if (trimmed && trimmed !== rawCmd) {
-        try {
-          if (typeof (pi as any).appendEntry === "function") {
-            (pi as any).appendEntry(CRON_USER_MESSAGE_ENTRY_TYPE, { command: trimmed });
+    const trimmed = prompt.trim();
+    const state = getState(ctx);
+
+    if (state && state.pendingUserInputs.length > 0 && trimmed) {
+      // Match an exact queued input first so unconsumed extension slash commands (e.g. /status)
+      // never steal provenance from a subsequent human prompt.
+      const exactIdx = state.pendingUserInputs.findIndex((entry) => entry.rawCmd === trimmed);
+      const matched =
+        exactIdx >= 0
+          ? state.pendingUserInputs.splice(0, exactIdx + 1).at(-1)
+          : state.pendingUserInputs.shift();
+      if (matched?.isCron) {
+        if (trimmed !== matched.rawCmd) {
+          try {
+            if (typeof (pi as any).appendEntry === "function") {
+              (pi as any).appendEntry(CRON_USER_MESSAGE_ENTRY_TYPE, { command: trimmed });
+            }
+          } catch (err: unknown) {
+            log.warn("qa_cron_provenance_record_failed", {
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
-        } catch {}
+        }
+        return;
       }
-      return;
     }
+
     if (!prompt || isAutomatedUserMessage(prompt)) return;
     if (!isLiveExtensionCtx(ctx)) return;
-    const state = getState(ctx);
     if (state) state.dismissedAnswerId = null;
     clearHint(ctx);
   });

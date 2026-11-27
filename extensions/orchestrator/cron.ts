@@ -353,7 +353,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
       }
       (pi as any).events?.emit?.("cron:dispatch-command", { command });
     } catch (err: any) {
-      log.debug("cron_provenance_record_failed", { error: err?.message || String(err) });
+      log.warn("cron_provenance_record_failed", { error: err?.message || String(err) });
     }
     pi.sendUserMessage(command, { deliverAs: "followUp" });
   }
