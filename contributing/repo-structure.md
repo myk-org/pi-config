@@ -84,6 +84,7 @@ pi-config/
 │   │   ├── lsp.ts                       # Opt-in zero-dep JSON-RPC 2.0 stdio LSP client, shared per-worktree broker client, circuit breaker, & lazy TUI install prompt (`lsp_enabled`, `lsp_servers`) (#1445)
 │   │   ├── lsp-broker-daemon.mjs        # Shared 1-per-(worktreeRoot, serverId) `0600` UNIX-socket LSP broker daemon with debounce, circuit breaker, & idle shutdown (#1445)
 │   │   ├── snapshots.ts                 # Git-backed per-turn shadow-tree snapshots with `/undo` and `/redo` commands (`turn_snapshots`) (#1449)
+│   │   ├── qa-overlay.ts                # `/qa` human Q&A reader overlay (`qa_overlay_shortcut`), 1-key `pasteToEditor()` quoting (`r`, `1`–`9`), and 1-line buried-answer widget hint (#1453)
 │   │   ├── state-db.ts                  # Shared node:sqlite WAL state store (.pi/data/state.db, Float32 BLOB embeddings, legacy JSONL migration)
 │   │   ├── state-jsonl.ts               # JSONL append log + legacy JSONL helpers (JsonlAppendLog, truncateJsonlFile, parseLastValidLine)
 │   │   ├── session-validation.ts    # Session start tool checks + upgrade changelog notification

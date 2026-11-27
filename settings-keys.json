@@ -701,6 +701,13 @@
     ],
     "group": "UI"
   },
+  "qa_overlay_shortcut": {
+    "description": "Keyboard shortcut to open the /qa human Q&A reader overlay (empty string disables)",
+    "type": "string",
+    "env": "PI_QA_OVERLAY_SHORTCUT",
+    "default": "alt+q",
+    "group": "UI"
+  },
   "session_spill_enabled": {
     "description": "Externalize oversized text tool results to session spill files (<session-dir>/local/<N>.log) with a bounded head/tail preview",
     "type": "bool",

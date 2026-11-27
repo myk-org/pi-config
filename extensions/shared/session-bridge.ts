@@ -81,6 +81,7 @@ export interface SessionBridgeSlot {
   comsActive?: boolean;
   comsPeerName?: string;
   streamLoopAborted?: boolean;
+  humanRelayedPrompts?: string[];
 }
 
 export type SessionBridgeSlotName = keyof SessionBridgeSlot;
@@ -480,6 +481,55 @@ export function clearStreamLoopAborted(sessionKey?: string): void {
   if (!slot || slot.streamLoopAborted === undefined) return;
   delete slot.streamLoopAborted;
   pruneSessionSlot(map, key);
+}
+
+// ── humanRelayedPrompts slot ────────────────────────────────────────────────
+
+const MAX_HUMAN_RELAYED_PROMPTS = 32;
+
+/**
+ * Mark an extension-relayed human prompt (e.g. pidash browser chat or pidiff review publish)
+ * before calling `pi.sendUserMessage` so downstream hooks distinguish it from synthetic automation.
+ */
+export function markHumanRelayedPrompt(text: string, sessionKey?: string): void {
+  const normalized = typeof text === "string" ? text.trim() : "";
+  if (!normalized) return;
+  const key = normalizeBridgeSessionKey(sessionKey);
+  const slot = getOrCreateSessionSlot(key);
+  if (!Array.isArray(slot.humanRelayedPrompts)) {
+    slot.humanRelayedPrompts = [];
+  }
+  slot.humanRelayedPrompts.push(normalized);
+  if (slot.humanRelayedPrompts.length > MAX_HUMAN_RELAYED_PROMPTS) {
+    slot.humanRelayedPrompts.splice(0, slot.humanRelayedPrompts.length - MAX_HUMAN_RELAYED_PROMPTS);
+  }
+  log.debug("human_relayed_prompt_marked", {
+    sessionKey: key,
+    queued: slot.humanRelayedPrompts.length,
+  });
+}
+
+/**
+ * Consume a matching human-relayed prompt mark for `sessionKey`.
+ * Returns `true` when `text` matches a queued mark (exact match after trimming).
+ */
+export function consumeHumanRelayedPrompt(text: string, sessionKey?: string): boolean {
+  const normalized = typeof text === "string" ? text.trim() : "";
+  if (!normalized) return false;
+  const key = normalizeBridgeSessionKey(sessionKey);
+  const map = getExistingBridgeMap();
+  const slot = map?.get(key);
+  const queue = slot?.humanRelayedPrompts;
+  if (!Array.isArray(queue) || queue.length === 0) return false;
+  const idx = queue.indexOf(normalized);
+  if (idx < 0) return false;
+  queue.splice(idx, 1);
+  if (queue.length === 0) {
+    delete slot!.humanRelayedPrompts;
+    pruneSessionSlot(map, key);
+  }
+  log.debug("human_relayed_prompt_consumed", { sessionKey: key, remaining: queue.length });
+  return true;
 }
 
 // ── Unified teardown & test reset ───────────────────────────────────────────

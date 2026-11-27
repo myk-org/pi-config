@@ -210,7 +210,7 @@ export PI_PR_RETRO_ON_MERGE=true
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
 |---|---|---|---|---|---|
-| `advisor_enabled` | boolean | `false` | `PI_ADVISOR_ENABLED` | Enables the opt-in background read-only advisor/watchdog model. | Defaults to `false` so extra LLM tokens are never spent unless opted in. When `true`, periodically reviews recent transcript deltas in the background with zero tools (read-only) and injects a concise hidden course-correction note on the next turn only when it finds a concrete bug, spec drift, or stuck retry loop (silent when clean). Always skipped for subagent children (`PI_SUBAGENT_CHILD=1`) and skipped in headless/RPC hosts unless `PI_ADVISOR_ALLOW_HEADLESS=1` is set. Token usage and cost are logged via `createLogger("advisor")`. |
+| `advisor_enabled` | boolean | `false` | `PI_ADVISOR_ENABLED` | Enables the opt-in background read-only advisor/watchdog model. | Defaults to `false` so extra LLM tokens are never spent unless opted in. When `true`, periodically reviews recent transcript deltas in the background with zero tools (read-only) alongside goal resolution status, `ask_user` decisions, open session tasks, and per-turn trigger sources (`human`, `async`, `coms`, `cron`, `system`), and injects a concise hidden course-correction note on the next turn only when it finds a concrete bug, spec drift, or stuck retry loop (silent when clean). Always skipped for subagent children (`PI_SUBAGENT_CHILD=1`) and skipped in headless/RPC hosts unless `PI_ADVISOR_ALLOW_HEADLESS=1` is set. Token usage and cost are logged via `createLogger("advisor")`. |
 
 ```json
 {
@@ -1234,6 +1234,24 @@ export PI_LSP_ENABLED=true
 
 ```bash
 export PI_TURN_SNAPSHOTS=false
+```
+
+## Human Q&A Reader Overlay
+
+### `qa_overlay_shortcut`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `qa_overlay_shortcut` | string | `"alt+q"` | `PI_QA_OVERLAY_SHORTCUT` | Keyboard shortcut to open the `/qa` human Q&A reader overlay. | Registers a Pi keyboard shortcut that opens the scrollable `/qa` overlay (listing human Q&A pairs newest-first with `/` live filter, `Enter` full reader, `r` whole-answer quoting, and `1`–`9` section/item quoting via `ctx.ui.pasteToEditor()`). Set to `""` to disable the shortcut while keeping the `/qa` slash command active; invalid key syntax logs a warning and falls back to `/qa` in the 1-line buried-answer hint widget. Skipped in subagent children (`PI_SUBAGENT_CHILD=1`). |
+
+```json
+{
+  "qa_overlay_shortcut": "alt+q"
+}
+```
+
+```bash
+export PI_QA_OVERLAY_SHORTCUT=""
 ```
 
 ## Environment-only Process Flag

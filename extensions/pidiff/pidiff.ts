@@ -22,6 +22,7 @@ import {
   spawnDaemon,
 } from "../shared/daemon-manager.js";
 import { createLogger } from "../shared/logger.js";
+import { markHumanRelayedPrompt, resolveBridgeSessionKey } from "../shared/session-bridge.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { getSetting } from "../orchestrator/project-settings.js";
@@ -202,7 +203,9 @@ export function registerPidiff(pi: ExtensionAPI): void {
       const parsed = JSON.parse(data.toString());
       if (parsed.type === "publish-review" && parsed.comments?.length > 0) {
         log.debug(`review received: ${parsed.comments.length} comments`);
-        pi.sendUserMessage(formatReviewMessage(parsed), { deliverAs: "followUp" });
+        const reviewMessage = formatReviewMessage(parsed);
+        markHumanRelayedPrompt(reviewMessage, resolveBridgeSessionKey(client.lastCtx));
+        pi.sendUserMessage(reviewMessage, { deliverAs: "followUp" });
       }
     },
 
