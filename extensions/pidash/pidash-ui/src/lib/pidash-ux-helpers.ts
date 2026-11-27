@@ -53,40 +53,88 @@ export function formatDocumentTitle(
   return `${waiting ? "[!] " : ""}${label} — pidash`;
 }
 
-export function loadSessionIdSet(key: string, max = MAX_PERSISTED_SESSION_IDS): Set<string> {
-  if (typeof localStorage === "undefined") return new Set();
+function readSessionIdSet(key: string, max = MAX_PERSISTED_SESSION_IDS): { ids: Set<string>; ok: boolean } {
+  if (typeof localStorage === "undefined") return { ids: new Set(), ok: false };
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return new Set();
+    if (raw === null) return { ids: new Set(), ok: true };
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
+    if (!Array.isArray(parsed)) {
+      log.warn("persisted session id set is not an array", { key });
+      return { ids: new Set(), ok: false };
+    }
     const valid = parsed.filter((id): id is string => typeof id === "string" && id.length > 0);
-    return capSessionIdSet(new Set(valid), max);
+    return { ids: capSessionIdSet(new Set(valid), max), ok: true };
   } catch (err) {
-    log.debug("failed to load persisted session id set", { key, error: String(err) });
-    return new Set();
+    log.warn("failed to load persisted session id set", { key, error: String(err) });
+    return { ids: new Set(), ok: false };
   }
+}
+
+function writeSessionIdSet(
+  key: string,
+  ids: ReadonlySet<string>,
+  max = MAX_PERSISTED_SESSION_IDS,
+): boolean {
+  if (typeof localStorage === "undefined") return false;
+  try {
+    const capped = capSessionIdSet(ids, max);
+    localStorage.setItem(key, JSON.stringify([...capped]));
+    return true;
+  } catch (err) {
+    log.warn("failed to save persisted session id set", { key, error: String(err) });
+    return false;
+  }
+}
+
+function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const item of a) {
+    if (!b.has(item)) return false;
+  }
+  return true;
+}
+
+function persistSidebarFlagsAtomic(base: SidebarFlags, next: SidebarFlags): boolean {
+  const pinnedChanged = !setsEqual(base.pinned, next.pinned);
+  const archivedChanged = !setsEqual(base.archived, next.archived);
+  if (!pinnedChanged && !archivedChanged) return true;
+  if (pinnedChanged && !writeSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, next.pinned)) {
+    return false;
+  }
+  if (archivedChanged && !writeSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, next.archived)) {
+    if (pinnedChanged) {
+      // Roll back the first write so storage is not left half-persisted.
+      writeSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, base.pinned);
+    }
+    return false;
+  }
+  return true;
+}
+
+export function loadSessionIdSet(key: string, max = MAX_PERSISTED_SESSION_IDS): Set<string> {
+  return readSessionIdSet(key, max).ids;
 }
 
 export function saveSessionIdSet(
   key: string,
   ids: ReadonlySet<string>,
   max = MAX_PERSISTED_SESSION_IDS,
-): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    const capped = capSessionIdSet(ids, max);
-    localStorage.setItem(key, JSON.stringify([...capped]));
-  } catch (err) {
-    log.debug("failed to save persisted session id set", { key, error: String(err) });
-  }
+): boolean {
+  return writeSessionIdSet(key, ids, max);
+}
+
+export function loadPersistedSidebarFlagsDetailed(): { flags: SidebarFlags; ok: boolean } {
+  const pinned = readSessionIdSet(PINNED_SESSIONS_STORAGE_KEY);
+  const archived = readSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY);
+  return {
+    flags: { pinned: pinned.ids, archived: archived.ids },
+    ok: pinned.ok && archived.ok,
+  };
 }
 
 export function loadPersistedSidebarFlags(): SidebarFlags {
-  return {
-    pinned: loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY),
-    archived: loadSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY),
-  };
+  return loadPersistedSidebarFlagsDetailed().flags;
 }
 
 /** Toggle pin state; pinning an archived session also unarchives it. */
@@ -144,37 +192,45 @@ export function unarchiveSessionId(
 export function reconcileAndTogglePin(
   fallback: SidebarFlags,
   sessionId: string,
-): { pinned: Set<string>; archived: Set<string>; isPinned: boolean } {
-  const base = typeof localStorage !== "undefined" ? loadPersistedSidebarFlags() : fallback;
+  useStorage = true,
+): { pinned: Set<string>; archived: Set<string>; isPinned: boolean; persisted: boolean } {
+  const loaded = useStorage ? loadPersistedSidebarFlagsDetailed() : { flags: fallback, ok: false };
+  const base = loaded.ok ? loaded.flags : fallback;
   const next = togglePinnedSession(base.pinned, base.archived, sessionId);
-  saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, next.pinned);
-  saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, next.archived);
-  return next;
+  const persisted = useStorage && loaded.ok
+    ? persistSidebarFlagsAtomic(base, { pinned: next.pinned, archived: next.archived })
+    : false;
+  return { ...next, persisted };
 }
 
 /** Read latest storage before toggling archive so concurrent tabs do not clobber each other. */
 export function reconcileAndToggleArchive(
   fallback: SidebarFlags,
   sessionId: string,
-): { pinned: Set<string>; archived: Set<string>; isArchived: boolean } {
-  const base = typeof localStorage !== "undefined" ? loadPersistedSidebarFlags() : fallback;
+  useStorage = true,
+): { pinned: Set<string>; archived: Set<string>; isArchived: boolean; persisted: boolean } {
+  const loaded = useStorage ? loadPersistedSidebarFlagsDetailed() : { flags: fallback, ok: false };
+  const base = loaded.ok ? loaded.flags : fallback;
   const next = toggleArchivedSession(base.pinned, base.archived, sessionId);
-  saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, next.pinned);
-  saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, next.archived);
-  return next;
+  const persisted = useStorage && loaded.ok
+    ? persistSidebarFlagsAtomic(base, { pinned: next.pinned, archived: next.archived })
+    : false;
+  return { ...next, persisted };
 }
 
 /** Read latest storage before auto-unarchiving on send; writes only if the session was archived. */
 export function reconcileAndUnarchive(
   fallback: SidebarFlags,
   sessionId: string,
-): { pinned: Set<string>; archived: Set<string>; changed: boolean } {
-  const base = typeof localStorage !== "undefined" ? loadPersistedSidebarFlags() : fallback;
+  useStorage = true,
+): { pinned: Set<string>; archived: Set<string>; changed: boolean; persisted: boolean } {
+  const loaded = useStorage ? loadPersistedSidebarFlagsDetailed() : { flags: fallback, ok: false };
+  const base = loaded.ok ? loaded.flags : fallback;
   const { archived, changed } = unarchiveSessionId(base.archived, sessionId);
-  if (changed) {
-    saveSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, archived);
-  }
-  return { pinned: base.pinned, archived, changed };
+  const persisted = !changed
+    ? loaded.ok
+    : (useStorage && loaded.ok ? writeSessionIdSet(ARCHIVED_SESSIONS_STORAGE_KEY, archived) : false);
+  return { pinned: base.pinned, archived, changed, persisted };
 }
 
 export interface SidebarSessionPartitions {
@@ -343,4 +399,27 @@ export function isBashToolRole(role: string): boolean {
 /** Strip the synthetic leading status icon (`✓ ` / `✗ `) prepended by the transcript reducer. */
 export function stripToolResultPrefix(text: string): string {
   return text.replace(/^[✓✗] /, "");
+}
+
+/**
+ * Resolve which prompt message owns global 1-9 hotkeys:
+ * inspects only the newest unanswered prompt (excluding locally answered IDs)
+ * and enables hotkeys only when that newest prompt is a `select` card.
+ */
+export function findActiveSelectHotkeyId(
+  items: ReadonlyArray<{ call?: { id: string }; result?: { id: string } } | { id: string; className?: string }>,
+  locallyAnsweredIds: ReadonlySet<string>,
+  paused: boolean,
+): string | null {
+  if (paused) return null;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if ("call" in item) continue;
+    const msg = item as { id: string; className?: string };
+    if (!msg.className?.startsWith("ask|")) continue;
+    if (locallyAnsweredIds.has(msg.id)) continue;
+    const method = msg.className.split("|")[2] || "select";
+    return method === "select" ? msg.id : null;
+  }
+  return null;
 }

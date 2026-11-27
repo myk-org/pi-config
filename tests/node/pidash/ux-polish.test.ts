@@ -11,7 +11,7 @@ import path from "node:path";
 import * as rootReact from "react";
 import { createServer, type ViteDevServer } from "vite";
 import * as pidashReact from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
-import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
+import { StrictMode, act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import type { Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
 import {
   ARCHIVED_SESSIONS_STORAGE_KEY,
@@ -212,8 +212,36 @@ describe("sidebar state helpers (#1448)", () => {
 
   it("recovers with an empty set when localStorage holds invalid JSON", () => {
     const { map } = installMockStorage();
+    logBag().__pidashUiLogs = [];
     map.set(PINNED_SESSIONS_STORAGE_KEY, "{not valid json");
     assert.deepEqual([...loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY)], []);
+    assert.ok(
+      (logBag().__pidashUiLogs ?? []).some(
+        (entry) => entry.name === "pidash-ux" && entry.level === "warn" && entry.msg.includes("failed to load persisted session id set"),
+      ),
+    );
+  });
+
+  it("logs a warning when saveSessionIdSet encounters a storage write error", () => {
+    logBag().__pidashUiLogs = [];
+    Object.defineProperty(globalThis, "localStorage", {
+      value: {
+        getItem: () => null,
+        setItem: () => { throw new Error("QuotaExceededError"); },
+        removeItem: () => {},
+        clear: () => {},
+        key: () => null,
+        length: 0,
+      },
+      configurable: true,
+      writable: true,
+    });
+    assert.equal(saveSessionIdSet(PINNED_SESSIONS_STORAGE_KEY, new Set(["s-1"])), false);
+    assert.ok(
+      (logBag().__pidashUiLogs ?? []).some(
+        (entry) => entry.name === "pidash-ux" && entry.level === "warn" && entry.msg.includes("failed to save persisted session id set"),
+      ),
+    );
   });
 
   it("caps persisted session ID sets to the most recent 200 entries", () => {
@@ -337,6 +365,74 @@ describe("useSidebarSessionFlags hook (#1448)", () => {
       window.dispatchEvent(new StorageEvent("storage", { key: PINNED_SESSIONS_STORAGE_KEY }));
     });
     assert.equal(getApi().pinned.has("s-remote"), true);
+  });
+
+  it("keeps a pin applied under React StrictMode without double-toggling", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    let api!: ReturnType<typeof useSidebarSessionFlags>;
+    function Probe() {
+      api = useSidebarSessionFlags();
+      return null;
+    }
+    const root = createRoot(container);
+    mounted.push(root);
+    await act(async () => root.render(createElement(StrictMode, null, createElement(Probe))));
+
+    await act(async () => api.togglePin("s-strict"));
+    assert.equal(api.pinned.has("s-strict"), true);
+    assert.deepEqual([...loadSessionIdSet(PINNED_SESSIONS_STORAGE_KEY)], ["s-strict"]);
+  });
+
+  it("retains in-memory flags across subsequent toggles when storage writes fail", async () => {
+    const map = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", {
+      value: {
+        getItem: (k: string) => map.get(k) ?? null,
+        setItem: () => { throw new Error("QuotaExceededError"); },
+        removeItem: (k: string) => map.delete(k),
+        clear: () => map.clear(),
+        key: () => null,
+        length: 0,
+      },
+      configurable: true,
+      writable: true,
+    });
+    const { getApi } = await mountFlagsHook();
+
+    await act(async () => getApi().togglePin("s-mem-1"));
+    await act(async () => getApi().togglePin("s-mem-2"));
+    assert.deepEqual([...getApi().pinned], ["s-mem-1", "s-mem-2"]);
+  });
+
+  it("rolls back the first key write when persisting pin+archive fails halfway", async () => {
+    const map = new Map<string, string>([
+      [PINNED_SESSIONS_STORAGE_KEY, JSON.stringify([])],
+      [ARCHIVED_SESSIONS_STORAGE_KEY, JSON.stringify(["s-arch-1"])],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      value: {
+        getItem: (k: string) => map.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+          if (k === ARCHIVED_SESSIONS_STORAGE_KEY) throw new Error("QuotaExceededError");
+          map.set(k, v);
+        },
+        removeItem: (k: string) => map.delete(k),
+        clear: () => map.clear(),
+        key: () => null,
+        get length() { return map.size; },
+      },
+      configurable: true,
+      writable: true,
+    });
+    const { getApi } = await mountFlagsHook();
+
+    await act(async () => getApi().togglePin("s-arch-1"));
+    // In-memory state reflects the user action while storage was rolled back atomically.
+    assert.equal(getApi().pinned.has("s-arch-1"), true);
+    assert.equal(getApi().archived.has("s-arch-1"), false);
+    assert.deepEqual(JSON.parse(map.get(PINNED_SESSIONS_STORAGE_KEY) ?? "[]"), []);
+    assert.deepEqual(JSON.parse(map.get(ARCHIVED_SESSIONS_STORAGE_KEY) ?? "[]"), ["s-arch-1"]);
   });
 });
 
@@ -790,6 +886,56 @@ describe("AskPromptCard 1-9 hotkeys (#1448)", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
     });
     assert.deepEqual(calls, [["ask-new", "B1"]]);
+  });
+
+  it("does not skip past a newer unanswered confirm prompt to answer an older select prompt", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const calls: Array<[string, string]> = [];
+    const messages: ChatMessage[] = [
+      { id: "m-old-sel", role: "ask_user" as any, text: "Earlier select", className: "ask|ask-old-sel|select|A1|||A2" },
+      { id: "m-new-cfm", role: "ask_user" as any, text: "Confirm deploy?", className: "ask|ask-new-cfm|confirm|Yes|||No" },
+    ];
+
+    await act(async () => root.render(createElement(MessageList, {
+      messages,
+      onAskResponse: (id: string, value: string) => calls.push([id, value]),
+    })));
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    });
+    assert.deepEqual(calls, []);
+  });
+
+  it("restores number shortcuts to an older pending select prompt right after a newer prompt is answered locally", async () => {
+    const { container, document } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const calls: Array<[string, string]> = [];
+    const messages: ChatMessage[] = [
+      { id: "m-old-2", role: "ask_user" as any, text: "Earlier select", className: "ask|ask-old-2|select|A1|||A2" },
+      { id: "m-new-2", role: "ask_user" as any, text: "Latest select", className: "ask|ask-new-2|select|B1|||B2" },
+    ];
+
+    await act(async () => root.render(createElement(MessageList, {
+      messages,
+      onAskResponse: (id: string, value: string) => calls.push([id, value]),
+    })));
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+    });
+    assert.deepEqual(calls, [["ask-new-2", "B1"]]);
+
+    // Before ui-dismiss mutates messages, pressing 2 immediately answers the older pending select card.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true }));
+    });
+    assert.deepEqual(calls, [["ask-new-2", "B1"], ["ask-old-2", "A2"]]);
   });
 
   it("pauses prompt hotkeys when a mobile SidePanel drawer covers the chat", () => {

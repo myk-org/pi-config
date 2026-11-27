@@ -5,6 +5,7 @@ import { ChevronRight, ChevronDown, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types";
 import {
+  findActiveSelectHotkeyId,
   isBashToolRole,
   isEditableTarget,
   resolvePromptOptionIndex,
@@ -104,20 +105,42 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
     return out;
   }, [messages, searchQuery, searchType]);
 
-  // Only the latest unanswered select prompt responds to global 1-9 hotkeys
-  // (confirm prompts require explicit focus inside the card so a stray "1" never approves them).
-  const activeAskHotkeyId = useMemo(() => {
-    if (promptHotkeysPaused) return null;
-    for (let i = grouped.length - 1; i >= 0; i--) {
-      const item = grouped[i];
-      if ("call" in item) continue;
-      const m = item as ChatMessage;
-      if (!m.className?.startsWith("ask|")) continue;
-      const method = m.className.split("|")[2] || "select";
-      if (method === "select") return m.id;
-    }
-    return null;
-  }, [grouped, promptHotkeysPaused]);
+  const [locallyAnsweredIds, setLocallyAnsweredIds] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setLocallyAnsweredIds(new Set());
+  }, [scrollKey]);
+
+  useEffect(() => {
+    setLocallyAnsweredIds((prev) => {
+      if (prev.size === 0) return prev;
+      const activeAskIds = new Set(
+        messages.filter((m) => m.className?.startsWith("ask|")).map((m) => m.id),
+      );
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (activeAskIds.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [messages]);
+
+  const handleLocalAskAnswer = useCallback((msgId: string) => {
+    setLocallyAnsweredIds((prev) => {
+      if (prev.has(msgId)) return prev;
+      const next = new Set(prev);
+      next.add(msgId);
+      return next;
+    });
+  }, []);
+
+  // Only the newest unanswered prompt owns global 1-9 hotkeys, and only when it is a select card.
+  const activeAskHotkeyId = useMemo(
+    () => findActiveSelectHotkeyId(grouped, locallyAnsweredIds, promptHotkeysPaused),
+    [grouped, locallyAnsweredIds, promptHotkeysPaused],
+  );
 
   const [replaying, setReplaying] = useState(false);
   const autoScrollRef = useRef(true);
@@ -221,6 +244,7 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
               msg={msg}
               searchQuery={searchQuery}
               onAskResponse={onAskResponse}
+              onLocalAskAnswer={handleLocalAskAnswer}
               hotkeyEnabled={msg.id === activeAskHotkeyId}
             />
           );
@@ -322,10 +346,12 @@ export function CopyOutputButton({ text, compact = false }: { text: string; comp
 export function AskPromptCard({
   msg,
   onAskResponse,
+  onLocalAskAnswer,
   hotkeyEnabled = true,
 }: {
   msg: ChatMessage;
   onAskResponse?: (id: string, value: string) => void;
+  onLocalAskAnswer?: (msgId: string) => void;
   hotkeyEnabled?: boolean;
 }) {
   const className = msg.className || "";
@@ -347,22 +373,24 @@ export function AskPromptCard({
   const submitOption = useCallback((opt: string) => {
     setAnswered(true);
     setSelectedOpt(opt);
+    onLocalAskAnswer?.(msg.id);
     log.debug("prompt option selected", { askId, method });
     if (method === "confirm") {
       onAskResponse?.(askId, opt === "Yes" ? "__confirmed__" : "__denied__");
     } else {
       onAskResponse?.(askId, opt);
     }
-  }, [askId, method, onAskResponse]);
+  }, [askId, method, msg.id, onAskResponse, onLocalAskAnswer]);
 
   const submitCustomAnswer = useCallback(() => {
     const raw = textareaRef.current?.value ?? "";
     if (!raw.trim()) return;
     setAnswered(true);
     setSelectedOpt(raw);
+    onLocalAskAnswer?.(msg.id);
     log.debug("prompt custom answer submitted", { askId, lines: raw.split("\n").length });
     onAskResponse?.(askId, raw);
-  }, [askId, onAskResponse]);
+  }, [askId, msg.id, onAskResponse, onLocalAskAnswer]);
 
   // Global 1-9 hotkeys apply only to select prompts; confirm prompts handle
   // 1/2 only when focus is explicitly inside the card container.
@@ -489,16 +517,18 @@ export const MessageItem = memo(function MessageItem({
   msg,
   searchQuery,
   onAskResponse,
+  onLocalAskAnswer,
   hotkeyEnabled = true,
 }: {
   msg: ChatMessage;
   searchQuery?: string;
   onAskResponse?: (id: string, value: string) => void;
+  onLocalAskAnswer?: (msgId: string) => void;
   hotkeyEnabled?: boolean;
 }) {
   // Inline ask_user with clickable options
   if (msg.className?.startsWith("ask|") || msg.className?.startsWith("ask-answered|")) {
-    return <AskPromptCard msg={msg} onAskResponse={onAskResponse} hotkeyEnabled={hotkeyEnabled} />;
+    return <AskPromptCard msg={msg} onAskResponse={onAskResponse} onLocalAskAnswer={onLocalAskAnswer} hotkeyEnabled={hotkeyEnabled} />;
   }
 
   if (msg.role !== "user" && msg.role !== "assistant") {
