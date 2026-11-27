@@ -6,6 +6,7 @@ import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createLogger } from "../shared/logger.js";
+import { getComsPeerName } from "../shared/session-bridge.js";
 import {
   resolveMainCheckoutRoot as resolveMainCheckoutRootCore,
   tryResolveMainCheckoutRoot as tryResolveMainCheckoutRootCore,
@@ -20,6 +21,7 @@ export interface FormatNotificationTitleOptions {
   cwd?: string;
   argv?: readonly string[];
   peerName?: string | null;
+  sessionKey?: string;
   resolveGitCommonDir?: (cwd: string) => string | null;
 }
 
@@ -34,8 +36,6 @@ interface GitMarkerInfo {
   commonDir: string | null;
 }
 
-const NOTIFICATION_CONTEXT_CACHE_MAX = 128;
-const notificationContextCache = new Map<string, NotificationGitContext>();
 let notifyExecOverride: ((args: [string, string]) => void) | null = null;
 
 function repoNameFromCommonDir(commonDir: string): string {
@@ -62,8 +62,9 @@ function findGitMarker(resolvedCwd: string): GitMarkerInfo | null {
       if (stat.isFile()) {
         try {
           const match = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf-8"));
-          if (match) {
-            const gitDir = path.resolve(current, match[1].trim());
+          const rawGitDir = match?.[1]?.trim();
+          if (rawGitDir) {
+            const gitDir = path.resolve(current, rawGitDir);
             const normalizedGitDir = gitDir.split(path.sep).join("/");
             if (normalizedGitDir.includes("/.git/modules/")) {
               return { checkoutBase, isLinkedWorktree: false, commonDir: null };
@@ -79,10 +80,14 @@ function findGitMarker(resolvedCwd: string): GitMarkerInfo | null {
               const wtMatch = /^(.*(?:\/\.git|\.git))\/worktrees\/[^/]+$/.exec(normalizedGitDir);
               if (wtMatch) commonDir = path.resolve(wtMatch[1]);
             }
-            return { checkoutBase, isLinkedWorktree: commonDir !== null, commonDir };
+            if (commonDir) {
+              return { checkoutBase, isLinkedWorktree: commonDir !== gitDir, commonDir };
+            }
+            // Separate Git directory (`git init --separate-git-dir`): valid repo without linked worktree suffix.
+            return { checkoutBase, isLinkedWorktree: false, commonDir: gitDir };
           }
         } catch (err: unknown) {
-          log.debug("notification_git_read_failed", {
+          log.warn("notification_git_read_failed", {
             path: dotGit,
             error: err instanceof Error ? err.message : String(err),
           });
@@ -122,33 +127,18 @@ function resolveNotificationGitContext(
     return { repoName, worktreeName: cwdBase && cwdBase !== repoName ? cwdBase : null };
   }
 
-  const cached = notificationContextCache.get(resolvedCwd);
-  if (cached) {
-    notificationContextCache.delete(resolvedCwd);
-    notificationContextCache.set(resolvedCwd, cached);
-    return cached;
-  }
-
   const marker = findGitMarker(resolvedCwd);
-  let ctx: NotificationGitContext;
   if (!marker) {
-    ctx = { repoName: path.basename(resolvedCwd) || resolvedCwd, worktreeName: null };
-  } else if (marker.commonDir) {
+    return { repoName: path.basename(resolvedCwd) || resolvedCwd, worktreeName: null };
+  }
+  if (marker.commonDir) {
     const repoName = repoNameFromCommonDir(marker.commonDir) || marker.checkoutBase;
-    ctx = {
+    return {
       repoName,
       worktreeName: marker.isLinkedWorktree && marker.checkoutBase !== repoName ? marker.checkoutBase : null,
     };
-  } else {
-    ctx = { repoName: marker.checkoutBase, worktreeName: null };
   }
-
-  if (notificationContextCache.size >= NOTIFICATION_CONTEXT_CACHE_MAX) {
-    const oldest = notificationContextCache.keys().next().value;
-    if (oldest !== undefined) notificationContextCache.delete(oldest);
-  }
-  notificationContextCache.set(resolvedCwd, ctx);
-  return ctx;
+  return { repoName: marker.checkoutBase, worktreeName: null };
 }
 
 function parseCnameFromArgv(argv: readonly string[]): string | null {
@@ -177,29 +167,24 @@ export function formatNotificationTitle(title: string, opts?: FormatNotification
   const { repoName, worktreeName } = resolveNotificationGitContext(resolvedCwd, opts?.resolveGitCommonDir);
   const peerName = opts?.peerName !== undefined
     ? (opts.peerName?.trim() || null)
-    : parseCnameFromArgv(opts?.argv ?? process.argv);
+    : (getComsPeerName(opts?.sessionKey) ?? parseCnameFromArgv(opts?.argv ?? process.argv));
   const detail = peerName ?? worktreeName;
   const label = detail && detail !== repoName ? `${repoName} · ${detail}` : repoName;
   return `${title} (${label})`;
 }
 
-export function clearNotificationContextCache(): void {
-  notificationContextCache.clear();
-}
-
 export function setTerminalNotifyExecForTests(fn: ((args: [string, string]) => void) | null): void {
   notifyExecOverride = fn;
   notifyAvailable = undefined;
-  notificationContextCache.clear();
 }
 
 /** Send a desktop notification via notify-send (Linux only, no-op if unavailable) */
-export function terminalNotify(title: string, body: string): void {
+export function terminalNotify(title: string, body: string, opts?: FormatNotificationTitleOptions): void {
   // Subagent children don't own a terminal (COMS peers intentionally keep desktop notifications on)
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
   if (notifyAvailable === false) return;
 
-  const formattedTitle = formatNotificationTitle(title);
+  const formattedTitle = formatNotificationTitle(title, opts);
   if (notifyExecOverride) {
     notifyExecOverride([formattedTitle, body]);
     return;
@@ -212,7 +197,7 @@ export function terminalNotify(title: string, body: string): void {
       if ((err as NodeJS.ErrnoException).code === "ENOENT" || /DBus\.Error|not activatable|No session bus/.test(err.message)) {
         notifyAvailable = false;
       } else {
-        log.debug("notify_send_failed", { error: err.message });
+        log.warn("notify_send_failed", { error: err.message });
       }
     } else {
       notifyAvailable = true;

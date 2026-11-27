@@ -145,13 +145,13 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     );
 
     let activeSessionKey: string | undefined;
-    const syncComsActive = (nextActive: boolean, ctx?: any): void => {
+    const syncComsActive = (nextActive: boolean, ctx?: any, peerName?: string): void => {
         const nextKey = ctx ? resolveBridgeSessionKey(ctx) : (activeSessionKey ?? resolveBridgeSessionKey(liveCtx));
         if (activeSessionKey && activeSessionKey !== nextKey) {
             setComsActive(false, activeSessionKey);
         }
         activeSessionKey = nextKey;
-        setComsActive(nextActive, nextKey);
+        setComsActive(nextActive, nextKey, nextActive ? peerName : undefined);
     };
 
     const ensurePidashRegistration = (): void => {
@@ -217,7 +217,8 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                         extra = { ...extra, comsSessionId: self.sessionId };
                         persistCurrentState();
                     }
-                    syncComsActive(true, ctx);
+                    const peerName = String(flagValues.get("cname") ?? self?.name ?? "").trim() || undefined;
+                    syncComsActive(true, ctx, peerName);
                     syncComsActiveTools(pi, gatedTools, true);
                 } catch (err) {
                     active = false;
@@ -366,10 +367,11 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             }
             active = true;
             extra = { ...extra, origin: entry, ...(self?.sessionId ? { comsSessionId: self.sessionId } : {}) };
-            syncComsActive(true, ctx);
+            const peerName = String(flagValues.get("cname") ?? self?.name ?? "").trim() || undefined;
+            syncComsActive(true, ctx, peerName);
             syncComsActiveTools(pi, gatedTools, true);
             persistCurrentState();
-            const name = String(flagValues.get("cname") ?? self?.name ?? "peer");
+            const name = peerName ?? "peer";
             const project = String(flagValues.get("project"));
             log.info("coms activated", { name, project, via: "tool-or-command" });
             return { ok: true, message: `📡 coms active — you are "${name}" on project "${project}". Peers: use coms_list.` };
