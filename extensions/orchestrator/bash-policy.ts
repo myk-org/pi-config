@@ -1372,14 +1372,6 @@ let uvAvailable = true;
 export function setUvAvailable(val: boolean): void { uvAvailable = val; }
 export function isUvAvailable(): boolean { return uvAvailable; }
 
-/** Normalize command for repeat detection: strip cd prefixes, trim whitespace */
-export function normalizeForRepeatCheck(command: string): string {
-  return command
-    .replace(/^\s*cd\s+\S+\s*&&\s*/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 /** Escape a string for safe inclusion in double-quoted shell strings */
 export function escapeForDoubleQuote(s: string): string {
   return s.replace(/[\\"`$!]/g, "\\$&");
@@ -5696,8 +5688,6 @@ export interface BashPolicyInput {
   ui?: BashPolicyUi | null;
   /** Optional session-scoped trailer selection cache for comma-separated `commit_trailer`. */
   trailerSelection?: { get(): string | null; set(value: string): void };
-  /** Optional repeat-command counter; returns consecutive count for the normalized command. */
-  trackRepeat?: (normalizedCommand: string) => number;
   /** Optional review-loop commit gate checked for `git-expert` commits before git protection. */
   checkReviewLoopCommit?: (
     gitCwd: string,
@@ -6822,17 +6812,6 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         reason:
           "\u26d4 Bash command writing a git identity config (~/.gitconfig, ~/.config/git/config, .git/config) blocked. " +
           "The git identity belongs to the human — if it is wrong, tell the user to fix their own git config.",
-      };
-    }
-  }
-
-  // Block repeated identical commands (polling-by-spam) — orchestrator only.
-  if (!isSubagentChild && input.trackRepeat) {
-    const count = input.trackRepeat(normalizeForRepeatCheck(command));
-    if (count >= 3) {
-      return {
-        action: "block",
-        reason: `⛔ Same command executed ${count} times in a row. Use a subagent with async: true for polling/monitoring instead of repeating the command.`,
       };
     }
   }
