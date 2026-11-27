@@ -117,12 +117,12 @@ export function buildSettingsPayload(cwd: string, scope: unknown): SettingsPaylo
 
 /**
  * Validate a browser-supplied value against the unified settings schema.
- * Adds the browser-only security policy blocking `dangerous_command_allowlist`
- * and `restricted_folders`.
+ * Adds the browser-only security policy blocking `dangerous_command_allowlist`,
+ * `restricted_folders`, and `tool_permissions`.
  * Returns an error string, or null when the value is valid.
  */
 export function validateSettingValue(key: string, value: unknown): string | null {
-  if (key === "dangerous_command_allowlist" || key === "restricted_folders") {
+  if (key === "dangerous_command_allowlist" || key === "restricted_folders" || key === "tool_permissions") {
     return `${key} is managed by the terminal settings editor only`;
   }
   const result = validateSetting(key, value, { allowNull: true });

@@ -23,7 +23,7 @@ export { parseLastValidLine, SKIP_MUTATE };
 const log = createLogger("state-db");
 
 export const STATE_DB_FILENAME = "state.db";
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 export const STATE_DB_BUSY_TIMEOUT_MS = 5000;
 
 interface CachedStateDb {
@@ -123,6 +123,15 @@ function initSchema(db: DatabaseSync, dbPath: string): void {
           signature TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL,
           UNIQUE(scope, target_path)
+        );
+
+        CREATE TABLE IF NOT EXISTS tool_host_approvals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tool_name TEXT NOT NULL,
+          hostname TEXT NOT NULL,
+          signature TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          UNIQUE(tool_name, hostname)
         );
       `);
 

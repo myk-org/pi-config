@@ -34,6 +34,7 @@
   "enforcement_loop_sleep_threshold_s": 60,
   "enforcement_sleep_threshold_s": 60,
   "restricted_folders": [],
+  "tool_permissions": {},
   "secret_obfuscation": false,
   "task_reminder_cadence_turns": 4,
   "task_headless_idle_reminder_minutes": 2,

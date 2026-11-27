@@ -126,7 +126,9 @@ After presenting your analysis, respect the user's decision.
 ## Web Access
 
 - Use `web_search` for research and search queries.
-- Use `fetch_content` for extracting content from URLs, YouTube, GitHub repos.
+- Use `fetch_content` for extracting content from URLs, YouTube, GitHub repos. When `tool_permissions` sets `ask`/`deny` rules for `fetch_content` (or other tools/annotations),
+  every URL in `url`/`urls[]` is checked per host; headless sessions fail closed on ungranted `ask` rules, and interactive `Always Allow <hostname>` grants stay scoped to that
+  exact host (clearable via `/forget-approvals`).
 - Use `agent-browser` CLI for interactive pages requiring clicks, forms, screenshots.
 - **NEVER** use `curl` for reading web pages or SearXNG MCP.
 
