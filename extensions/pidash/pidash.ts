@@ -155,6 +155,145 @@ function isContainer(): boolean {
 let diffPort: number | null = null;
 let isStreaming = false;
 
+export const TUI_PERIODIC_STATUS_INTERVAL_MS = 10_000;
+export const RPC_PERIODIC_STATUS_INTERVAL_MS = 60_000;
+
+interface SharedGitStatusEntry {
+  value?: GitStatus;
+  expiresAt: number;
+  inFlight?: Promise<GitStatus>;
+}
+
+const SHARED_GIT_STATUS_CACHE_MAX = 64;
+const sharedGitStatusCaches = new WeakMap<
+  (cwd: string) => Promise<GitStatus>,
+  Map<string, SharedGitStatusEntry>
+>();
+
+/**
+ * Coalesce and cache git status scans by resolved checkout directory so multiple
+ * supervised RPC peers sharing a repository checkout do not multiply scans.
+ */
+export async function getSharedPeerGitStatus(
+  cwd: string,
+  ttlMs: number,
+  fetcher: (dir: string) => Promise<GitStatus> = getGitStatus,
+): Promise<GitStatus> {
+  const key = path.resolve(cwd);
+  let cache = sharedGitStatusCaches.get(fetcher);
+  if (!cache) {
+    cache = new Map();
+    sharedGitStatusCaches.set(fetcher, cache);
+  }
+  const now = Date.now();
+  const existing = cache.get(key);
+  if (existing) {
+    if (existing.value !== undefined && now < existing.expiresAt) {
+      return existing.value;
+    }
+    if (existing.inFlight) {
+      return existing.inFlight;
+    }
+  }
+  const inFlight = fetcher(cwd).then((value) => {
+    const completedAt = Date.now();
+    if (cache!.size >= SHARED_GIT_STATUS_CACHE_MAX && !cache!.has(key)) {
+      const oldestKey = cache!.keys().next().value;
+      if (oldestKey !== undefined) cache!.delete(oldestKey);
+    }
+    cache!.set(key, { value, expiresAt: completedAt + Math.max(0, ttlMs) });
+    return value;
+  }, (err) => {
+    const cur = cache!.get(key);
+    if (cur?.inFlight === inFlight) cache!.delete(key);
+    throw err;
+  });
+  cache.set(key, { value: existing?.value, expiresAt: existing?.expiresAt ?? 0, inFlight });
+  return inFlight;
+}
+
+export interface PeriodicStatusPolicy {
+  intervalMs: number;
+  pollWorktrees: boolean;
+  includeInitialWorktreeDirty: boolean;
+}
+
+export function isSupervisedRpcPeerCtx(
+  ctx: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env.PI_SUBAGENT_CHILD === "1") return false;
+  if (!isLiveExtensionCtx(ctx)) return false;
+  return (ctx as { mode?: unknown }).mode === "rpc" && env.PI_COMS_SUPERVISED_PEER === "1";
+}
+
+/**
+ * Status-polling policy per session mode:
+ * - Interactive TUI sessions poll git status every 10s and keep periodic worktree badge updates.
+ * - Supervised headless COMS RPC peers poll git status every 60s and skip periodic/initial
+ *   repository-wide worktree scans so multiple peers in one repo do not multiply git work.
+ */
+export function getPeriodicStatusPolicy(
+  ctx: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+  overrides?: { tuiIntervalMs?: number; rpcIntervalMs?: number },
+): PeriodicStatusPolicy {
+  if (isSupervisedRpcPeerCtx(ctx, env)) {
+    return {
+      intervalMs: overrides?.rpcIntervalMs ?? RPC_PERIODIC_STATUS_INTERVAL_MS,
+      pollWorktrees: false,
+      includeInitialWorktreeDirty: false,
+    };
+  }
+  return {
+    intervalMs: overrides?.tuiIntervalMs ?? TUI_PERIODIC_STATUS_INTERVAL_MS,
+    pollWorktrees: true,
+    includeInitialWorktreeDirty: true,
+  };
+}
+
+export interface ComsRegistrationIdentity {
+  comsName?: string | null;
+  comsPurpose?: string | null;
+  comsProject?: string | null;
+}
+
+/**
+ * Resolve COMS identity fields for a PiDash `register` frame:
+ * - Once `pidash:coms-identity` has fired, use only that authoritative state (including
+ *   explicit `null` after COMS stops so reconnects never restore CLI flag metadata).
+ * - Before `pidash:coms-identity` fires, fall back to `--cname`/`--purpose`/`--project`
+ *   only when COMS autostart (`--coms`) or supervised-peer mode is active.
+ */
+export function resolveComsRegistrationIdentity(opts: {
+  comsIdentityKnown: boolean;
+  comsIdentityName: string | undefined;
+  comsIdentityPurpose: string | undefined;
+  comsIdentityProject: string | undefined;
+  comsFlag: unknown;
+  cnameFlag: string | undefined;
+  purposeFlag: string | undefined;
+  projectFlag: string | undefined;
+  env: NodeJS.ProcessEnv;
+}): ComsRegistrationIdentity {
+  if (opts.comsIdentityKnown) {
+    return {
+      comsName: opts.comsIdentityName ?? null,
+      comsPurpose: opts.comsIdentityPurpose ?? null,
+      comsProject: opts.comsIdentityProject ?? null,
+    };
+  }
+  const comsStartupActive = opts.comsFlag === true || opts.env.PI_COMS_SUPERVISED_PEER === "1";
+  if (!comsStartupActive) {
+    return { comsName: undefined, comsPurpose: undefined, comsProject: undefined };
+  }
+  return {
+    comsName: opts.cnameFlag,
+    comsPurpose: opts.purposeFlag,
+    comsProject: opts.projectFlag,
+  };
+}
+
 /**
  * True when a session context should connect to the pidash daemon:
  * - Interactive TUI sessions (`ctx.mode === "tui"`)
@@ -174,10 +313,19 @@ export function isPidashConnectableCtx(
   return mode === "rpc" && env.PI_COMS_SUPERVISED_PEER === "1";
 }
 
+export interface PidashRegisterOptions {
+  reconnectPollIntervalMs?: number;
+  periodicStatusTickMs?: number;
+  rpcStatusIntervalMs?: number;
+  fetchGitStatus?: (cwd: string) => Promise<GitStatus>;
+  fetchWorktreeSummary?: typeof getWorktreeSummary;
+}
+
 // ── Registration ─────────────────────────────────────────────────────
 
 export function registerPidash(
   pi: ExtensionAPI,
+  opts: PidashRegisterOptions = {},
 ): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
   if (shouldSkipOneshotRegister(log)) return;
@@ -186,6 +334,10 @@ export function registerPidash(
     PI_COMS_SUPERVISED_PEER: process.env.PI_COMS_SUPERVISED_PEER,
   };
   const canConnectCtx = (ctx: unknown): boolean => isPidashConnectableCtx(ctx, registrationEnv);
+  const fetchGitStatus = opts.fetchGitStatus ?? getGitStatus;
+  const fetchWorktreeSummary = opts.fetchWorktreeSummary ?? getWorktreeSummary;
+  const periodicStatusTickMs = opts.periodicStatusTickMs ?? TUI_PERIODIC_STATUS_INTERVAL_MS;
+  const rpcStatusIntervalMs = opts.rpcStatusIntervalMs ?? RPC_PERIODIC_STATUS_INTERVAL_MS;
   currentPiEvents = pi.events;
 
   const projectCwd = process.cwd();
@@ -207,6 +359,7 @@ export function registerPidash(
   let activityBeforePrompt: "working" | "waiting_for_input" | "idle" | null = null;
   let connectionGeneration = 0;
   let execCtx: any = null;
+  let comsIdentityKnown = false;
   let comsIdentityName: string | undefined;
   let comsIdentityPurpose: string | undefined;
   let comsIdentityProject: string | undefined;
@@ -214,6 +367,7 @@ export function registerPidash(
   let lastGitStatus: GitStatus | null = null;
   let lastWorktreeSummary: WorktreeSummary | null = null;
   let lastWorktreeDirtyScanAt = 0;
+  let lastStatusPollAt = 0;
   let sessionEpoch = 0;
   const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
 
@@ -230,13 +384,20 @@ export function registerPidash(
     });
   }
 
-  // Listen for coms identity — coms ext emits this after boot
+  // Listen for coms identity — coms ext emits this after boot and with { name: null } on stop
   pi.events.on("pidash:coms-identity", (data: any) => {
-    comsIdentityName = data?.name;
-    comsIdentityPurpose = data?.purpose;
-    comsIdentityProject = data?.project;
-    log.debug("coms_identity_received", comsIdentityName);
-    client.send({ type: "update_info", comsName: comsIdentityName, comsPurpose: comsIdentityPurpose, comsProject: comsIdentityProject });
+    comsIdentityKnown = true;
+    const activeName = typeof data?.name === "string" && data.name.length > 0 ? data.name : undefined;
+    comsIdentityName = activeName;
+    comsIdentityPurpose = activeName && typeof data?.purpose === "string" && data.purpose.length > 0 ? data.purpose : undefined;
+    comsIdentityProject = activeName && typeof data?.project === "string" && data.project.length > 0 ? data.project : undefined;
+    log.debug("coms_identity_received", { name: comsIdentityName ?? null, project: comsIdentityProject ?? null });
+    client.send({
+      type: "update_info",
+      comsName: comsIdentityName ?? null,
+      comsPurpose: comsIdentityPurpose ?? null,
+      comsProject: comsIdentityProject ?? null,
+    });
   });
 
   pi.events.on("pidash:trail-savings", (data: any) => {
@@ -754,6 +915,7 @@ export function registerPidash(
     port: pidashPort,
     startFailureHint: " — check ~/.pi/pidash-server.log",
     strictCommandUsage: true,
+    reconnectPollIntervalMs: opts.reconnectPollIntervalMs,
     shouldConnectCtx: canConnectCtx,
     // Only interactive TUI sessions auto-spawn pidash-server; supervised COMS RPC peers
     // attach whenever pidash-server is already running and avoid burst-spawn races.
@@ -771,9 +933,17 @@ export function registerPidash(
 
     async beforeOpen(ctx) {
       const startEpoch = sessionEpoch;
+      const policy = getPeriodicStatusPolicy(ctx, registrationEnv, {
+        tuiIntervalMs: periodicStatusTickMs,
+        rpcIntervalMs: rpcStatusIntervalMs,
+      });
       const [git, worktrees] = await Promise.all([
-        getGitStatus(ctx.cwd),
-        getWorktreeSummary(ctx.cwd, { includeDirty: true }),
+        policy.pollWorktrees
+          ? fetchGitStatus(ctx.cwd)
+          : getSharedPeerGitStatus(ctx.cwd, policy.intervalMs, fetchGitStatus),
+        policy.pollWorktrees
+          ? fetchWorktreeSummary(ctx.cwd, { includeDirty: policy.includeInitialWorktreeDirty })
+          : Promise.resolve(null),
       ]);
       if (startEpoch !== sessionEpoch) return { abort: true };
       if (worktrees !== null) {
@@ -788,6 +958,7 @@ export function registerPidash(
       const initialWorktrees = initial?.worktrees ?? null;
       lastGitStatus = resolvedGit;
       lastWorktreeSummary = initialWorktrees;
+      lastStatusPollAt = Date.now();
       const regWorktrees = initialWorktrees ?? { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
       const m = ctx.model;
       let thinking = "medium";
@@ -798,13 +969,18 @@ export function registerPidash(
         const val = (pi as any).getFlag?.(flag);
         return typeof val === "string" && val.length > 0 ? val : undefined;
       };
-      const comsFlagName = stringFlag("cname");
-      const comsFlagPurpose = stringFlag("purpose");
-      const comsFlagActive =
-        Boolean(comsIdentityName || comsFlagName)
-        || (pi as any).getFlag?.("coms") === true
-        || registrationEnv.PI_COMS_SUPERVISED_PEER === "1";
-      const comsFlagProject = comsFlagActive ? stringFlag("project") : undefined;
+      const comsIdentity = resolveComsRegistrationIdentity({
+        comsIdentityKnown,
+        comsIdentityName,
+        comsIdentityPurpose,
+        comsIdentityProject,
+        comsFlag: (pi as any).getFlag?.("coms"),
+        cnameFlag: stringFlag("cname"),
+        purposeFlag: stringFlag("purpose"),
+        projectFlag: stringFlag("project"),
+        env: registrationEnv,
+      });
+      const supervisedPeer = isSupervisedRpcPeerCtx(ctx, registrationEnv);
       const reg = JSON.stringify({
         type: "register",
         pid: process.pid,
@@ -831,9 +1007,10 @@ export function registerPidash(
         thinkingLevel: thinking,
         diffPort,
         name: (pi as any).getSessionName?.() || undefined,
-        comsName: comsIdentityName || comsFlagName,
-        comsPurpose: comsIdentityPurpose || comsFlagPurpose,
-        comsProject: comsIdentityProject || comsFlagProject,
+        comsName: comsIdentity.comsName,
+        comsPurpose: comsIdentity.comsPurpose,
+        comsProject: comsIdentity.comsProject,
+        ...(supervisedPeer ? { supervisedPeer: true } : {}),
         trailTokenSavings,
       });
       log.debug(`sending register: ${reg}`);
@@ -868,6 +1045,7 @@ export function registerPidash(
       lastGitStatus = null;
       lastWorktreeSummary = null;
       lastWorktreeDirtyScanAt = 0;
+      lastStatusPollAt = 0;
     },
 
     onBeforeShutdown(event, activeWs, isConnected) {
@@ -1141,16 +1319,28 @@ export function registerPidash(
         return;
       }
       if (!canConnectCtx(ctx)) return;
+      const now = Date.now();
+      const policy = getPeriodicStatusPolicy(ctx, registrationEnv, {
+        tuiIntervalMs: periodicStatusTickMs,
+        rpcIntervalMs: rpcStatusIntervalMs,
+      });
+      if (policy.intervalMs > periodicStatusTickMs && lastStatusPollAt > 0 && now - lastStatusPollAt < policy.intervalMs) {
+        return;
+      }
+      lastStatusPollAt = now;
       inFlight = true;
       try {
-        const now = Date.now();
-        const shouldScanDirty = now - lastWorktreeDirtyScanAt >= WORKTREE_DIRTY_POLL_INTERVAL_MS;
+        const shouldScanDirty = policy.pollWorktrees && now - lastWorktreeDirtyScanAt >= WORKTREE_DIRTY_POLL_INTERVAL_MS;
         const [git, wtSummary] = await Promise.all([
-          getGitStatus(ctx.cwd),
-          getWorktreeSummary(ctx.cwd, {
-            includeDirty: shouldScanDirty,
-            fallbackDirtyCount: lastWorktreeSummary?.worktreeDirtyCount ?? 0,
-          }),
+          policy.pollWorktrees
+            ? fetchGitStatus(ctx.cwd)
+            : getSharedPeerGitStatus(ctx.cwd, policy.intervalMs, fetchGitStatus),
+          policy.pollWorktrees
+            ? fetchWorktreeSummary(ctx.cwd, {
+                includeDirty: shouldScanDirty,
+                fallbackDirtyCount: lastWorktreeSummary?.worktreeDirtyCount ?? 0,
+              })
+            : Promise.resolve(null),
         ]);
         const gitChanged = shouldPublishPeriodicGitStatus({
           shuttingDown: client.shuttingDown,
@@ -1180,7 +1370,7 @@ export function registerPidash(
         }));
       } catch (e: any) { log.debug(`periodic status error: ${e?.message || e}`); }
       finally { inFlight = false; }
-    }, 10000);
+    }, periodicStatusTickMs);
     if (interval.unref) interval.unref();
     return interval;
   }
@@ -1220,6 +1410,7 @@ export function registerPidash(
       lastGitStatus = null;
       lastWorktreeSummary = { worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false };
       lastWorktreeDirtyScanAt = 0;
+      lastStatusPollAt = 0;
       const switchEpoch = sessionEpoch;
       client.send({
         type: "session_switch",

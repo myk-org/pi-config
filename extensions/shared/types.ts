@@ -34,6 +34,8 @@ export interface SessionInfo {
   comsName?: string;
   comsPurpose?: string;
   comsProject?: string;
+  /** True when the session is a supervised headless COMS RPC peer (localhost-only watch/control). */
+  supervisedPeer?: boolean;
   /** Exact authoritative Trail savings for this parent Pi session. */
   trailTokenSavings?: number;
   /** Linked (non-main) worktree count for this session's repository. */
