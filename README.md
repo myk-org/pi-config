@@ -2,7 +2,7 @@
 
 A [pi package](https://github.com/badlogic/pi-mono) that implements an **orchestrator pattern** — the main agent delegates all work to specialist subagents.
 
-📚 **[Full Documentation](https://myk-org.github.io/pi-config/)**
+📚 **[Full Documentation](https://myk-org.github.io/pi-config/)** · **[Features Overview](docs/features.md)**
 
 ## Deploy reload confirmation
 
