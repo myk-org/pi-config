@@ -366,6 +366,8 @@ export interface ComsInboundDetails {
 	sender_session?: string;
 	sender_cwd?: string;
 	origin?: PromptOrigin;
+	/** Structured origin of the first bundled message when a FIFO bundle has mixed origins. */
+	summaryOrigin?: PromptOrigin;
 	response_schema?: unknown;
 	inject_attempt?: number;
 	bundled_msg_ids?: string[];

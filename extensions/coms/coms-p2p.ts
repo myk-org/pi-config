@@ -1010,7 +1010,7 @@ const BUNDLE_SEPARATOR_LINE_RE = /^---\s*Message\s+\d+\s+of\s+\d+(?:\s+\[[^\]]*\
 export function extractComsInboundSummaryLine(opts: {
 	prompt: string;
 	origin?: PromptOrigin;
-	bundled?: { content: string; ids: string[] };
+	bundled?: { content: string; ids: string[]; firstOrigin?: PromptOrigin };
 	fallbackContent?: string;
 }): string {
 	if (opts.bundled) {
@@ -1019,10 +1019,12 @@ export function extractComsInboundSummaryLine(opts: {
 			.replace(/^\[from [^\]]+\]\s*/gm, "");
 		const firstLine = extractSummaryLine(cleanedBundle);
 		const count = opts.bundled.ids.length;
+		const isMixedUserFirst = opts.bundled.firstOrigin === "user" && opts.origin !== "user";
 		if (count > 1) {
-			return firstLine ? `(${count} msgs) ${firstLine}` : `(${count} msgs)`;
+			const badge = isMixedUserFirst ? `(${count} msgs, USER)` : `(${count} msgs)`;
+			return firstLine ? `${badge} ${firstLine}` : badge;
 		}
-		return firstLine;
+		return isMixedUserFirst && firstLine ? `(USER) ${firstLine}` : firstLine;
 	}
 	const safePrompt = opts.origin === "user" ? opts.prompt : stripOriginMarker(opts.prompt);
 	const fromPrompt = extractSummaryLine(safePrompt);
@@ -1050,6 +1052,8 @@ export function renderComsInboundMessage(
 		return createExpandedCustomBox(header, body, options.outputPad, theme);
 	}
 	const isUser = details?.origin === "user";
+	const summaryIsUser = isUser || details?.summaryOrigin === "user";
+	const isMixedUserFirst = !isUser && details?.summaryOrigin === "user";
 	const strippedBody = body
 		.replace(/^\[from [^\]]+\]\s*/, "")
 		.replace(/^\[BUNDLED:[^\]]*\]\s*/m, "")
@@ -1057,11 +1061,14 @@ export function renderComsInboundMessage(
 		.replace(/^\[from [^\]]+\]\s*/gm, "")
 		.replace(/\n\nReply to me via coms_send\([^)]*\)/g, "");
 	let summaryLine = typeof details?.summaryLine === "string" && details.summaryLine.trim().length > 0
-		? extractSummaryLine(isUser ? details.summaryLine : stripOriginMarker(details.summaryLine))
-		: extractSummaryLine(isUser ? strippedBody : stripOriginMarker(strippedBody));
+		? extractSummaryLine(summaryIsUser ? details.summaryLine : stripOriginMarker(details.summaryLine))
+		: extractSummaryLine(summaryIsUser ? strippedBody : stripOriginMarker(strippedBody));
 	const bundledCount = Array.isArray(details?.bundled_msg_ids) ? details.bundled_msg_ids.length : 0;
-	if (bundledCount > 1 && !summaryLine.startsWith(`(${bundledCount} msgs)`)) {
-		summaryLine = summaryLine ? `(${bundledCount} msgs) ${summaryLine}` : `(${bundledCount} msgs)`;
+	if (bundledCount > 1 && !summaryLine.startsWith(`(${bundledCount} msgs`)) {
+		const badge = isMixedUserFirst ? `(${bundledCount} msgs, USER)` : `(${bundledCount} msgs)`;
+		summaryLine = summaryLine ? `${badge} ${summaryLine}` : badge;
+	} else if (bundledCount <= 1 && isMixedUserFirst && !summaryLine.startsWith("(USER)")) {
+		summaryLine = summaryLine ? `(USER) ${summaryLine}` : "(USER)";
 	}
 	const tags: string[] = [];
 	if (isUser) tags.push(theme.fg("warning", "USER"));
@@ -1633,7 +1640,7 @@ export function createComsPeerRuntime(
 		const summaryLine = extractComsInboundSummaryLine({
 			prompt: ib.prompt,
 			origin,
-			bundled: opts.bundled ? { content: opts.bundled.content, ids: opts.bundled.ids } : undefined,
+			bundled: opts.bundled ? { content: opts.bundled.content, ids: opts.bundled.ids, firstOrigin: ib.origin } : undefined,
 			fallbackContent: content,
 		});
 		const attempt = opts.bundled?.attempt ?? (ib.injectAttempt ?? 0);
@@ -1651,6 +1658,7 @@ export function createComsPeerRuntime(
 					sender_session: ib.sender_session,
 					sender_cwd: ib.sender_cwd,
 					...(origin ? { origin } : {}),
+					...(opts.bundled && ib.origin ? { summaryOrigin: ib.origin } : {}),
 					response_schema: ib.response_schema ?? null,
 					summaryLine,
 					...(attempt > 0 ? { inject_attempt: attempt } : {}),
