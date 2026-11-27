@@ -261,11 +261,61 @@ describe("TasksPanel (#1481)", () => {
 
     const last = view.sent.at(-1);
     assert.equal(last?.command, "task-op");
-    assert.deepEqual(last?.extra, {
+    assert.equal(last?.extra?.op, "complete");
+    assert.equal(last?.extra?.taskId, "1");
+    assert.equal(last?.extra?.completionNote, "Signed off after green smoke run");
+    assert.equal(typeof last?.extra?.requestId, "string");
+    // No premature success toast before backend confirms
+    assert.equal(view.notices.some((n) => n.msg === "Task completed"), false);
+
+    await view.emit({
+      type: "task-op-result",
       op: "complete",
       taskId: "1",
-      completionNote: "Signed off after green smoke run",
+      requestId: last?.extra?.requestId,
+      ok: true,
     });
+    assert.equal(view.notices.some((n) => n.msg === "Task completed"), true);
+  });
+
+  it("reports error toast when user task completion is rejected by backend", async () => {
+    const view = await mountPanel(TasksPanel);
+    await view.emit({ type: "tasks-list", tasks: [sampleTasks()[0]] });
+    const doneBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "Done");
+    await clickEl(doneBtn);
+
+    const confirmBtn = elements(view.container, "button").find(
+      (b) => b.textContent.trim() === "Confirm Done",
+    );
+    await clickEl(confirmBtn);
+    const reqId = view.sent.at(-1)?.extra?.requestId;
+
+    await view.emit({
+      type: "task-op-result",
+      op: "complete",
+      taskId: "1",
+      requestId: reqId,
+      ok: false,
+      error: "Task already completed",
+    });
+
+    assert.equal(view.notices.some((n) => n.msg === "Task completed"), false);
+    assert.equal(view.notices.some((n) => n.level === "error" && n.msg.includes("Task already completed")), true);
+  });
+
+  it("expands blocking task when blockedBy link button is clicked", async () => {
+    const view = await mountPanel(TasksPanel);
+    await view.emit({ type: "tasks-list", tasks: sampleTasks() });
+
+    const toggle1 = elements(view.container, "button").find((b) =>
+      b.textContent.includes("Approve production deploy"),
+    );
+    await clickEl(toggle1);
+    assert.ok(!view.container.textContent.includes("Apply schema v12 safely"));
+
+    const blockerBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "#2");
+    await clickEl(blockerBtn);
+    assert.ok(view.container.textContent.includes("Apply schema v12 safely"));
   });
 
   it("creates user-assigned task when Me [you] assignee is toggled in + New", async () => {
@@ -423,6 +473,23 @@ describe("MemoryPanel (#1481)", () => {
     const afterCount = view.sent.filter((s) => s.command === "memory-status").length;
     assert.equal(afterCount, beforeCount + 1);
   });
+
+  it("dispatches memory-dream when Dream button is clicked", async () => {
+    const view = await mountPanel(MemoryPanel);
+    await view.emit({ type: "memory-status", usagePct: 10, topics: [], report: "ok" });
+    const dreamBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "Dream");
+    await clickEl(dreamBtn);
+    const dreamCmd = view.sent.find((s) => s.command === "memory-dream");
+    assert.ok(dreamCmd);
+
+    await view.emit({
+      type: "memory-dream-result",
+      requestId: dreamCmd?.extra?.requestId,
+      ok: true,
+      message: "Started background memory consolidation (job d1).",
+    });
+    assert.ok(view.notices.some((n) => n.msg.includes("job d1")));
+  });
 });
 
 describe("ComsPanel (#1481)", () => {
@@ -534,6 +601,66 @@ describe("ComsPanel (#1481)", () => {
     assert.equal(copied.length, 1);
     assert.ok(copied[0].includes("From: feature-manager"));
     assert.ok(copied[0].includes("Run full DoD verification"));
+  });
+
+  it("keeps Inbound Queue collapsed after user collapses it on subsequent queue events", async () => {
+    const view = await mountPanel(ComsPanel);
+    const item = {
+      id: "msg-keep-closed",
+      msg_id: "msg-keep-closed",
+      sender_name: "peer-a",
+      prompt: "Heartbeat test prompt",
+      status: "processing",
+    };
+    await view.emit({ type: "coms-queue", active: true, items: [item] });
+    assert.ok(view.container.textContent.includes("peer-a"));
+
+    const queueHeader = elements(view.container, "button").find((b) =>
+      b.textContent.includes("Inbound Queue (1)"),
+    );
+    await clickEl(queueHeader);
+    assert.ok(!view.container.textContent.includes("peer-a"));
+
+    // Subsequent heartbeat must not force the collapsed queue back open
+    await view.emit({ type: "coms-queue", active: true, items: [item] });
+    assert.ok(!view.container.textContent.includes("peer-a"));
+  });
+
+  it("preserves tab-local project scope when coms-peers payload includes allPeers", async () => {
+    const view = await mountPanel(ComsPanel);
+    await view.emit({
+      type: "coms-peers",
+      scope: "all",
+      ownProject: "proj-a",
+      self: { name: "me", project: "proj-a" },
+      peers: [
+        { name: "local-peer", project: "proj-a", busy: false, queueDepth: 0, contextUsedPct: 10 },
+        { name: "remote-peer", project: "proj-b", busy: false, queueDepth: 0, contextUsedPct: 20 },
+      ],
+      allPeers: [
+        { name: "local-peer", project: "proj-a", busy: false, queueDepth: 0, contextUsedPct: 10 },
+        { name: "remote-peer", project: "proj-b", busy: false, queueDepth: 0, contextUsedPct: 20 },
+      ],
+    });
+    // Tab stays on "This project" even if another tab requested scope "all"
+    assert.ok(view.container.textContent.includes("local-peer"));
+    assert.ok(!view.container.textContent.includes("remote-peer"));
+  });
+
+  it("omits the redundant send-message composer from peer cards", async () => {
+    const view = await mountPanel(ComsPanel);
+    await view.emit({
+      type: "coms-peers",
+      self: { name: "feature-manager", project: "pi-config" },
+      peers: [
+        { name: "peer-1481", project: "pi-config", purpose: "parity", model: "gemini-4-neon", busy: false, queueDepth: 0, contextUsedPct: 12, supervised: true },
+      ],
+    });
+    assert.equal(elements(view.container, "textarea").length, 0);
+    assert.equal(
+      elements(view.container, "button").some((b) => b.textContent.trim() === "Send"),
+      false,
+    );
   });
 });
 

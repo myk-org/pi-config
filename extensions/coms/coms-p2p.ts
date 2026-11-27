@@ -1698,6 +1698,7 @@ export function createComsPeerRuntime(
 			currentInbound = null;
 			inboundDelivered = false;
 			setProcessingInbound(false);
+			emitComsQueue();
 			return;
 		}
 		const failOrphanPending = async (orphans: InboundContext[]): Promise<boolean> => {
@@ -1733,6 +1734,7 @@ export function createComsPeerRuntime(
 				injectInbound(next, { streaming: opts.streaming, ctx: opts.ctx });
 				writeLiveRegistry();
 				maybeRefreshWidget();
+				emitComsQueue();
 			} catch (drainErr: any) {
 				if (opts.onFail === "fail_orphans") {
 					log.error("fifo_drain_failed", next.msg_id, drainErr?.message);
@@ -1741,6 +1743,7 @@ export function createComsPeerRuntime(
 				currentInbound = null;
 				inboundDelivered = false;
 				setProcessingInbound(false);
+				emitComsQueue();
 			}
 			return;
 		}
@@ -1757,6 +1760,7 @@ export function createComsPeerRuntime(
 				injectInbound(next, { streaming: opts.streaming, ctx: opts.ctx });
 				writeLiveRegistry();
 				maybeRefreshWidget();
+				emitComsQueue();
 			} catch (err: any) {
 				if (opts.onFail === "fail_orphans") {
 					log.error("fifo_drain_failed", next.msg_id, err?.message);
@@ -1770,6 +1774,7 @@ export function createComsPeerRuntime(
 				inboundDelivered = false;
 				bundledInbounds = [];
 				setProcessingInbound(false);
+				emitComsQueue();
 			}
 			return;
 		}
@@ -1786,6 +1791,7 @@ export function createComsPeerRuntime(
 			injectInbound(primary, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id), attempt: bundleAttempt }, streaming: opts.streaming, ctx: opts.ctx });
 			writeLiveRegistry();
 			maybeRefreshWidget();
+			emitComsQueue();
 		} catch (err: any) {
 			if (opts.onFail === "fail_orphans") {
 				log.error("fifo_bundle_failed", primary.msg_id, err?.message);
@@ -1801,6 +1807,7 @@ export function createComsPeerRuntime(
 			inboundDelivered = false;
 			bundledInbounds = [];
 			setProcessingInbound(false);
+			emitComsQueue();
 		}
 	}
 	/** True when the agent is running a turn NOT triggered by a coms inbound.
@@ -2061,6 +2068,7 @@ export function createComsPeerRuntime(
 		// 3. If already processing another inbound, just queue — turn_end/agent_end will drain FIFO.
 		if (processingInbound) {
 			writeLiveRegistry();
+			emitComsQueue();
 			ackOk(socket, env.msg_id);
 
 			log.debug("inbound_queued", env.msg_id, "from", env.sender_name, "depth", getPendingInboundCount());
@@ -2080,13 +2088,15 @@ export function createComsPeerRuntime(
 			const errIb = inboundQueue.get(env.msg_id);
 			if (errIb) errIb.fulfilled = true;
 			inboundQueue.delete(env.msg_id);
-			maybeRefreshWidget();
 			currentInbound = null;
 			inboundDelivered = false;
 			setProcessingInbound(false);
+			maybeRefreshWidget();
+			emitComsQueue();
 			nack(socket, env.msg_id, "internal error");
 			return;
 		}
+		emitComsQueue();
 
 		// 5. Ack + audit log
 		ackOk(socket, env.msg_id);
@@ -4368,6 +4378,7 @@ Do not respond to this message.`;
 			bundledInbounds = bundledInbounds.filter((b) => b.msg_id !== msgId);
 		}
 		maybeRefreshWidget();
+		emitComsQueue();
 		// Send error response to sender
 		if (identity) {
 			try {
@@ -5255,6 +5266,7 @@ Do not respond to this message.`;
 			}
 			currentInbound = inbound;
 			inboundDelivered = false;
+			emitComsQueue();
 			return true;
 		} catch (err: any) {
 			log.error("agent_end_undelivered_reinject_failed", inbound.msg_id, err?.message);
@@ -5276,6 +5288,7 @@ Do not respond to this message.`;
 		finalizingMsgIds.add(inbound.msg_id);
 		bundledInbounds = [];
 		maybeRefreshWidget();
+		emitComsQueue();
 		const queuedIds: string[] = [];
 		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
 		try {
@@ -5446,10 +5459,15 @@ Do not respond to this message.`;
 			));
 		} catch { /* pidash not loaded */ }
 	}
-	function emitComsQueue(): void {
+	let lastEmittedQueueKey = "";
+	function emitComsQueue(force = false): void {
 		try {
+			const items = listLocalInboundQueue();
+			const key = `${identity ? 1 : 0}|${items.map((i) => `${i.msg_id}:${i.status}`).join(",")}`;
+			if (!force && key === lastEmittedQueueKey) return;
+			lastEmittedQueueKey = key;
 			pi.events.emit("pidash:coms-queue", {
-				items: listLocalInboundQueue(),
+				items,
 				active: identity !== null,
 			});
 		} catch { /* pidash not loaded */ }
@@ -5457,7 +5475,7 @@ Do not respond to this message.`;
 	if (!options.onPeersChanged) {
 		pi.events.on("pidash:coms-peers-request", () => emitComsPeers());
 	}
-	pi.events.on("pidash:coms-queue-request", () => emitComsQueue());
+	pi.events.on("pidash:coms-queue-request", () => emitComsQueue(true));
 	pi.events.on("pidash:coms-queue-kill", async (data: unknown) => {
 		const d = data as { requestId?: string; msg_id?: string };
 		const msgId = typeof d?.msg_id === "string" ? d.msg_id.trim() : "";
@@ -5498,7 +5516,7 @@ Do not respond to this message.`;
 				error,
 			});
 		} finally {
-			emitComsQueue();
+			emitComsQueue(true);
 		}
 	});
 	pi.events.on("pidash:coms-send", async (data: unknown) => {

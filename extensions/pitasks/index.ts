@@ -578,12 +578,23 @@ export default function (pi: ExtensionAPI) {
 						const rawNote = typeof data.completionNote === "string"
 							? data.completionNote.trim().slice(0, COMPLETION_NOTE_MAX)
 							: "";
-						manualTaskOperations(currentUiCtx).completeTask(data.taskId, {
+						const ok = manualTaskOperations(currentUiCtx).completeTask(data.taskId, {
 							by: "user",
 							...(rawNote ? { note: rawNote } : {}),
 						});
-						widget.setActiveTask(data.taskId, false);
-						log.debug("pidash_task_complete", { taskId: data.taskId, hasNote: rawNote.length > 0 });
+						if (ok) widget.setActiveTask(data.taskId, false);
+						log.debug("pidash_task_complete", { taskId: data.taskId, ok, hasNote: rawNote.length > 0 });
+						try {
+							pi.events.emit("pidash:task-op-result", {
+								requestId: typeof data.requestId === "string" ? data.requestId : undefined,
+								op: "complete",
+								taskId: data.taskId,
+								ok,
+								...(ok ? {} : { error: "Task could not be completed (already completed or missing)." }),
+							});
+						} catch (e: any) {
+							log.warn("pidash_task_op_result_emit_failed", { taskId: data.taskId, error: e?.message });
+						}
 					}
 					break;
 				}

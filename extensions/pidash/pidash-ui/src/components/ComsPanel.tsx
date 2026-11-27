@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComsPeer, ComsQueueItem, SessionInfo } from "@/types";
@@ -39,13 +39,9 @@ function formatQueueItemCopyText(item: ComsQueueItem): string {
 /** #968 C / #1481 — coms peer list with scope toggle, supervised Kill, inbound queue, and Copy buttons. */
 export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }: Props) {
   const [scope, setScope] = useState<ComsScope>("project");
-  const [peers, setPeers] = useState<ComsPeer[]>([]);
+  const [rawPeers, setRawPeers] = useState<ComsPeer[]>([]);
+  const [ownProject, setOwnProject] = useState<string>("");
   const [self, setSelf] = useState<{ name?: string; purpose?: string; project?: string } | null>(null);
-  const [selected, setSelected] = useState<ComsPeer | null>(null);
-  const [prompt, setPrompt] = useState("");
-  const [steer, setSteer] = useState(false);
-  const [priority, setPriority] = useState(false);
-  const [sending, setSending] = useState(false);
   const [confirmKillKey, setConfirmKillKey] = useState<string | null>(null);
   const [killingKey, setKillingKey] = useState<string | null>(null);
   const [queueItems, setQueueItems] = useState<ComsQueueItem[]>([]);
@@ -56,9 +52,18 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
 
   const scopeRef = useRef<ComsScope>(scope);
   scopeRef.current = scope;
+  const prevQueueCountRef = useRef(0);
+  const userToggledQueueRef = useRef(false);
+
+  const peers = useMemo(() => {
+    if (scope === "all") return rawPeers;
+    const targetProject = ownProject || self?.project || "";
+    if (!targetProject) return rawPeers;
+    return rawPeers.filter((p) => !p.project || p.project === targetProject);
+  }, [rawPeers, scope, ownProject, self?.project]);
 
   useEffect(() => {
-    sendCmd("coms-peers", { scope });
+    sendCmd("coms-peers", { scope, requestId: `peers-${Date.now()}` });
     sendCmd("coms-queue");
   }, [sendCmd, scope]);
 
@@ -66,26 +71,24 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
     return onMessage((ev: any) => {
       if (ev.type === "coms-peers") {
         setRefreshing(false);
-        const nextPeers: ComsPeer[] = Array.isArray(ev.peers) ? ev.peers : [];
-        setPeers(nextPeers);
+        const hasAllPeers = Array.isArray(ev.allPeers);
+        // If a legacy/partial project-only snapshot arrives from another tab while
+        // THIS tab is in "all" scope, ignore it so this tab never loses other projects.
+        if (!hasAllPeers && scopeRef.current === "all" && ev.scope === "project") return;
+        const nextSource: ComsPeer[] = hasAllPeers
+          ? ev.allPeers
+          : Array.isArray(ev.peers)
+            ? ev.peers
+            : [];
+        const nextOwnProject =
+          typeof ev.ownProject === "string" && ev.ownProject
+            ? ev.ownProject
+            : typeof ev.self?.project === "string"
+              ? ev.self.project
+              : "";
+        setRawPeers(nextSource);
+        if (nextOwnProject) setOwnProject(nextOwnProject);
         setSelf(ev.self || null);
-        // Keep selection fresh with live state
-        setSelected((prev) =>
-          prev
-            ? nextPeers.find((p) => peerKey(p) === peerKey(prev)) ??
-              nextPeers.find((p) => p.name === prev.name) ??
-              null
-            : null,
-        );
-      }
-      if (ev.type === "coms-send-result") {
-        setSending(false);
-        if (ev.ok) {
-          notify(`Sent to ${ev.target} (${ev.msg_id?.slice(-6) ?? "?"})`);
-          setPrompt("");
-        } else {
-          notify(`Send failed: ${ev.error}`, "error");
-        }
       }
       if (ev.type === "coms-kill-result") {
         setKillingKey(null);
@@ -99,7 +102,10 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
       if (ev.type === "coms-queue") {
         const items: ComsQueueItem[] = Array.isArray(ev.items) ? ev.items : [];
         setQueueItems(items);
-        if (items.length > 0) setQueueOpen(true);
+        if (prevQueueCountRef.current === 0 && items.length > 0 && !userToggledQueueRef.current) {
+          setQueueOpen(true);
+        }
+        prevQueueCountRef.current = items.length;
       }
       if (ev.type === "coms-queue-kill-result") {
         setCancelingMsgId(null);
@@ -124,19 +130,6 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
     log.debug("coms_scope_changed", { from: scope, to: nextScope });
     setConfirmKillKey(null);
     setScope(nextScope);
-  };
-
-  const sendMsg = () => {
-    if (!selected || !prompt.trim() || sending) return;
-    setSending(true);
-    sendCmd("coms-send", {
-      target: selected.name,
-      ...(selected.project ? { project: selected.project } : {}),
-      prompt: prompt.trim(),
-      steer,
-      priority,
-      requestId: `send-${Date.now()}`,
-    });
   };
 
   const confirmKillPeer = (p: ComsPeer) => {
@@ -238,20 +231,14 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
           if (!peerSession) {
             log.debug("peer has no local session", { peer: p.name, project: peerProject ?? null });
           }
-          const isSelected = selected !== null && peerKey(selected) === key;
           const isConfirmingKill = confirmKillKey === key;
           const isKilling = killingKey === key;
           return (
             <div
               key={key}
-              className={cn(
-                "rounded-md bg-card border text-xs transition-colors min-w-0",
-                isSelected ? "border-primary" : "border-border hover:border-primary/50",
-              )}
+              className="rounded-md bg-card border border-border text-xs transition-colors min-w-0"
             >
-              {/* Two sibling controls, never nested: a role=button inside a
-                  <button> is invalid and focus/activation are inconsistent. */}
-              <button type="button" className="w-full text-left p-2 min-w-0" onClick={() => setSelected(p)}>
+              <div className="w-full text-left p-2 min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span title={p.busy ? "busy" : "idle"}>{p.busy ? "⚙" : "●"}</span>
                   <span className="font-medium text-foreground flex-1 truncate">{p.name}</span>
@@ -276,7 +263,7 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
                   )}
                   {!peerSession && <span className="opacity-60"> · no local session</span>}
                 </div>
-              </button>
+              </div>
 
               {isConfirmingKill && p.supervised && (
                 <div className="mx-2 mb-1.5 p-1.5 rounded bg-red-500/10 border border-red-500/30 flex items-center justify-between gap-2 flex-wrap">
@@ -340,45 +327,14 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
         })}
       </div>
 
-      {selected && (
-        <div className="p-2 rounded-md bg-card border border-border space-y-1.5 min-w-0">
-          <div className="text-[11px] font-medium text-foreground break-words">
-            Message → {selected.name}
-            {selected.project && scope === "all" && (
-              <span className="text-[10px] font-normal text-muted-foreground"> ({selected.project})</span>
-            )}
-          </div>
-          <textarea
-            className="w-full px-2 py-1.5 text-xs rounded bg-background border border-border outline-none focus:border-primary resize-y min-h-[60px]"
-            placeholder="Prompt to send…"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            disabled={sending}
-          />
-          <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
-            <label className="flex items-center gap-1 cursor-pointer">
-              <input type="checkbox" checked={steer} onChange={(e) => setSteer(e.target.checked)} /> steer
-            </label>
-            <label className="flex items-center gap-1 cursor-pointer">
-              <input type="checkbox" checked={priority} onChange={(e) => setPriority(e.target.checked)} /> priority
-            </label>
-            <button
-              type="button"
-              className="ml-auto px-2 py-1 text-[11px] rounded bg-primary text-primary-foreground disabled:opacity-50"
-              onClick={sendMsg}
-              disabled={!prompt.trim() || sending}
-            >
-              {sending ? "Sending…" : "Send"}
-            </button>
-          </div>
-        </div>
-      )}
-
       <div className="pt-2 border-t border-border space-y-1.5 min-w-0">
         <button
           type="button"
           aria-expanded={queueOpen}
-          onClick={() => setQueueOpen((v) => !v)}
+          onClick={() => {
+            userToggledQueueRef.current = true;
+            setQueueOpen((v) => !v);
+          }}
           className="w-full flex items-center gap-1 text-[11px] font-semibold text-foreground hover:text-primary"
         >
           {queueOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}

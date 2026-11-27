@@ -550,6 +550,7 @@ export function registerPidash(
         if (parsed.command === "coms-peers") {
           pi.events.emit("pidash:coms-peers-request", {
             scope: parsed.scope === "all" ? "all" : "project",
+            requestId: typeof parsed.requestId === "string" ? parsed.requestId : undefined,
           });
         }
         if (parsed.command === "coms-send") {
@@ -584,6 +585,12 @@ export function registerPidash(
           // browser may be watching a session in a different project than
           // this process's cwd.
           pi.events.emit("pidash:memory-status-request", { cwd: client.lastCtx?.cwd || process.cwd() });
+        }
+        if (parsed.command === "memory-dream") {
+          pi.events.emit("pidash:memory-dream-request", {
+            cwd: client.lastCtx?.cwd || process.cwd(),
+            requestId: typeof parsed.requestId === "string" ? parsed.requestId : undefined,
+          });
         }
 
         // ── #968 part F: MCP management ─────────────────────────────
@@ -1053,9 +1060,12 @@ export function registerPidash(
       client.send({ type: "cron-status", ...(data as any) });
     });
 
-    // Forward task list updates to browser (#968 A)
+    // Forward task list updates & correlated op results to browser (#968 A, #1481)
     pi.events.on("pidash:tasks-list", (data: unknown) => {
       client.send({ type: "tasks-list", ...(data as any) });
+    });
+    pi.events.on("pidash:task-op-result", (data: unknown) => {
+      client.send({ type: "task-op-result", ...(data as any) });
     });
 
     // Forward coms peer list / send / kill / queue results to browser (#968 C, #1481)
@@ -1075,9 +1085,12 @@ export function registerPidash(
       client.send({ type: "coms-queue-kill-result", ...(data as any) });
     });
 
-    // Forward memory status to browser (#968 E)
+    // Forward memory status & dream results to browser (#968 E, #1481)
     pi.events.on("pidash:memory-status", (data: unknown) => {
       client.send({ type: "memory-status", ...(data as any) });
+    });
+    pi.events.on("pidash:memory-dream-result", (data: unknown) => {
+      client.send({ type: "memory-dream-result", ...(data as any) });
     });
 
     // Forward coms peer join/leave events to browser

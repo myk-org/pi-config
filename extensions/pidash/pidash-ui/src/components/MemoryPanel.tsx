@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, RefreshCw, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@/lib/create-logger";
 import { CopyButton } from "@/components/CopyButton";
@@ -13,11 +13,13 @@ interface Props {
   notify?: (msg: string, level?: string) => void;
 }
 
-/** #968 E / #1481 — memory status: usage, topics, situation report with Refresh and Copy buttons. */
+/** #968 E / #1481 — memory status: usage, topics, situation report with Refresh, Dream, and Copy buttons. */
 export function MemoryPanel({ sendCmd, onMessage, notify }: Props) {
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [dreaming, setDreaming] = useState(false);
   const [reportOpen, setReportOpen] = useState(true);
+  const pendingDreamReqRef = useRef<string | null>(null);
 
   useEffect(() => {
     sendCmd("memory-status");
@@ -26,13 +28,33 @@ export function MemoryPanel({ sendCmd, onMessage, notify }: Props) {
         setRefreshing(false);
         setStatus(ev as MemoryStatus);
       }
+      if (ev.type === "memory-dream-result") {
+        if (pendingDreamReqRef.current && ev.requestId && ev.requestId !== pendingDreamReqRef.current) return;
+        pendingDreamReqRef.current = null;
+        setDreaming(false);
+        if (ev.ok) {
+          notify?.(ev.message || "Started background memory dreaming");
+          sendCmd("memory-status");
+        } else {
+          notify?.(ev.message || ev.error || "Memory dreaming failed", "error");
+        }
+      }
     });
-  }, [sendCmd, onMessage]);
+  }, [sendCmd, onMessage, notify]);
 
   const refresh = () => {
     setRefreshing(true);
     log.debug("memory_status_refresh");
     sendCmd("memory-status");
+  };
+
+  const triggerDream = () => {
+    if (dreaming) return;
+    const requestId = `dream-${Date.now()}`;
+    pendingDreamReqRef.current = requestId;
+    setDreaming(true);
+    log.debug("memory_dream_trigger", { requestId });
+    sendCmd("memory-dream", { requestId });
   };
 
   const topicsCopyText = useMemo(() => {
@@ -43,17 +65,29 @@ export function MemoryPanel({ sendCmd, onMessage, notify }: Props) {
   }, [status?.topics]);
 
   const header = (
-    <div className="flex items-center justify-between gap-2">
+    <div className="flex items-center justify-between gap-2 flex-wrap">
       <span className="text-xs font-semibold text-foreground">Memory</span>
-      <button
-        type="button"
-        className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded border border-border bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted"
-        onClick={refresh}
-        title="Refresh memory status"
-      >
-        <RefreshCw className={cn("h-2.5 w-2.5", refreshing && "animate-spin")} />
-        <span>Refresh</span>
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded border border-border bg-accent/40 text-foreground hover:bg-accent disabled:opacity-50"
+          onClick={triggerDream}
+          disabled={dreaming}
+          title="Run background memory consolidation (dream)"
+        >
+          <Sparkles className={cn("h-2.5 w-2.5", dreaming && "animate-pulse")} />
+          <span>{dreaming ? "Dreaming…" : "Dream"}</span>
+        </button>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded border border-border bg-muted/40 text-muted-foreground hover:text-foreground hover:bg-muted"
+          onClick={refresh}
+          title="Refresh memory status"
+        >
+          <RefreshCw className={cn("h-2.5 w-2.5", refreshing && "animate-spin")} />
+          <span>Refresh</span>
+        </button>
+      </div>
     </div>
   );
 

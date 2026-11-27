@@ -191,6 +191,20 @@ describe("pitasks pidash bridge", () => {
     assert.equal(messages[0].message.details.note, "Verified clean on staging");
   });
 
+  it("task-op complete emits correlated failure result for missing task", () => {
+    env.fire("pidash:task-op", {
+      op: "complete",
+      taskId: "999",
+      requestId: "req-missing-999",
+    });
+    const resEvent = [...env.captured.events]
+      .reverse()
+      .find((e) => e.channel === "pidash:task-op-result");
+    assert.ok(resEvent, "pidash:task-op-result emitted");
+    assert.equal((resEvent!.data as any).requestId, "req-missing-999");
+    assert.equal((resEvent!.data as any).ok, false);
+  });
+
   it("unknown op is ignored without throwing", () => {
     env.fire("pidash:task-op", { op: "explode" });
     // No new tasks-list beyond initial ops — just verify no throw

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createLogger } from "@/lib/create-logger";
@@ -10,6 +10,7 @@ const log = createLogger("TasksPanel");
 type TaskFilter = "all" | "mine" | "agent" | "open";
 
 const COMPLETION_NOTE_MAX = 200;
+let taskOpSeq = 0;
 
 interface Props {
   sendCmd: (command: string, extra?: Record<string, unknown>) => void;
@@ -62,13 +63,30 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
   const [assignee, setAssignee] = useState<"llm" | "user">("llm");
   const [completingTaskId, setCompletingTaskId] = useState<string | null>(null);
   const [completionNote, setCompletionNote] = useState("");
+  const [submittingCompleteId, setSubmittingCompleteId] = useState<string | null>(null);
+  const pendingCompleteRef = useRef<{ requestId: string; taskId: string } | null>(null);
 
   useEffect(() => {
     sendCmd("tasks-list");
     return onMessage((ev: any) => {
       if (ev.type === "tasks-list" && Array.isArray(ev.tasks)) setTasks(ev.tasks);
+      if (ev.type === "task-op-result" && ev.op === "complete") {
+        const pending = pendingCompleteRef.current;
+        if (!pending) return;
+        if (ev.requestId && ev.requestId !== pending.requestId) return;
+        if (!ev.requestId && ev.taskId !== pending.taskId) return;
+        pendingCompleteRef.current = null;
+        setSubmittingCompleteId(null);
+        if (ev.ok) {
+          setCompletingTaskId(null);
+          setCompletionNote("");
+          notify("Task completed");
+        } else {
+          notify(ev.error || "Task could not be completed", "error");
+        }
+      }
     });
-  }, [sendCmd, onMessage]);
+  }, [sendCmd, onMessage, notify]);
 
   const op = (opName: string, extra?: Record<string, unknown>) => sendCmd("task-op", { op: opName, ...extra });
 
@@ -93,16 +111,39 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
     });
   };
 
+  const openBlockedByTask = (targetId: string) => {
+    if (!visibleTasks.some((t) => t.id === targetId) && tasks.some((t) => t.id === targetId)) {
+      setFilter("all");
+    }
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      next.add(targetId);
+      return next;
+    });
+    log.debug("blocked_by_task_opened", { targetId });
+    const scrollToTarget = () => {
+      try {
+        if (typeof document === "undefined" || typeof document.querySelector !== "function") return;
+        const el = document.querySelector(`[data-task-id="${CSS?.escape ? CSS.escape(targetId) : targetId.replace(/"/g, '\\"')}"]`);
+        (el as HTMLElement | null)?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+      } catch { /* ignore scroll errors */ }
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(scrollToTarget);
+    else scrollToTarget();
+  };
+
   const submitUserComplete = (taskId: string) => {
+    if (submittingCompleteId === taskId) return;
     const trimmed = completionNote.trim().slice(0, COMPLETION_NOTE_MAX);
+    const requestId = `task-complete-${Date.now()}-${++taskOpSeq}`;
+    pendingCompleteRef.current = { requestId, taskId };
+    setSubmittingCompleteId(taskId);
     op("complete", {
       taskId,
+      requestId,
       ...(trimmed ? { completionNote: trimmed } : {}),
     });
-    log.debug("user_task_complete_dispatched", { taskId, hasNote: trimmed.length > 0 });
-    setCompletingTaskId(null);
-    setCompletionNote("");
-    notify("Task completed");
+    log.debug("user_task_complete_dispatched", { taskId, requestId, hasNote: trimmed.length > 0 });
   };
 
   const sortedTasks = useMemo(() => sortTasksForDisplay(tasks), [tasks]);
@@ -366,12 +407,15 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
                     <div className="flex items-center gap-1 flex-wrap">
                       <span className="text-[10px] font-medium text-muted-foreground">Blocked by:</span>
                       {blockedBy.map((bid) => (
-                        <span
+                        <button
                           key={bid}
-                          className="px-1.5 py-0.5 text-[10px] rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30"
+                          type="button"
+                          onClick={() => openBlockedByTask(bid)}
+                          title={`Open blocking task #${bid}`}
+                          className="px-1.5 py-0.5 text-[10px] rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 underline-offset-2 hover:underline cursor-pointer"
                         >
                           #{bid}
-                        </span>
+                        </button>
                       ))}
                     </div>
                   )}
@@ -399,10 +443,11 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
                     maxLength={COMPLETION_NOTE_MAX}
                     value={completionNote}
                     onChange={(e) => setCompletionNote(e.target.value)}
+                    disabled={submittingCompleteId === t.id}
                     autoFocus
                     onKeyDown={(e) => {
                       if (e.key === "Enter") submitUserComplete(t.id);
-                      if (e.key === "Escape") {
+                      if (e.key === "Escape" && submittingCompleteId !== t.id) {
                         setCompletingTaskId(null);
                         setCompletionNote("");
                       }
@@ -411,7 +456,8 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
                   <div className="flex gap-1 justify-end">
                     <button
                       type="button"
-                      className="px-1.5 py-0.5 text-[10px] rounded bg-muted/60 hover:bg-muted"
+                      disabled={submittingCompleteId === t.id}
+                      className="px-1.5 py-0.5 text-[10px] rounded bg-muted/60 hover:bg-muted disabled:opacity-50"
                       onClick={() => {
                         setCompletingTaskId(null);
                         setCompletionNote("");
@@ -421,10 +467,11 @@ export function TasksPanel({ sendCmd, onMessage, notify }: Props) {
                     </button>
                     <button
                       type="button"
-                      className="px-2 py-0.5 text-[10px] rounded bg-green-600 text-white hover:bg-green-700"
+                      disabled={submittingCompleteId === t.id}
+                      className="px-2 py-0.5 text-[10px] rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
                       onClick={() => submitUserComplete(t.id)}
                     >
-                      Confirm Done
+                      {submittingCompleteId === t.id ? "Completing…" : "Confirm Done"}
                     </button>
                   </div>
                 </div>
