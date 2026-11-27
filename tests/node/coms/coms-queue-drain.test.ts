@@ -353,12 +353,13 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 		assert.equal((await peerB.tools.get("coms_get").execute("g2", { msg_id: m2 })).details.response, "reply-2");
 		assert.ok(receiver.messages.some((m) => m?.details?.msg_id === m3), "m3 drained and injected at turn_end");
 
-		// Now Pi delivers m3 and completes it at turn_end -> replies to peer-c and clears busy.
+		// Now Pi delivers m3 and completes it at turn_end -> replies to peer-c and drains FIFO to 0.
+		// Because agent_end never fired, the agent run is still active so busy stays true (#1466).
 		await deliverInbound(receiver, m3);
 		await emitTurnEnd(receiver, { text: "reply-3", stopReason: "stop", toolResults: [] });
 		await waitUntil(async () => (await peerC.tools.get("coms_get").execute("g3-wait", { msg_id: m3 })).details.status === "complete");
 		assert.equal((await peerC.tools.get("coms_get").execute("g3", { msg_id: m3 })).details.response, "reply-3");
-		assert.equal(readRegistry(receiver).busy, false, "busy cleared at turn_end once FIFO empties");
+		assert.equal(readRegistry(receiver).busy, true, "busy stays true while agent run remains active before agent_end (#1466)");
 		assert.equal(readRegistry(receiver).queue_depth, 0);
 	});
 
@@ -519,6 +520,7 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 		await emitTurnEnd(receiver, { text: "reply B", stopReason: "stop", toolResults: [] });
 		await waitUntil(async () => (await peerB.tools.get("coms_get").execute("g2-wait", { msg_id: m2 })).details.status === "complete");
 		assert.equal((await peerB.tools.get("coms_get").execute("g2-done", { msg_id: m2 })).details.response, "reply B");
+		await receiver.handlers.get("agent_end")!({ messages: [] }, receiver.ctx);
 		assert.equal(readRegistry(receiver).busy, false);
 	});
 
@@ -625,6 +627,7 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 
 		await waitUntil(async () => (await sender.tools.get("coms_get").execute("g-wait", { msg_id: msgId })).details.status === "complete");
 		assert.equal((await sender.tools.get("coms_get").execute("g-done", { msg_id: msgId })).details.response, "post-steer answer: 42");
+		await receiver.handlers.get("agent_end")!({ messages: [] }, receiver.ctx);
 		assert.equal(readRegistry(receiver).busy, false);
 	});
 
@@ -669,6 +672,7 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 		const gb2 = await peerB.tools.get("coms_get").execute("gb2-done", { msg_id: b2 });
 		assert.equal(gb2.details.error, "bundled");
 		assert.equal(gb2.details.response, null);
+		await receiver.handlers.get("agent_end")!({ messages: [] }, receiver.ctx);
 		assert.equal(readRegistry(receiver).busy, false);
 	});
 
@@ -950,6 +954,7 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 		assert.equal(g2.details.error, null);
 		assert.equal(g2.details.response, "OVERRIDE-P3-OK");
 		assert.equal(g3.details.error, "bundled");
+		await receiver.handlers.get("agent_end")!({ messages: [] }, receiver.ctx);
 		assert.equal(readRegistry(receiver).busy, false);
 		assert.equal(readRegistry(receiver).queue_depth, 0);
 	});
@@ -989,6 +994,7 @@ describe("COMS inbound FIFO queue drain & followUp starvation (#1226)", () => {
 		assert.equal(deliveredDuringSend, true);
 
 		await emitTurnEnd(receiver, { text: "direct-turn-text", stopReason: "stop", toolResults: [] });
+		await receiver.handlers.get("agent_end")!({ messages: [] }, receiver.ctx);
 		assert.equal(readRegistry(receiver).busy, false);
 
 		// A fresh unrelated m3 receives only its own reply without stale earlier text.

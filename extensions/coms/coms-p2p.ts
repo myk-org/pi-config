@@ -259,7 +259,7 @@ interface AgentCard {
 	color: string;
 	context_used_pct: number;
 	queue_depth: number;
-	/** #924 §3: receiver is currently processing a peer inbound. */
+	/** #924 §3, #1466: receiver is currently processing a peer inbound or executing an active agent turn. */
 	busy: boolean;
 	tasks_summary?: { total: number; completed: number; in_progress: number } | null;
 	/** #1083: the peer's own active workload. Absent = not reported = `unknown` (never 0). */
@@ -1113,6 +1113,10 @@ export function createComsPeerRuntime(
 		| null = null;
 	/** True while an agent run is active (agent_start -> agent_end) (#1226). */
 	let agentRunning = false;
+	/** True only during the pre-run window between before_agent_start and agent_start/agent_end/agent_settled (#1466). */
+	let beforeAgentStartPending = false;
+	/** Last peer-visible busy value published to registry/card (#1466). */
+	let lastReportedBusy = false;
 	let bundledInbounds: InboundContext[] = [];
 	let processingInbound = false;
 	/** Set when the active inbound is killed mid-turn so agent_end drains queued follow-ups (#1384). */
@@ -1209,6 +1213,44 @@ export function createComsPeerRuntime(
 		writeLiveRegistry();
 	}
 
+	/** True while Pi is executing an agent turn. Prefers live ctx.isIdle() when available so a
+	 *  missed agent_end/agent_settled or failed before_agent_start self-heals; falls back to
+	 *  lifecycle flags (agentRunning || beforeAgentStartPending) when ctx.isIdle is unavailable (#1466). */
+	function isAgentBusy(ctx?: ExtensionContext | null): boolean {
+		const activeCtx = typeof ctx?.isIdle === "function" ? ctx : currentCtx;
+		if (activeCtx && isLiveExtensionCtx(activeCtx) && typeof activeCtx.isIdle === "function") {
+			try {
+				const idle = activeCtx.isIdle();
+				if (typeof idle === "boolean") return !idle;
+			} catch {
+				// Fall through to lifecycle flags if ctx.isIdle() throws.
+			}
+		}
+		return agentRunning || beforeAgentStartPending;
+	}
+
+	/** Refresh the live registry + ping card whenever peer-visible busy transitions (or forced) (#1466). */
+	function syncBusyState(
+		ctx?: ExtensionContext | null,
+		opts?: { force?: boolean; syncRegistry?: boolean; reason?: string },
+	): void {
+		const busyNow = processingInbound || isAgentBusy(ctx);
+		const busyChanged = busyNow !== lastReportedBusy;
+		if (busyChanged) {
+			log.debug("agent_busy_transition", {
+				busy: busyNow,
+				agentRunning,
+				beforeAgentStartPending,
+				processingInbound,
+				...(opts?.reason ? { reason: opts.reason } : {}),
+			});
+		}
+		if (opts?.syncRegistry === false) return;
+		if (identity && !shuttingDown && (opts?.force || busyChanged)) {
+			writeLiveRegistry(ctx);
+		}
+	}
+
 	/** #1083: this peer's own active workload — agents from the orchestrator bridge, tasks from
 	 *  the published task store, crons from the orchestrator (session crons exist ONLY there).
 	 *  Null when any source is absent: a partial count would be a guess, and the viewer must show
@@ -1287,7 +1329,7 @@ export function createComsPeerRuntime(
 
 	/** Write a live registry entry snapshot (shared by the keepalive timer and
 	 *  busy transitions). Fail-soft. */
-	function writeLiveRegistry(): void {
+	function writeLiveRegistry(busyCtx?: ExtensionContext | null): void {
 		if (!identity || shuttingDown) return;
 		try {
 			const ctx = currentCtx;
@@ -1296,6 +1338,7 @@ export function createComsPeerRuntime(
 			identity.pi_session_id = piSessionId;
 			identity.task_store_path = taskStorePath;
 			const workload = ownWorkload();
+			const busy = processingInbound || isAgentBusy(busyCtx ?? ctx);
 			const live: RegistryEntry = {
 				coms_session_id: identity.coms_session_id,
 				name: identity.name,
@@ -1310,7 +1353,7 @@ export function createComsPeerRuntime(
 				version: 1,
 				context_used_pct: Math.round(ctx?.getContextUsage?.()?.percent ?? 0),
 				queue_depth: getPendingInboundCount(),
-				busy: processingInbound,
+				busy,
 				heartbeat_at: nowIso(),
 				pi_session_id: piSessionId,
 				task_store_path: taskStorePath,
@@ -1322,7 +1365,8 @@ export function createComsPeerRuntime(
 				workload: workload?.counts ?? null,
 			};
 			registry.writeEntryAtomic(live, identity.project);
-			void updatePingWorkerCard({ workloadCounts: workload?.counts ?? null, tasksSummary: workload?.tasksSummary });
+			lastReportedBusy = busy;
+			void updatePingWorkerCard({ workloadCounts: workload?.counts ?? null, tasksSummary: workload?.tasksSummary, busy });
 		} catch (err) {
 			log.warn("live_registry_write_failed", err instanceof Error ? err.message : String(err));
 		}
@@ -1903,7 +1947,7 @@ export function createComsPeerRuntime(
 		ackOk(socket, env.msg_id);
 	}
 
-	async function buildAgentCard(snapshot?: { workloadCounts?: PeerWorkloadCounts | null; tasksSummary?: TasksSummary | null }): Promise<AgentCard> {
+	async function buildAgentCard(snapshot?: { workloadCounts?: PeerWorkloadCounts | null; tasksSummary?: TasksSummary | null; busy?: boolean }): Promise<AgentCard> {
 		const ctx = isLiveExtensionCtx(currentCtx) ? currentCtx : null;
 		const ident = identity;
 		const pct = ctx ? Math.round(ctx.getContextUsage?.()?.percent ?? 0) : 0;
@@ -1922,14 +1966,14 @@ export function createComsPeerRuntime(
 			color: ident?.color ?? "#36F9F6",
 			context_used_pct: pct,
 			queue_depth: getPendingInboundCount(),
-			busy: processingInbound,
+			busy: snapshot?.busy ?? (processingInbound || isAgentBusy(ctx)),
 			tasks_summary: tasksSummary,
 			workload: workloadCounts,
 		};
 	}
 
 	/** Push current agent card to ping worker so it can respond independently */
-	async function updatePingWorkerCard(snapshot?: { workloadCounts?: PeerWorkloadCounts | null; tasksSummary?: TasksSummary | null; card?: AgentCard }): Promise<void> {
+	async function updatePingWorkerCard(snapshot?: { workloadCounts?: PeerWorkloadCounts | null; tasksSummary?: TasksSummary | null; busy?: boolean; card?: AgentCard }): Promise<void> {
 		log.debug("update_ping_worker_card", { ready: pingWorkerReady });
 		if (!pingWorker || !pingWorkerReady) return;
 		try {
@@ -2446,6 +2490,8 @@ export function createComsPeerRuntime(
 		shuttingDown = false;
 		finalizingInbound = false;
 		agentRunning = false;
+		beforeAgentStartPending = false;
+		lastReportedBusy = false;
 		peerCards.clear();
 		welcomeShown = false;
 		knownPeerSessions.clear();
@@ -2848,6 +2894,15 @@ Do not respond to this message.`;
 					} catch (err) {
 						log.error("self_heal_socket_failed", identity.coms_session_id, err instanceof Error ? err.message : String(err));
 					}
+				}
+				if ((agentRunning || beforeAgentStartPending) && currentCtx && isLiveExtensionCtx(currentCtx) && typeof currentCtx.isIdle === "function") {
+					try {
+						if (currentCtx.isIdle() === true) {
+							log.debug("agent_busy_self_healed", { agentRunning, beforeAgentStartPending });
+							agentRunning = false;
+							beforeAgentStartPending = false;
+						}
+					} catch {}
 				}
 				const missingBeforeWrite = !fs.existsSync(identity.registryFile);
 				writeLiveRegistry();
@@ -4560,10 +4615,14 @@ Do not respond to this message.`;
 
 	// Refresh currentCtx on before_agent_start so describe/workload lookups stay aligned
 	// with orchestrator and pitasks re-keying on watched-session switches (#1337).
-	// Defer writeLiveRegistry() to agent_start so orchestrator and pitasks finish
-	// republishing their bridges before the registry snapshot and pi_session_id update.
+	// On a watched-session switch, defer writeLiveRegistry() to agent_start so orchestrator and
+	// pitasks finish republishing their bridges before the registry snapshot and pi_session_id
+	// update; on same-session turns, publish busy immediately (#1466).
 	pi.on("before_agent_start" as any, (event: any, ctx?: ExtensionContext) => {
+		const sessionChanged = Boolean(ctx && identity && resolveOwnPiSessionId(ctx) !== identity.pi_session_id);
 		if (ctx) currentCtx = ctx;
+		beforeAgentStartPending = true;
+		syncBusyState(ctx, { syncRegistry: !sessionChanged, reason: "before_agent_start" });
 		const activeCtx = ctx ?? currentCtx;
 		if (!identity || !isHeadlessOrSupervisedPeer(activeCtx)) return;
 		const liveActiveCtx = isLiveExtensionCtx(activeCtx) ? activeCtx : null;
@@ -4594,15 +4653,15 @@ Do not respond to this message.`;
 	// Only mark as "user turn" if NO coms inbound is active (processingInbound false).
 	// When processingInbound is true, the agent is running a coms followUp — not a user turn.
 	pi.on("agent_start" as any, (_event: any, ctx?: ExtensionContext) => {
-		if (ctx) {
-			currentCtx = ctx;
-			if (identity && resolveOwnPiSessionId(ctx) !== identity.pi_session_id) writeLiveRegistry();
-		}
+		const sessionChanged = Boolean(ctx && identity && resolveOwnPiSessionId(ctx) !== identity.pi_session_id);
+		if (ctx) currentCtx = ctx;
 		agentRunning = true;
+		beforeAgentStartPending = false;
 		agentRunningUserTurn = !processingInbound;
 		lastTurnStopReason = null;
 		comsSendCalledThisTurn.clear();
 		userMessageDuringInbound = false;
+		syncBusyState(ctx, { force: sessionChanged, reason: "agent_start" });
 		log.debug("agent_start", "userTurn", agentRunningUserTurn, "processingInbound", processingInbound, "currentInbound", currentInbound?.msg_id ?? "null");
 	});
 
@@ -5000,6 +5059,8 @@ Do not respond to this message.`;
 	// ━━ agent_end: safety net for delivered & aborted-before-delivery inbounds ━━
 	pi.on("agent_end", async (event, ctx) => {
 		agentRunning = false;
+		beforeAgentStartPending = false;
+		syncBusyState(ctx, { reason: "agent_end" });
 		const stopReason = resolveAgentEndStopReason(event);
 		lastTurnStopReason = null;
 		log.info("agent_end_enter", "currentInbound", currentInbound?.msg_id ?? "null", "delivered", inboundDelivered, "identity", !!identity, "processingInbound", processingInbound);
@@ -5100,6 +5161,9 @@ Do not respond to this message.`;
 
 	// ━━ agent_settled: run deferred undelivered re-inject / FIFO drain once Pi is idle (#1429) ━━
 	pi.on("agent_settled" as any, async (_event: any, ctx?: ExtensionContext) => {
+		agentRunning = false;
+		beforeAgentStartPending = false;
+		syncBusyState(ctx, { reason: "agent_settled" });
 		const action = pendingSettledAction;
 		pendingSettledAction = null;
 		if (!action) return;
@@ -5471,7 +5535,12 @@ Do not respond to this message.`;
 		finalizingInbound = false;
 		processingInbound = false;
 		pendingDrainAfterKill = false;
+		if (agentRunning || beforeAgentStartPending) {
+			log.debug("agent_busy_transition", { busy: false, agentRunning: false, beforeAgentStartPending: false, processingInbound: false, reason: "shutdown" });
+		}
 		agentRunning = false;
+		beforeAgentStartPending = false;
+		lastReportedBusy = false;
 		agentRunningUserTurn = false;
 		inboundSetDuringUserTurn = false;
 		userMessageDuringInbound = false;
