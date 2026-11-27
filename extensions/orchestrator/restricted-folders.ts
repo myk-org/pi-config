@@ -141,7 +141,7 @@ export function isProtectedApprovalKeyPath(
   return lexical === stripTrailingSeparators(getApprovalHmacKeyPath(homeDir));
 }
 
-function readApprovalHmacKey(keyPath: string): Buffer | null {
+export function readApprovalHmacKey(keyPath: string): Buffer | null {
   if (!existsSync(keyPath)) return null;
   try {
     const raw = readFileSync(keyPath, "utf-8").trim();
@@ -152,7 +152,7 @@ function readApprovalHmacKey(keyPath: string): Buffer | null {
   }
 }
 
-function loadOrCreateApprovalHmacKey(keyPath: string): Buffer {
+export function loadOrCreateApprovalHmacKey(keyPath: string): Buffer {
   const existing = readApprovalHmacKey(keyPath);
   if (existing && existing.length >= 16) return existing;
   const key = randomBytes(32);

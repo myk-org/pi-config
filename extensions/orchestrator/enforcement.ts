@@ -44,6 +44,7 @@ import {
   normalizeToolPath,
 } from "./restricted-folders.js";
 import { getProjectStateDbPath } from "./state-db.js";
+import { evaluateToolPermissions, forgetToolHostApprovals } from "./tool-permissions.js";
 import { getProjectTmpDir, resolveWorktreeRoot } from "./utils.js";
 
 const log = createLogger("enforcement");
@@ -165,7 +166,20 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         }
       : null;
 
-    // Direct edit/write guards.
+    const eventToolName = isToolCallEventType("bash", event)
+      ? "bash"
+      : isToolCallEventType("write", event)
+        ? "write"
+        : isToolCallEventType("edit", event)
+          ? "edit"
+          : isToolCallEventType("read", event)
+            ? "read"
+            : (event as any).toolName || "";
+    const eventInput = ((event as any).input || {}) as Record<string, unknown>;
+    let pendingBashDecision: Awaited<ReturnType<typeof evaluateBashPolicy>> | null = null;
+    let toolPermInput: Record<string, unknown> = eventInput;
+
+    // Direct edit/write guards (hard security invariants — never weakened by tool_permissions).
     if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
       const toolUsed = isToolCallEventType("edit", event) ? "edit" : "write";
       if (process.env.PI_SUBAGENT_CHILD !== "1" && getSetting(ctx.cwd, "orchestrator_edit_write_block")) {
@@ -214,17 +228,14 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
 
       const restrictedWrite = await evaluateRestrictedFolderAccess({
         toolName: toolUsed,
-        input: (event as any).input || {},
+        input: eventInput,
         cwd: ctx.cwd,
         sessionId: sessionIdOf(ctx),
         ui,
       });
       if (restrictedWrite) return restrictedWrite;
-      return undefined;
-    }
-
-    // Restricted folder & HMAC key checks for read and search tools (read/grep/find/ls).
-    if (
+    } else if (
+      // Restricted folder & HMAC key checks for read and search tools (read/grep/find/ls).
       isToolCallEventType("read", event) ||
       isToolCallEventType("grep", event) ||
       isToolCallEventType("find", event) ||
@@ -239,79 +250,98 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
       }
       const restrictedRead = await evaluateRestrictedFolderAccess({
         toolName: event.toolName,
-        input: (event as any).input || {},
+        input: eventInput,
         cwd: ctx.cwd,
         sessionId: sessionIdOf(ctx),
         ui,
       });
       if (restrictedRead) return restrictedRead;
-      return undefined;
-    }
-
-    if (!isToolCallEventType("bash", event)) return undefined;
-
-    const decision = await evaluateBashPolicy({
-      command: event.input.command,
-      cwd: ctx.cwd,
-      hasTimeout: Boolean(event.input.timeout),
-      inContainer,
-      isSubagentChild: process.env.PI_SUBAGENT_CHILD === "1",
-      agentName: process.env.PI_AGENT_NAME,
-      ctxModelId: (ctx as any).model?.id,
-      sessionId: sessionIdOf(ctx),
-      ui,
-      trailerSelection: {
-        get: () => cachedTrailerSelection,
-        set: (value: string) => {
-          cachedTrailerSelection = value;
+    } else if (isToolCallEventType("bash", event)) {
+      const decision = await evaluateBashPolicy({
+        command: event.input.command,
+        cwd: ctx.cwd,
+        hasTimeout: Boolean(event.input.timeout),
+        inContainer,
+        isSubagentChild: process.env.PI_SUBAGENT_CHILD === "1",
+        agentName: process.env.PI_AGENT_NAME,
+        ctxModelId: (ctx as any).model?.id,
+        sessionId: sessionIdOf(ctx),
+        ui,
+        trailerSelection: {
+          get: () => cachedTrailerSelection,
+          set: (value: string) => {
+            cachedTrailerSelection = value;
+          },
         },
-      },
-      trackRepeat: (normalized) => {
-        ensureRepeatFile(ctx.cwd);
-        const rs = readRepeatState();
-        if (normalized === rs.lastCmd) {
-          rs.count++;
-          writeRepeatState(rs);
-          return rs.count;
-        }
-        writeRepeatState({ lastCmd: normalized, count: 1 });
-        return 1;
-      },
-      checkReviewLoopCommit: (gitCwd, branch) => {
-        if (!isBumpVersionBranch(branch) && getSetting(gitCwd, "review_loop_enforcement") && !isCommitAllowed(gitCwd)) {
-          const state = readReviewState(gitCwd);
-          const testInfo =
-            state.status === "clean" && !state.tests_passed
-              ? " Tests have not passed yet — run tests before committing."
-              : "";
-          const reviewAdvice =
-            state.status !== "clean" ? " Fix findings and re-run all reviewers until 0 comments." : "";
-          return {
-            block: true,
-            reason: `⛔ Review loop incomplete (status: ${state.status}, cycle ${state.cycle}, ${state.findings_count} findings, ${state.reviewers_pending.length} reviewers pending, tests_passed: ${state.tests_passed}).${testInfo}${reviewAdvice}`,
-          };
-        }
-        return undefined;
-      },
-    });
+        trackRepeat: (normalized) => {
+          ensureRepeatFile(ctx.cwd);
+          const rs = readRepeatState();
+          if (normalized === rs.lastCmd) {
+            rs.count++;
+            writeRepeatState(rs);
+            return rs.count;
+          }
+          writeRepeatState({ lastCmd: normalized, count: 1 });
+          return 1;
+        },
+        checkReviewLoopCommit: (gitCwd, branch) => {
+          if (!isBumpVersionBranch(branch) && getSetting(gitCwd, "review_loop_enforcement") && !isCommitAllowed(gitCwd)) {
+            const state = readReviewState(gitCwd);
+            const testInfo =
+              state.status === "clean" && !state.tests_passed
+                ? " Tests have not passed yet — run tests before committing."
+                : "";
+            const reviewAdvice =
+              state.status !== "clean" ? " Fix findings and re-run all reviewers until 0 comments." : "";
+            return {
+              block: true,
+              reason: `⛔ Review loop incomplete (status: ${state.status}, cycle ${state.cycle}, ${state.findings_count} findings, ${state.reviewers_pending.length} reviewers pending, tests_passed: ${state.tests_passed}).${testInfo}${reviewAdvice}`,
+            };
+          }
+          return undefined;
+        },
+      });
 
-    if (decision.action === "block") {
-      return { block: true, reason: decision.reason };
+      if (decision.action === "block") {
+        return { block: true, reason: decision.reason };
+      }
+      const effectiveCommand = decision.modifiedCommand ?? event.input.command;
+      const restrictedBash = await evaluateRestrictedFolderAccess({
+        toolName: "bash",
+        input: { ...event.input, command: effectiveCommand },
+        cwd: ctx.cwd,
+        sessionId: sessionIdOf(ctx),
+        ui,
+      });
+      if (restrictedBash) return restrictedBash;
+      pendingBashDecision = decision;
+      toolPermInput = { ...event.input, command: effectiveCommand };
     }
-    const effectiveCommand = decision.modifiedCommand ?? event.input.command;
-    const restrictedBash = await evaluateRestrictedFolderAccess({
-      toolName: "bash",
-      input: { ...event.input, command: effectiveCommand },
-      cwd: ctx.cwd,
-      sessionId: sessionIdOf(ctx),
-      ui,
-    });
-    if (restrictedBash) return restrictedBash;
-    if (decision.stripTimeout) {
-      delete event.input.timeout;
+
+    // Declarative tool_permissions & domain-scoped fetch_content approvals (#1450).
+    // Runs strictly AFTER all built-in hard security blocks so user rules can never weaken them.
+    if (eventToolName) {
+      const toolAnnotations =
+        typeof (pi as any).getAllTools === "function"
+          ? pi.getAllTools().find((t) => t.name === eventToolName)?.annotations
+          : undefined;
+      const permDecision = await evaluateToolPermissions({
+        toolName: eventToolName,
+        input: toolPermInput,
+        cwd: ctx.cwd,
+        annotations: toolAnnotations,
+        ui,
+      });
+      if (permDecision) return permDecision;
     }
-    if (decision.modifiedCommand !== undefined) {
-      event.input.command = decision.modifiedCommand;
+
+    if (pendingBashDecision && isToolCallEventType("bash", event)) {
+      if (pendingBashDecision.stripTimeout) {
+        delete event.input.timeout;
+      }
+      if (pendingBashDecision.modifiedCommand !== undefined) {
+        event.input.command = pendingBashDecision.modifiedCommand;
+      }
     }
     return undefined;
   });
@@ -531,24 +561,32 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     }
   });
 
-  // ── /forget-approvals command (issue #1416) ─────────────────────────
+  // ── /forget-approvals command (issues #1416, #1450) ─────────────────
   pi.registerCommand("forget-approvals", {
     description:
-      "Clear cached restricted-folder approvals (session and persistent SQLite grants). Optional arg: session | persistent",
+      "Clear cached restricted-folder and tool host approvals (session and persistent SQLite grants). Optional arg: session | persistent",
     handler: async (args, ctx) => {
       const raw = (args ?? "").trim().toLowerCase();
       const mode: "all" | "session" | "persistent" =
         raw === "session" || raw === "persistent" ? raw : "all";
-      const { sessionCleared, persistentCleared } = forgetApprovals(
+      const { sessionCleared, persistentCleared: folderPersistentCleared } = forgetApprovals(
         ctx.cwd,
         sessionIdOf(ctx),
         mode,
       );
+      const { persistentCleared: hostPersistentCleared } = forgetToolHostApprovals(ctx.cwd, mode);
+      const persistentCleared = folderPersistentCleared + hostPersistentCleared;
       const summary = `Cleared ${sessionCleared} session approval(s) and ${persistentCleared} persistent approval(s).`;
       if (ctx.hasUI) {
         ctx.ui.notify(summary, "info");
       } else {
-        log.info("forget_approvals_completed", { mode, sessionCleared, persistentCleared });
+        log.info("forget_approvals_completed", {
+          mode,
+          sessionCleared,
+          persistentCleared,
+          folderPersistentCleared,
+          hostPersistentCleared,
+        });
       }
     },
   });

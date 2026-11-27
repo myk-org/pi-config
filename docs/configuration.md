@@ -699,6 +699,26 @@ Run `/forget-approvals` (or `/forget-approvals session` / `/forget-approvals per
 }
 ```
 
+### `tool_permissions`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `tool_permissions` | JSON object | `{}` | none (settings file only) | Declarative last-match-wins glob permission rules (`allow` / `ask` / `deny`) per tool, Pi 1.6 tool annotation selectors, and per-host `fetch_content` rules. | When empty (`{}`), preserves 100% existing behavior. When configured, runs strictly **after** built-in hard security blocks (`restricted_folders`, `bash-policy`, settings protection, `.approval-hmac-key` / `state.db` guards) so user rules can never weaken built-in invariants. Global rules are evaluated first, then untracked project rules (last matching rule wins; `"allow"` entries in git-tracked project settings are ignored). Supports tool name globs (`*`, `?`), Pi 1.6 tool annotation selectors (`annotation:destructive`, `annotation:openWorld`, `annotation:readOnly`, `annotation:idempotent`, or short aliases `destructive` / `openWorld`), and nested host rule maps for `fetch_content` (checking every URL in `url` and `urls[]` and failing closed on malformed or non-HTTP(S) URLs). Interactive `ask` prompts for host-scoped tools offer `Allow Once`, `Always Allow <hostname>` (scoped strictly to that exact normalized hostname, never `*`, HMAC-SHA256 authenticated in `.pi/data/state.db` `tool_host_approvals`, and cleared by `/forget-approvals`), and `Deny`. Agent tools and browser settings writes are blocked from modifying `tool_permissions`. Headless/non-UI sessions fail closed on any ungranted `ask` rule. |
+
+```json
+{
+  "tool_permissions": {
+    "fetch_content": {
+      "*": "ask",
+      "github.com": "allow",
+      "*.redhat.com": "allow"
+    },
+    "mcp__*": "ask",
+    "annotation:destructive": "ask"
+  }
+}
+```
+
 ### `secret_obfuscation`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |

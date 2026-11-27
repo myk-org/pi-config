@@ -69,11 +69,15 @@ export function setSettingsLogger(logger: Partial<SettingsLogger>): void {
 export type SettingKey = keyof SettingsKeysSchema;
 export type AgentOverrideEntry = { provider?: string | null; model?: string | null };
 export type AgentOverrides = Record<string, AgentOverrideEntry>;
+export type ToolPermissionAction = "allow" | "ask" | "deny";
+export type ToolPermissionRuleValue = ToolPermissionAction | Record<string, ToolPermissionAction>;
+export type ToolPermissions = Record<string, ToolPermissionRuleValue>;
 
 type SpecialSettingValueMap = {
   commit_trailer: boolean | string;
   dangerous_command_allowlist: string[];
   restricted_folders: string[];
+  tool_permissions: ToolPermissions;
   agent_overrides: AgentOverrides;
 };
 
@@ -89,7 +93,7 @@ export type SettingValue<K extends SettingKey> =
           : unknown;
 
 export type ProjectSettings = { [K in SettingKey]?: SettingValue<K> };
-export type AnySettingValue = boolean | string | number | string[] | AgentOverrides;
+export type AnySettingValue = boolean | string | number | string[] | AgentOverrides | ToolPermissions;
 export type SettingsScope = "project" | "global";
 export type SettingSource = "P" | "G" | "E" | "D";
 
@@ -567,6 +571,69 @@ function validateAgentOverrides(
   return { ok: true, value: overrides };
 }
 
+const TOOL_PERMISSION_ACTIONS = new Set<string>(["allow", "ask", "deny"]);
+
+function isToolPermissionAction(val: unknown): val is ToolPermissionAction {
+  return typeof val === "string" && TOOL_PERMISSION_ACTIONS.has(val);
+}
+
+function validateToolPermissions(
+  key: string,
+  value: unknown,
+  mode: "strict" | "lenient",
+): ValidationResult<ToolPermissions> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {
+      ok: false,
+      error: `${key} must be an object mapping tool/glob/annotation selectors to "allow"|"ask"|"deny" or a nested host rule map`,
+    };
+  }
+  const rawEntries = Object.entries(value as Record<string, unknown>);
+  const rules: ToolPermissions = {};
+  for (const [rawSelector, rawVal] of rawEntries) {
+    const selector = rawSelector.trim();
+    if (!selector) {
+      if (mode === "strict") return { ok: false, error: `${key} contains an empty rule selector` };
+      continue;
+    }
+    if (isToolPermissionAction(rawVal)) {
+      rules[selector] = rawVal;
+      continue;
+    }
+    if (typeof rawVal === "object" && rawVal !== null && !Array.isArray(rawVal)) {
+      const nestedEntries = Object.entries(rawVal as Record<string, unknown>);
+      const nested: Record<string, ToolPermissionAction> = {};
+      for (const [rawPattern, rawAction] of nestedEntries) {
+        const pattern = rawPattern.trim();
+        if (!pattern || !isToolPermissionAction(rawAction)) {
+          if (mode === "strict") {
+            return {
+              ok: false,
+              error: `${key}.${selector}.${rawPattern} must map a non-empty pattern to "allow", "ask", or "deny"`,
+            };
+          }
+          continue;
+        }
+        nested[pattern] = rawAction;
+      }
+      if (Object.keys(nested).length > 0 || (mode === "strict" && nestedEntries.length === 0)) {
+        rules[selector] = nested;
+      }
+      continue;
+    }
+    if (mode === "strict") {
+      return {
+        ok: false,
+        error: `${key}.${selector} must be "allow", "ask", "deny", or an object mapping patterns to actions`,
+      };
+    }
+  }
+  if (mode === "lenient" && rawEntries.length > 0 && Object.keys(rules).length === 0) {
+    return { ok: false, error: `${key} has no valid permission entries` };
+  }
+  return { ok: true, value: rules };
+}
+
 /**
  * Validate and normalize a single setting value against `settings-keys.json`.
  * Used consistently across file parsing, env resolution, TUI edits, and browser edits.
@@ -668,6 +735,9 @@ export function validateSetting(
     case "agent_overrides":
       return validateAgentOverrides(key, value, mode);
 
+    case "tool_permissions":
+      return validateToolPermissions(key, value, mode);
+
     default:
       return { ok: false, error: `${key} has unsupported type ${def.type}` };
   }
@@ -738,7 +808,8 @@ export function parseSettingInput(key: string, rawValue: string): ValidationResu
       return { ok: true, value: trimmed !== "" ? [trimmed] : [] };
     }
 
-    case "agent_overrides": {
+    case "agent_overrides":
+    case "tool_permissions": {
       try {
         const parsed = JSON.parse(rawValue);
         return validateSetting(key, parsed);
@@ -1031,7 +1102,9 @@ export function resolveSetting(
       ? (Array.isArray(def.default) ? [...(def.default as string[])] : [])
       : def.type === "agent_overrides"
         ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as AgentOverrides) } : {})
-        : (def.default as AnySettingValue);
+        : def.type === "tool_permissions"
+          ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as ToolPermissions) } : {})
+          : (def.default as AnySettingValue);
   return { value: defaultVal, source: "D" };
 }
 

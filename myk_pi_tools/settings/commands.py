@@ -354,6 +354,33 @@ def _parse_agent_overrides(raw: Any) -> dict[str, Any] | None:
     return overrides if overrides else None
 
 
+_TOOL_PERMISSION_ACTIONS = frozenset({"allow", "ask", "deny"})
+
+
+def _parse_tool_permissions(raw: Any) -> dict[str, Any] | None:
+    """Parse tool_permissions rule object. Invalid → None."""
+    if not isinstance(raw, dict):
+        return None
+    if not raw:
+        return {}
+    rules: dict[str, Any] = {}
+    for selector, val in raw.items():
+        if not isinstance(selector, str) or not selector.strip():
+            continue
+        sel = selector.strip()
+        if isinstance(val, str) and val in _TOOL_PERMISSION_ACTIONS:
+            rules[sel] = val
+        elif isinstance(val, dict):
+            nested = {
+                k.strip(): v
+                for k, v in val.items()
+                if isinstance(k, str) and k.strip() and isinstance(v, str) and v in _TOOL_PERMISSION_ACTIONS
+            }
+            if nested:
+                rules[sel] = nested
+    return rules if rules else None
+
+
 def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> Any | None:
     """Validate one settings-file value from JSON type metadata. Invalid → None."""
     if key not in raw:
@@ -388,6 +415,8 @@ def _coerce_file_value(key: str, meta: dict[str, Any], raw: dict[str, Any]) -> A
         return None
     if typ == "agent_overrides":
         return _parse_agent_overrides(value)
+    if typ == "tool_permissions":
+        return _parse_tool_permissions(value)
     if typ == "string_list":
         if isinstance(value, list):
             filtered = [e for e in value if isinstance(e, str) and e]
@@ -575,7 +604,7 @@ def _resolve_env_or_default(meta: dict[str, Any]) -> SettingValue:
                 return env.strip()
         return default
 
-    if typ == "agent_overrides":
+    if typ in ("agent_overrides", "tool_permissions"):
         return default if isinstance(default, dict) else {}
 
     return default
@@ -623,7 +652,7 @@ def _resolve_key(key: str, ctx: _SettingsContext) -> SettingValue:
             if isinstance(value, int) and not isinstance(value, bool) and min_port <= value <= 65535:
                 return value
             # Invalid in merged — fall through to env/default
-        elif typ == "agent_overrides":
+        elif typ in ("agent_overrides", "tool_permissions"):
             return value if isinstance(value, dict) else {}
         elif typ == "string":
             return value if isinstance(value, str) else ""
