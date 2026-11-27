@@ -32,10 +32,10 @@ A single-page index of every capability `pi-config` adds on top of upstream Pi, 
 - **Git worktree manager (`/worktree`).** Opens a fullscreen overlay listing branches, dirty counts, open PRs, and active COMS peers per worktree with guarded removal, path copy, and metadata pruning ([Commands and Tools Reference](commands-and-tools.html)).
 - **Live status bar and desktop notifications.** Displays git status, worktree badges, clickable PR links, async, cron, dream, Trail, and review slots, and an inactivity clock, and sends `notify-send` alerts when input or attention is needed ([Configuration & Settings](configuration.html)).
 - **Collapsible TUI widgets.** Toggles the tasks and COMS widgets between expanded lists and 1-line headers via configurable shortcuts (`Alt+T`, `Alt+C`, `Alt+W`) while persisting visibility across reloads ([Configuration & Settings](configuration.html)).
-- **Display-only markdown formatting.** Renders visual badges for memory categories, review severities, task states, async job statuses, and COMS headers in the terminal without altering stored messages or model context.
-- **GitHub `#` issue and command argument autocomplete.** Suggests repository issues and PRs when typing `#` and tab-completes branches, PR numbers, agents, and tags for slash commands.
+- **Display-only markdown formatting.** Renders visual badges for memory categories, review severities, task states, async job statuses, and COMS headers in the terminal without altering stored messages or model context (implemented in `extensions/orchestrator/markdown-transformer.ts`; no separate deep-dive page).
+- **GitHub `#` issue and command argument autocomplete.** Suggests repository issues and PRs when typing `#` and tab-completes branches, PR numbers, agents, and tags for slash commands ([Creating Slash Commands](custom-slash-commands.html)).
 - **Neovim quickfix integration (`/nvim-changed-files`).** Sends branch-changed files and review findings straight to Neovim's quickfix list when Pi runs inside a Neovim terminal buffer ([Neovim Integration](neovim-integration.html)).
-- **Local file preview server.** Serves agent-generated HTML and frontend artifacts on a free localhost port through `scripts/httpd.py` for browser inspection.
+- **Local file preview server.** Serves agent-generated HTML and frontend artifacts on a free localhost port through `scripts/httpd.py` for browser inspection ([Rules and Layers](rules-and-layers.html)).
 - **Session repair and startup checks (`/repair`).** Fixes orphaned `toolCall` entries on the active session branch that break provider API requests, checks required CLI tools on startup, and shows release notes after version upgrades ([Commands and Tools Reference](commands-and-tools.html)).
 
 ## Web dashboards (`pidash` and `pidiff`)
@@ -74,7 +74,7 @@ A single-page index of every capability `pi-config` adds on top of upstream Pi, 
 - **Git conflict handoff enforcement.** Blocks `git-expert` from resolving or staging conflicted files and requires delegating merge, rebase, or cherry-pick conflicts to `conflict-resolver` ([Managing Custom Agents](managing-custom-agents.html)).
 - **Git workflow compliance guards.** Supports automatic `--signoff` (`dco`), configurable commit trailers (`commit_trailer`), worktree-only branch enforcement (`use_worktrees`), PR and issue comment signatures (`comment_signature`), and optional orchestrator edit/write blocking (`orchestrator_edit_write_block`) ([Configuration & Settings](configuration.html)).
 - **Agent-edit settings protection.** Blocks agent file tools from directly editing `pi-config-settings.json` so security settings change only through `/pi-config-settings` or approval-gated `settings_set` ([Configuration & Settings](configuration.html)).
-- **Runtime fault guards.** Forces retries when invalid tool arguments are rejected before execution (`tool-arg-guard`), retries bounded `MALFORMED_RESPONSE` provider aborts (`malformed-response-recovery`), and aborts runaway streaming repetition loops (`stream-loop-guard`).
+- **Runtime fault guards.** Forces retries when invalid tool arguments are rejected before execution (`tool-arg-guard`), retries bounded `MALFORMED_RESPONSE` provider aborts (`malformed-response-recovery`), and aborts runaway streaming repetition loops (`stream-loop-guard`) ([Async & Runtime Internals](async-internals.html)).
 
 ## Code intelligence and context efficiency
 
@@ -94,7 +94,7 @@ A single-page index of every capability `pi-config` adds on top of upstream Pi, 
 - **Post-merge PR retrospectives (`/retro` and `pr_retro_on_merge`).** Collects zero-token PR, CI, and session telemetry via `scripts/pr-retro-collect.mjs` to write a structured retrospective report under `.pi/data/retros/` ([Built-in Workflow Commands](built-in-workflows.html)).
 - **Skill self-improvement (`/adopt-skill` and `skill_adopt`).** Tracks adopted skills marked with `skill-maintenance: auto`, nudges turns to fix broken skill steps, and logs provenance to `.pi/data/skill-review.jsonl` ([Skill Self-Improvement](skill-self-improvement.html)).
 - **Built-in workflow prompt templates.** Ships 20 slash-command workflows including `/implement`, `/scout-and-plan`, `/implement-and-review`, `/issue-review`, `/release`, `/report`, `/domain-model`, `/refine-review`, `/coderabbit-rate-limit`, `/create-commit`, `/create-skill`, `/create-coms-feature-manager`, `/query-db`, and `/remember` ([Built-in Workflow Commands](built-in-workflows.html)).
-- **Bundled procedural skills.** Includes six reusable skills (`bug-report`, `conflict-resolver`, `skill-creator`, `systematic-debugging`, `test-driven-development`, and `update-agents-md`) discovered automatically by Pi.
+- **Bundled procedural skills.** Includes six reusable skills (`bug-report`, `conflict-resolver`, `skill-creator`, `systematic-debugging`, `test-driven-development`, and `update-agents-md`) discovered automatically by Pi ([Skill Self-Improvement](skill-self-improvement.html)).
 - **Diagnostic bug reporting (`/report`).** Collects a redacted runtime snapshot and recent session warnings or errors via `scripts/diagnostic-report-collect.mjs`, checks docs and duplicate GitHub issues, and asks before filing ([Built-in Workflow Commands](built-in-workflows.html)).
 
 ## Settings and rules architecture
