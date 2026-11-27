@@ -23,6 +23,7 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
 import { resolvePiAgentDir } from "../shared/pi-agent-dir.js";
@@ -958,6 +959,9 @@ export function registerSessionSearch(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "session_search",
     label: "Session Search",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.runtime,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
     description: "Search past conversation summaries by keyword; returns matching snippets at zero LLM cost.",
     parameters: Type.Object({
       query: Type.String({ description: "Keywords or phrase" }),

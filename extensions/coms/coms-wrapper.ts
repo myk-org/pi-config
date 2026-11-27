@@ -20,6 +20,7 @@ import {
 import { ComsRegistry, isRegistryRowAlive, resolveComsDir } from "./coms-registry.js";
 import { resolveBridgeSessionKey, setComsActive } from "../shared/session-bridge.js";
 import { createLogger } from "../shared/logger.js";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import { emitIfLive, isBrowserDispatch, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
     WIDGET_MODE_CHANGED_EVENT,
@@ -521,6 +522,9 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         pi.registerTool({
             name: "coms_start",
             label: "coms start",
+            exposure: "codemode",
+            namespace: TOOL_NAMESPACES.coms,
+            annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
             description: "Activate coms for THIS session (registers identity and enables coms_send/coms_list; starts no new process).",
             parameters: Type.Object({
                 cname: Type.Optional(Type.String({ description: "Peer name (default: agent-<id suffix>)" })),
@@ -543,6 +547,9 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         pi.registerTool({
             name: "coms_stop",
             label: "coms stop",
+            exposure: "codemode",
+            namespace: TOOL_NAMESPACES.coms,
+            annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
             description: "Stop coms for THIS session: stop advertising this peer and drop the coms tools.",
             defaultActive: false,
             parameters: Type.Object({}),
@@ -717,6 +724,9 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         pi.registerTool({
             name: "coms_peers",
             label: "coms peers",
+            exposure: "codemode",
+            namespace: TOOL_NAMESPACES.coms,
+            annotations: READ_ONLY_LOCAL_ANNOTATIONS,
             description: "List live peers from the registry (name, project, busy/idle, queue, context, pid). Defaults to this project; pass project:\"*\" for all. Works when coms is inactive.",
             parameters: Type.Object({
                 project: Type.Optional(Type.String({ description: "Project namespace, or \"*\" for all (default: this project)" })),
@@ -731,6 +741,9 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         pi.registerTool({
             name: "coms_peer_spawn",
             label: "coms peer spawn",
+            exposure: "codemode",
+            namespace: TOOL_NAMESPACES.coms,
+            annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
             description: "Spawn a supervised `pi --coms` peer process (registers in ~20-30s). Stop it with coms_peer_kill when done.",
             parameters: Type.Object({
                 cname: Type.String({ description: "Peer name (letters, digits, dot, dash, underscore)" }),
@@ -754,6 +767,9 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         pi.registerTool({
             name: "coms_peer_kill",
             label: "coms peer kill",
+            exposure: "codemode",
+            namespace: TOOL_NAMESPACES.coms,
+            annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
             description: "Stop a running supervised peer by name (pass project if ambiguous), or all:true for all peers in scope.",
             parameters: Type.Object({
                 name: Type.Optional(Type.String({ description: "Peer name to stop" })),

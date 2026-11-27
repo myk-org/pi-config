@@ -548,3 +548,71 @@ def test_commented_json_settings_fall_back_to_commentjson(
 
     assert get_setting("coms_max_hops", cwd=_isolated_settings) == 8
     assert "commentjson" in sys.modules
+
+
+def test_tool_permissions_parses_valid_flat_and_nested_maps(_isolated_settings: Path) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    rules = {
+        "mcp__*": "ask",
+        "fetch_content": {"*": "Deny", "github.com": "ALLOW", "*.redhat.com": "allow"},
+    }
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({"tool_permissions": rules}),
+        encoding="utf-8",
+    )
+
+    assert get_setting("tool_permissions", cwd=_isolated_settings) == {
+        "mcp__*": "ask",
+        "fetch_content": {"*": "deny", "github.com": "allow", "*.redhat.com": "allow"},
+    }
+
+
+def test_tool_permissions_invalid_actions_fail_closed_with_warning(
+    _isolated_settings: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({
+            "tool_permissions": {
+                "mcp__*": "blcok",
+                "fetch_content": {"*": "forbid", "github.com": "allow"},
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="myk_pi_tools.settings.commands"):
+        parsed = get_setting("tool_permissions", cwd=_isolated_settings)
+
+    assert parsed == {
+        "mcp__*": "deny",
+        "fetch_content": {"*": "deny", "github.com": "allow"},
+    }
+    assert any("tool_permissions_invalid_action_fail_closed" in rec.message for rec in caplog.records)
+
+
+def test_tool_permissions_non_dict_falls_back_to_empty_default(
+    _isolated_settings: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir()
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({"tool_permissions": ["not", "a", "dict"]}),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="myk_pi_tools.settings.commands"):
+        assert get_setting("tool_permissions", cwd=_isolated_settings) == {}
+    assert any("tool_permissions_invalid_type" in rec.message for rec in caplog.records)
+
+
+def test_tool_permissions_empty_dict_and_all_empty_selectors_return_default(
+    _isolated_settings: Path,
+) -> None:
+    assert settings_commands._parse_tool_permissions({}) == {}
+    assert settings_commands._parse_tool_permissions({"   ": "allow"}) is None
+    assert get_setting("tool_permissions", cwd=_isolated_settings) == {}

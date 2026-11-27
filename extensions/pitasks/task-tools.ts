@@ -6,6 +6,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger } from "../shared/logger.js";
+import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import type { TaskStore } from "./task-store.js";
 import type { TaskWidget } from "./task-widget.js";
 import { openTaskBlockers, selectTaskRows, taskAssigneeTag } from "./tasks-view.js";
@@ -56,6 +57,9 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskCreate",
 		label: "TaskCreate",
+		exposure: "codemode",
+		namespace: TOOL_NAMESPACES.tasks,
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 		description: `Create a task (starts \`pending\`) for multi-step work (3+ steps), plan mode, or user-listed items. Skip single trivial or conversational tasks. Check \`TaskList\` first to avoid duplicates; wire dependencies via \`TaskUpdate\`.
 
 - **subject** / **description**: imperative outcome title + context/acceptance criteria.
@@ -90,6 +94,9 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskList",
 		label: "TaskList",
+		exposure: "codemode",
+		namespace: TOOL_NAMESPACES.tasks,
+		annotations: READ_ONLY_LOCAL_ANNOTATIONS,
 		description: `List all tasks (id, status, assignee, subject, owner, open \`blockedBy\`) to check progress and find unblocked pending work. Prefer lowest ID first when multiple tasks are available. Use \`TaskGet\` for full descriptions and completion notes.`,
 		parameters: Type.Object({}),
 		execute() {
@@ -115,6 +122,9 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskGet",
 		label: "TaskGet",
+		exposure: "codemode",
+		namespace: TOOL_NAMESPACES.tasks,
+		annotations: READ_ONLY_LOCAL_ANNOTATIONS,
 		description: `Retrieve full task details by ID: description, status, \`blocks\`/\`blockedBy\`, timeline, metadata, plus \`completedBy\` and \`completionNote\` (read these back after an owner completion). Verify \`blockedBy\` is empty before starting work.`,
 		parameters: Type.Object({
 			taskId: Type.String({ description: "The ID of the task to retrieve" }),
@@ -155,6 +165,9 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskUpdate",
 		label: "TaskUpdate",
+		exposure: "codemode",
+		namespace: TOOL_NAMESPACES.tasks,
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		description: `Update a task (\`pending\` → \`in_progress\` → \`completed\`, or \`deleted\` to remove). Refuses starting or completing an existing or resulting \`user\`-assigned task (including reassignment combined with status); deleting still-\`pending\` obsolete \`user\`-assigned tasks (\`status: "deleted"\`, e.g., created in error or verified done externally) and reassignment alone are supported.
 
 - Returns remaining open tasks (call \`TaskList\` only when full board state is unknown); use \`TaskGet\` when full details are needed.
@@ -199,6 +212,9 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskBulkCreate",
 		label: "TaskBulkCreate",
+		exposure: "codemode",
+		namespace: TOOL_NAMESPACES.tasks,
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 		description: "Create multiple tasks at once. More efficient than calling TaskCreate multiple times. Set assignee to 'user' for steps only the owner can perform.",
 		parameters: Type.Object({
 			tasks: Type.Array(Type.Object({
@@ -222,6 +238,9 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskBulkDelete",
 		label: "TaskBulkDelete",
+		exposure: "codemode",
+		namespace: TOOL_NAMESPACES.tasks,
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		description: "Delete multiple tasks at once by ID. Deleting still-pending obsolete user-assigned tasks (e.g., created in error or verified done externally) is supported; starting or completing user-assigned tasks remains refused via TaskUpdate/TaskBulkUpdate.",
 		parameters: Type.Object({
 			taskIds: Type.Array(Type.String(), { description: "Task IDs to delete" }),
@@ -238,6 +257,9 @@ export function registerTaskTools(
 	pi.registerTool({
 		name: "TaskBulkUpdate",
 		label: "TaskBulkUpdate",
+		exposure: "codemode",
+		namespace: TOOL_NAMESPACES.tasks,
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		description: "Update multiple tasks at once and return a remaining open-task summary (call TaskList only when full board state is unknown). More efficient than calling TaskUpdate multiple times. User-assigned tasks cannot be started or completed; deleting still-pending obsolete ones (status: \"deleted\") and other updates remain supported.",
 		parameters: Type.Object({
 			updates: Type.Array(Type.Object({

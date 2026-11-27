@@ -638,6 +638,12 @@
     "default": [],
     "group": "Enforcement"
   },
+  "tool_permissions": {
+    "description": "Declarative last-match-wins glob permission rules per tool (allow/ask/deny), optional Pi 1.6 annotation selectors (destructive, openWorld), and per-host fetch_content rules (agent-edit protected)",
+    "type": "tool_permissions",
+    "default": {},
+    "group": "Enforcement"
+  },
   "secret_obfuscation": {
     "description": "Reversibly obfuscate secrets (env vars, URL passwords, credential patterns, secrets.jsonc) in provider-bound context/tool results and restore placeholders in tool_call arguments",
     "type": "bool",
@@ -763,6 +769,13 @@
     "description": "Enable per-turn magic keywords (ultrathink / chillax) in user prose to temporarily raise or lower thinking effort for one turn",
     "type": "bool",
     "env": "PI_MAGIC_KEYWORDS",
+    "default": true,
+    "group": "Session"
+  },
+  "turn_snapshots": {
+    "description": "Capture lightweight git shadow-tree snapshots before mutating turns so /undo and /redo can revert or reapply a turn without touching .git/index or gitignored files",
+    "type": "bool",
+    "env": "PI_TURN_SNAPSHOTS",
     "default": true,
     "group": "Session"
   }

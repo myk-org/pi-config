@@ -64,7 +64,12 @@ Always pass `cwd` when delegating to subagents in all modes — omitting it caus
 
 ## Runtime & Session Tools
 
-Prefer the built-in runtime tools over ad-hoc shell commands when inspecting or managing session state:
+Pi 1.6 `codemode` is auto-activated when available. Extension tools live in `codemode` namespaces (`memory`, `coms`, `tasks`, `trail`, `runtime`) —
+call them via `codemode` (`await tools.<name>({ ... })`, batchable with `Promise.allSettled`).
+Rare admin tools (`skill_adopt`, `memory_dream`, `memory_consolidate`, `review_status`) use `deferred` exposure (0 inline tokens; callable in `codemode`
+and discoverable via `searchTools` / `describeNamespace`). `ask_user` and `subagent` remain direct `model-only` tools.
+
+Prefer the built-in runtime tools (`runtime` namespace) over ad-hoc shell commands when inspecting or managing session state:
 
 | Tool | Purpose |
 | --- | --- |
@@ -76,6 +81,16 @@ Prefer the built-in runtime tools over ad-hoc shell commands when inspecting or 
 | `memory_dream` | Inspect dreaming state (`status`), run consolidation now (`run`), or toggle auto-dreaming (`auto_on`/`auto_off`) |
 
 ---
+
+{{IF:turn_snapshots}}
+
+## Per-Turn File Snapshots (`/undo`, `/redo`)
+
+Git-backed shadow-tree snapshots are captured before mutating turns (`write`/`edit`/`bash`) without touching `.git/index`, commits, stash, or gitignored files.
+Users can run `/undo` to revert the last mutating turn's working-tree changes and `/redo` to reapply it (last 20 turns per session; configure via `turn_snapshots`).
+
+---
+{{/IF}}
 
 {{IF:use_worktrees}}
 
@@ -121,7 +136,9 @@ After presenting your analysis, respect the user's decision.
 ## Web Access
 
 - Use `web_search` for research and search queries.
-- Use `fetch_content` for extracting content from URLs, YouTube, GitHub repos.
+- Use `fetch_content` for extracting content from URLs, YouTube, GitHub repos. When `tool_permissions` sets `ask`/`deny` rules for `fetch_content` (or other tools/annotations),
+  every URL in `url`/`urls[]` is checked per host; headless sessions fail closed on ungranted `ask` rules, and interactive `Always Allow <hostname>` grants stay scoped to that
+  exact host (clearable via `/forget-approvals`).
 - Use `agent-browser` CLI for interactive pages requiring clicks, forms, screenshots.
 - **NEVER** use `curl` for reading web pages or SearXNG MCP.
 

@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createLogger, type Logger } from "./logger.js";
+import { TOOL_NAMESPACES } from "./tool-namespaces.js";
 import { findJitiPath } from "./find-jiti.js";
 import { isLiveExtensionCtx } from "./live-ctx.js";
 import { buildUiDist } from "../../scripts/serve-ui.ts";
@@ -294,6 +295,9 @@ export function registerDaemonManageTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "daemon_manage",
     label: "Daemon Manage",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.runtime,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     description:
       "Inspect or control local pi-config background daemons (pidash web dashboard or pidiff diff viewer): status, start, stop, or restart (equivalent to /pidash and /pidiff).",
     parameters: Type.Object({

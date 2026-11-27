@@ -145,6 +145,18 @@ describe("browser-ops settings", () => {
     }
   });
 
+  it("tool_permissions writes are refused from the browser", () => {
+    const dir = tempProject();
+    try {
+      const res = applySetting(dir, "project", "tool_permissions", { "*": "allow" });
+      assert.equal(res.ok, false);
+      assert.match(res.error!, /managed by the terminal settings editor/);
+      assert.ok(!existsSync(join(dir, ".pi", "pi-config-settings.json")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("malformed settings file refuses to save instead of being replaced", () => {
     const dir = tempProject();
     try {
