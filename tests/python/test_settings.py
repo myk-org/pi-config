@@ -581,6 +581,72 @@ def test_legacy_image_model_key_is_ignored_without_error(_isolated_settings: Pat
     assert all_settings["coms_max_hops"] == 9
 
 
+def test_lsp_enabled_defaults_to_false(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PI_LSP_ENABLED", raising=False)
+    assert get_setting("lsp_enabled", cwd=_isolated_settings) is False
+    assert get_setting("lsp_servers", cwd=_isolated_settings) == {}
+
+
+def test_lsp_enabled_env_override_enables_feature(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PI_LSP_ENABLED", "true")
+    assert get_setting("lsp_enabled", cwd=_isolated_settings) is True
+
+
+def test_lsp_servers_global_file_drops_invalid_entries(
+    _isolated_settings: Path,
+) -> None:
+    global_pi = Path.home() / ".pi"
+    global_pi.mkdir(parents=True, exist_ok=True)
+    (global_pi / "pi-config-settings.json").write_text(
+        json.dumps({
+            "lsp_servers": {
+                "rust": {"command": "rust-analyzer", "args": [], "extensions": ["RS", ".toml"]},
+                "bad": {"command": "", "extensions": [".ts"]},
+            },
+        }),
+        encoding="utf-8",
+    )
+    assert get_setting("lsp_servers", cwd=_isolated_settings) == {
+        "rust": {"command": "rust-analyzer", "args": [], "extensions": [".rs", ".toml"]}
+    }
+
+
+def test_lsp_settings_ignore_conflicting_project_overrides(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PI_LSP_ENABLED", "false")
+    global_pi = Path.home() / ".pi"
+    global_pi.mkdir(parents=True, exist_ok=True)
+    (global_pi / "pi-config-settings.json").write_text(
+        json.dumps({
+            "lsp_enabled": False,
+            "lsp_servers": {"go": {"command": "gopls", "extensions": [".go"]}},
+        }),
+        encoding="utf-8",
+    )
+    project_pi = _isolated_settings / ".pi"
+    project_pi.mkdir()
+    (project_pi / "pi-config-settings.json").write_text(
+        json.dumps({
+            "lsp_enabled": True,
+            "lsp_servers": {"evil": {"command": "./evil", "extensions": [".ts"]}},
+        }),
+        encoding="utf-8",
+    )
+
+    assert get_setting("lsp_enabled", cwd=_isolated_settings) is False
+    assert get_setting("lsp_servers", cwd=_isolated_settings) == {
+        "go": {"command": "gopls", "extensions": [".go"]},
+    }
+
+
 def test_tool_permissions_parses_valid_flat_and_nested_maps(_isolated_settings: Path) -> None:
     pi_dir = _isolated_settings / ".pi"
     pi_dir.mkdir()

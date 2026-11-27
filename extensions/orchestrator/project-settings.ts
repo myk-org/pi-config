@@ -69,6 +69,8 @@ export function setSettingsLogger(logger: Partial<SettingsLogger>): void {
 export type SettingKey = keyof SettingsKeysSchema;
 export type AgentOverrideEntry = { provider?: string | null; model?: string | null };
 export type AgentOverrides = Record<string, AgentOverrideEntry>;
+export type LspServerOverride = { command: string; args?: string[]; extensions: string[] };
+export type LspServersConfig = Record<string, LspServerOverride>;
 export type ToolPermissionAction = "allow" | "ask" | "deny";
 export type ToolPermissionRuleValue = ToolPermissionAction | Record<string, ToolPermissionAction>;
 export type ToolPermissions = Record<string, ToolPermissionRuleValue>;
@@ -79,6 +81,7 @@ type SpecialSettingValueMap = {
   restricted_folders: string[];
   tool_permissions: ToolPermissions;
   agent_overrides: AgentOverrides;
+  lsp_servers: LspServersConfig;
 };
 
 export type SettingValue<K extends SettingKey> =
@@ -93,7 +96,7 @@ export type SettingValue<K extends SettingKey> =
           : unknown;
 
 export type ProjectSettings = { [K in SettingKey]?: SettingValue<K> };
-export type AnySettingValue = boolean | string | number | string[] | AgentOverrides | ToolPermissions;
+export type AnySettingValue = boolean | string | number | string[] | AgentOverrides | LspServersConfig | ToolPermissions;
 export type SettingsScope = "project" | "global";
 export type SettingSource = "P" | "G" | "E" | "D";
 
@@ -106,6 +109,7 @@ export interface SettingsKeyDef {
   max?: number;
   strict_digits?: boolean;
   per_key_resolution?: boolean;
+  global_only?: boolean;
   enum?: string[];
   group?: string;
 }
@@ -571,6 +575,73 @@ function validateAgentOverrides(
   return { ok: true, value: overrides };
 }
 
+function validateLspServers(
+  key: string,
+  value: unknown,
+  mode: "strict" | "lenient",
+): ValidationResult<LspServersConfig> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: `${key} must be an object mapping server id to {command, args?, extensions}` };
+  }
+  const rawEntries = Object.entries(value as Record<string, unknown>);
+  const servers: LspServersConfig = {};
+  for (const [rawId, val] of rawEntries) {
+    const id = rawId.trim();
+    if (!id || typeof val !== "object" || val === null || Array.isArray(val)) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${rawId} must be an object with {command, args?, extensions}` };
+      }
+      continue;
+    }
+    const v = val as { command?: unknown; args?: unknown; extensions?: unknown };
+    if (typeof v.command !== "string" || !v.command.trim()) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${id}.command must be a non-empty string` };
+      }
+      continue;
+    }
+    let args: string[] | undefined;
+    if (v.args !== undefined) {
+      if (!Array.isArray(v.args) || !v.args.every((a) => typeof a === "string")) {
+        if (mode === "strict") {
+          return { ok: false, error: `${key}.${id}.args must be an array of strings` };
+        }
+        continue;
+      }
+      args = [...v.args];
+    }
+    if (!Array.isArray(v.extensions) || v.extensions.length === 0) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${id}.extensions must be a non-empty array of strings` };
+      }
+      continue;
+    }
+    const normalizedExts: string[] = [];
+    let extInvalid = false;
+    for (const ext of v.extensions) {
+      if (typeof ext !== "string" || !ext.trim()) {
+        extInvalid = true;
+        break;
+      }
+      const trimmed = ext.trim().toLowerCase();
+      normalizedExts.push(trimmed.startsWith(".") ? trimmed : `.${trimmed}`);
+    }
+    if (extInvalid || normalizedExts.length === 0) {
+      if (mode === "strict") {
+        return { ok: false, error: `${key}.${id}.extensions must be a non-empty array of non-empty strings` };
+      }
+      continue;
+    }
+    const entry: LspServerOverride = { command: v.command.trim(), extensions: normalizedExts };
+    if (args !== undefined) entry.args = args;
+    servers[id] = entry;
+  }
+  if (mode === "lenient" && rawEntries.length > 0 && Object.keys(servers).length === 0) {
+    return { ok: false, error: `${key} has no valid server entries` };
+  }
+  return { ok: true, value: servers };
+}
+
 const TOOL_PERMISSION_ACTIONS = new Set<string>(["allow", "ask", "deny"]);
 
 function normalizeToolPermissionAction(val: unknown): ToolPermissionAction | null {
@@ -765,6 +836,9 @@ export function validateSetting(
     case "agent_overrides":
       return validateAgentOverrides(key, value, mode);
 
+    case "lsp_servers":
+      return validateLspServers(key, value, mode);
+
     case "tool_permissions":
       return validateToolPermissions(key, value, mode);
 
@@ -839,6 +913,7 @@ export function parseSettingInput(key: string, rawValue: string): ValidationResu
     }
 
     case "agent_overrides":
+    case "lsp_servers":
     case "tool_permissions": {
       try {
         const parsed = JSON.parse(rawValue);
@@ -1141,11 +1216,13 @@ export function resolveSetting(
   if (!def) return null;
   const audit = options?.audit === true;
 
-  const projectLayer = readCachedLayer("project", cwd);
-  const projectVal = (projectLayer.parsed as Record<string, unknown>)[key];
-  if (projectVal !== undefined) {
-    if (audit) log.debug("resolved setting", { key, source: "project", path: projectLayer.file });
-    return { value: projectVal as AnySettingValue, source: "P", path: projectLayer.file };
+  if (!def.global_only) {
+    const projectLayer = readCachedLayer("project", cwd);
+    const projectVal = (projectLayer.parsed as Record<string, unknown>)[key];
+    if (projectVal !== undefined) {
+      if (audit) log.debug("resolved setting", { key, source: "project", path: projectLayer.file });
+      return { value: projectVal as AnySettingValue, source: "P", path: projectLayer.file };
+    }
   }
 
   const globalLayer = readCachedLayer("global", cwd);
@@ -1167,9 +1244,11 @@ export function resolveSetting(
       ? (Array.isArray(def.default) ? [...(def.default as string[])] : [])
       : def.type === "agent_overrides"
         ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as AgentOverrides) } : {})
-        : def.type === "tool_permissions"
-          ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as ToolPermissions) } : {})
-          : (def.default as AnySettingValue);
+        : def.type === "lsp_servers"
+          ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as LspServersConfig) } : {})
+          : def.type === "tool_permissions"
+            ? (typeof def.default === "object" && def.default !== null ? { ...(def.default as ToolPermissions) } : {})
+            : (def.default as AnySettingValue);
   return { value: defaultVal, source: "D" };
 }
 
@@ -1213,10 +1292,12 @@ export function detectSource(
   cwd: string,
   snapshot?: SettingsSourceSnapshot,
 ): SettingSource {
-  const project = snapshot
-    ? snapshot.project
-    : (existsSync(getSettingsPath(cwd)) ? parseSettingsFile(getSettingsPath(cwd)) : null);
-  if (project && (project as Record<string, unknown>)[key] !== undefined) return "P";
+  if (!def.global_only) {
+    const project = snapshot
+      ? snapshot.project
+      : (existsSync(getSettingsPath(cwd)) ? parseSettingsFile(getSettingsPath(cwd)) : null);
+    if (project && (project as Record<string, unknown>)[key] !== undefined) return "P";
+  }
 
   const global = snapshot
     ? snapshot.global

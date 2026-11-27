@@ -1177,6 +1177,7 @@ def test_ensure_writable_npm_prefix_falls_back_to_user_dir(
     real_access = os.access
     monkeypatch.setattr(install, "HOME", home)
     monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setattr(install.subprocess, "run", run)
     monkeypatch.setattr(
@@ -1592,3 +1593,311 @@ def test_entrypoint_installs_required_npm_packages() -> None:
     text = (REPO / "entrypoint.sh").read_text()
     assert "npm install -g @earendil-works/pi-coding-agent" in text
     assert "npm install -g acpx" not in text
+
+
+def test_build_steps_includes_lsp_servers_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(install, "HOME", tmp_path)
+    monkeypatch.setattr(
+        install.shutil, "which", lambda name: f"/usr/bin/{name}" if name in {"go", "npm", "uv"} else None
+    )
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "")
+
+    steps = install.build_steps(_prereqs())
+    assert len(steps) == install.TOTAL_STEPS == 6
+    lsp_tools = {t.name: t for t in steps[5].tools}
+    assert set(lsp_tools.keys()) == {"typescript-language-server", "basedpyright", "gopls"}
+    assert lsp_tools["typescript-language-server"].install_fn is install.install_typescript_lsp
+    assert lsp_tools["basedpyright"].install_cmd == "uv tool install --upgrade basedpyright"
+    assert lsp_tools["basedpyright"].install_fn is install.install_basedpyright
+    assert lsp_tools["gopls"].install_fn is install.install_gopls
+    assert lsp_tools["gopls"].disabled == ""
+
+
+def test_build_steps_disables_gopls_when_go_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    monkeypatch.setattr(install, "HOME", tmp_path)
+    monkeypatch.setattr(install.shutil, "which", lambda name: None if name in {"go", "gopls"} else f"/usr/bin/{name}")
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "")
+
+    steps = install.build_steps(_prereqs())
+    gopls_tool = next(t for t in steps[5].tools if t.name == "gopls")
+    assert gopls_tool.disabled == "requires go"
+    assert gopls_tool not in install.auto_select_all(steps)
+
+
+def test_install_typescript_lsp_uses_isolated_prefix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    home.mkdir()
+    seen: list[list[str]] = []
+    expected_prefix = home / ".pi/lsp/ts-lsp"
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        bin_dir = expected_prefix / "node_modules/.bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("typescript-language-server", "tsc"):
+            bin_file = bin_dir / name
+            bin_file.write_text("#!/bin/sh\n")
+            bin_file.chmod(0o755)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_typescript_lsp()
+    assert seen == [["npm", "install", "--prefix", str(expected_prefix), "typescript@6", "typescript-language-server"]]
+    assert (home / ".pi/lsp/bin/typescript-language-server").is_symlink()
+    assert not (home / ".pi/lsp/bin/tsc").exists()
+
+
+def test_find_ts_lsp_bin_ignores_prefix_without_managed_bin_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    prefix_bin = home / ".pi/lsp/ts-lsp/node_modules/.bin/typescript-language-server"
+    prefix_bin.parent.mkdir(parents=True)
+    prefix_bin.write_text("#!/bin/sh\n")
+    prefix_bin.chmod(0o755)
+
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: "")
+
+    assert install._find_ts_lsp_bin() is None
+
+    managed_link = home / ".pi/lsp/bin/typescript-language-server"
+    managed_link.parent.mkdir(parents=True, exist_ok=True)
+    managed_link.symlink_to(prefix_bin)
+    assert install._find_ts_lsp_bin() == str(managed_link)
+
+
+def test_install_gopls_runs_go_install_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/go" if name == "go" else None)
+    monkeypatch.setattr(install, "_run_quiet", lambda _cmd: str(tmp_path / "gopath"))
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_gopls()
+    assert seen == [["go", "install", "golang.org/x/tools/gopls@latest"]]
+
+
+def test_install_basedpyright_records_uv_bin_dir_for_path_guidance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    uv_bin = tmp_path / ".local/bin"
+    uv_bin.mkdir(parents=True)
+    langserver = uv_bin / "basedpyright-langserver"
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        if cmd == ["uv", "tool", "dir", "--bin"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{uv_bin}\n", stderr="")
+        langserver.write_text("#!/bin/sh\n")
+        langserver.chmod(0o755)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(install, "HOME", tmp_path)
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_basedpyright()
+    assert ["uv", "tool", "install", "--upgrade", "basedpyright"] in seen
+    assert str(uv_bin) in os.environ["PATH"].split(os.pathsep)
+    assert uv_bin in install._PATH_NOTICE_DIRS
+
+    install.show_summary(1, 0, 0)
+    out = capsys.readouterr().out
+    assert f'export PATH="{uv_bin}:$PATH"' in out
+
+
+def test_show_summary_combines_all_distinct_prepended_path_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    npm_bin = tmp_path / ".npm-global/bin"
+    uv_bin = tmp_path / ".local/bin"
+    go_bin = tmp_path / "go/bin"
+
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    install._prepend_to_path(npm_bin)
+    install._prepend_to_path(uv_bin)
+    install._prepend_to_path(go_bin)
+    install._prepend_to_path(npm_bin)  # duplicate must not repeat
+
+    install.show_summary(3, 0, 0)
+    out = capsys.readouterr().out
+    expected_joined = os.pathsep.join([str(npm_bin), str(uv_bin), str(go_bin)])
+    assert f'export PATH="{expected_joined}:$PATH"' in out
+    assert "npm global bin" not in out
+
+
+def test_find_uv_tool_bin_rejects_relative_env_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    checkout = tmp_path / "checkout"
+    rel_bin = checkout / "evil-bin"
+    rel_bin.mkdir(parents=True)
+    fake_bin = rel_bin / "basedpyright-langserver"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+
+    monkeypatch.chdir(checkout)
+    monkeypatch.setattr(install, "HOME", tmp_path / "empty-home")
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", "./evil-bin")
+
+    assert install._find_uv_tool_bin("basedpyright-langserver") is None
+
+
+def test_find_uv_tool_bin_rejects_symlink_into_checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    checkout = tmp_path / "checkout"
+    evil_dir = checkout / "tools"
+    evil_dir.mkdir(parents=True)
+    fake_bin = evil_dir / "basedpyright-langserver"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    symlink_dir = tmp_path / "trusted-link"
+    symlink_dir.symlink_to(evil_dir)
+
+    monkeypatch.chdir(checkout)
+    monkeypatch.setattr(install, "HOME", tmp_path / "empty-home")
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(symlink_dir))
+
+    assert install._find_uv_tool_bin("basedpyright-langserver") is None
+
+
+def test_find_uv_tool_bin_accepts_trusted_absolute_custom_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    custom_bin = tmp_path / "custom-uv-bin"
+    custom_bin.mkdir()
+    langserver = custom_bin / "basedpyright-langserver"
+    langserver.write_text("#!/bin/sh\n")
+    langserver.chmod(0o755)
+
+    monkeypatch.chdir(checkout)
+    monkeypatch.setattr(install, "HOME", tmp_path / "empty-home")
+    monkeypatch.setattr(install.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("UV_TOOL_BIN_DIR", str(custom_bin))
+
+    assert install._find_uv_tool_bin("basedpyright-langserver") == str(langserver.resolve())
+
+
+def test_prepend_to_path_allows_home_tool_bins_when_invoked_from_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    npm_bin = home / ".npm-global/bin"
+    uv_bin = home / ".local/bin"
+    go_bin = home / "go/bin"
+    untrusted_repo_bin = home / "cloned-repo/bin"
+    for d in (npm_bin, uv_bin, go_bin, untrusted_repo_bin):
+        d.mkdir(parents=True)
+
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    install._prepend_to_path(npm_bin)
+    install._prepend_to_path(uv_bin)
+    install._prepend_to_path(go_bin)
+    install._prepend_to_path(untrusted_repo_bin)
+
+    install.show_summary(3, 0, 0)
+    out = capsys.readouterr().out
+    expected = os.pathsep.join([str(npm_bin.resolve()), str(uv_bin.resolve()), str(go_bin.resolve())])
+    assert f'export PATH="{expected}:$PATH"' in out
+    assert str(untrusted_repo_bin.resolve()) not in out
+
+
+def test_install_basedpyright_records_home_uv_bin_when_invoked_from_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_questionary()
+    install = importlib.import_module("install")
+    home = tmp_path / "home"
+    uv_bin = home / ".local/bin"
+    uv_bin.mkdir(parents=True)
+    langserver = uv_bin / "basedpyright-langserver"
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd == ["uv", "tool", "dir", "--bin"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{uv_bin}\n", stderr="")
+        langserver.write_text("#!/bin/sh\n")
+        langserver.chmod(0o755)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(install, "HOME", home)
+    monkeypatch.setattr(install, "_NPM_GLOBAL_BIN_NOTICE", None)
+    monkeypatch.setattr(install, "_PATH_NOTICE_DIRS", [])
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_basedpyright()
+    assert str(uv_bin.resolve()) in os.environ["PATH"].split(os.pathsep)
+
+    install.show_summary(1, 0, 0)
+    out = capsys.readouterr().out
+    assert f'export PATH="{uv_bin.resolve()}:$PATH"' in out
+
+
+def test_install_standalone_fallback_matches_install_sources_lsp_constants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    import install_sources
+
+    _stub_questionary()
+    monkeypatch.setitem(sys.modules, "install_sources", None)
+    spec = importlib.util.spec_from_file_location("_install_standalone_fallback_check", SCRIPTS / "install.py")
+    assert spec is not None and spec.loader is not None
+    standalone = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, standalone)
+    spec.loader.exec_module(standalone)
+
+    assert standalone.BASEDPYRIGHT_INSTALL_CMD == install_sources.BASEDPYRIGHT_INSTALL_CMD
+    assert standalone.TS_LSP_NPM_PACKAGES == install_sources.TS_LSP_NPM_PACKAGES
+    assert standalone.TS_LSP_PREFIX_REL == install_sources.TS_LSP_PREFIX_REL
+    assert standalone.TS_LSP_BIN_DIR_REL == install_sources.TS_LSP_BIN_DIR_REL
+    assert standalone.TS_LSP_INSTALL_CMD == install_sources.TS_LSP_INSTALL_CMD
+    assert standalone.GOPLS_INSTALL_CMD == install_sources.GOPLS_INSTALL_CMD

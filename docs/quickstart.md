@@ -36,7 +36,7 @@ pi install npm:pi-orchestrator-config
 uv tool install --python 3.14 --upgrade myk-pi-tools
 ```
 
-To get everything at once — the pi package, `myk-pi-tools`, `prek`, `agent-browser`, `trail` (`@trailhq/trail-code`), agent-browser Chromium, and the git-excludes setup — run the interactive installer instead:
+To get everything at once — the pi package, `myk-pi-tools`, `prek`, `agent-browser`, `trail` (`@trailhq/trail-code`), agent-browser Chromium, the git-excludes setup, and optional LSP language servers (`typescript-language-server`, `basedpyright`, plus `gopls` when `go` is installed) — run the interactive installer instead:
 
 ```bash
 uv run https://raw.githubusercontent.com/myk-org/pi-config/main/scripts/install.py
