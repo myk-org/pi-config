@@ -370,6 +370,45 @@ describe("applyTranscriptEvent lossless tool lifecycle (#1479)", () => {
     assert.equal(frame.testPassed, true);
   });
 
+  it("marks passing multi-part test output containing error or fail in test names as passed", () => {
+    const frame = buildSessionNotification("101:/repo", "/repo", {
+      toolName: "codemode",
+      isError: false,
+      result: {
+        content: [
+          { type: "text", text: "Script completed\nOutput:" },
+          { type: "text", text: "tests/test_error_handling.py::test_fail_closed PASSED\n0 failed, 12 passed" },
+        ],
+      },
+    });
+    assert.equal(frame.isTestEvent, true);
+    assert.equal(frame.testPassed, true);
+  });
+
+  it("marks multi-part test output with failure summaries as failed", () => {
+    const pytestFail = buildSessionNotification("101:/repo", "/repo", {
+      toolName: "bash",
+      isError: false,
+      result: {
+        content: [
+          { type: "text", text: "pytest -q" },
+          { type: "text", text: "FAILED tests/test_error_handling.py::test_fail_closed\n1 failed, 11 passed" },
+        ],
+      },
+    });
+    const nodeFail = buildSessionNotification("101:/repo", "/repo", {
+      toolName: "bash",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "test_suite\nℹ tests 10\nℹ pass 9\nℹ fail 1" }],
+      },
+    });
+    assert.equal(pytestFail.isTestEvent, true);
+    assert.equal(pytestFail.testPassed, false);
+    assert.equal(nodeFail.isTestEvent, true);
+    assert.equal(nodeFail.testPassed, false);
+  });
+
   it("shares one formatToolCallSummary function between reducer plus UI helpers", () => {
     assert.equal(formatToolCallSummary, reducerFormatToolCallSummary);
   });
