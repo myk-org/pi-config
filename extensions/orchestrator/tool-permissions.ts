@@ -24,8 +24,7 @@ import type { ToolAnnotations } from "@earendil-works/pi-coding-agent";
 import { createLogger, type Logger } from "../shared/logger.js";
 import { projectSettingsTrust } from "./bash-policy.js";
 import {
-  loadGlobalSettings,
-  loadProjectSettings,
+  getCachedSettingsLayers,
   type ToolPermissionAction,
   type ToolPermissionRuleValue,
   type ToolPermissions,
@@ -393,27 +392,49 @@ export function clearPersistentHostApprovals(cwd: string, dbPath?: string): numb
   });
 }
 
+export interface ForgetToolHostApprovalsResult {
+  persistentCleared: number;
+  failed: boolean;
+  error?: string;
+}
+
 /** Clear persistent host approvals (invoked by `/forget-approvals`). */
 export function forgetToolHostApprovals(
   cwd: string,
   mode: "all" | "session" | "persistent" = "all",
   dbPath?: string,
   log: Logger = defaultLog,
-): { persistentCleared: number } {
-  if (mode === "session") return { persistentCleared: 0 };
-  let persistentCleared = 0;
+): ForgetToolHostApprovalsResult {
+  if (mode === "session") return { persistentCleared: 0, failed: false };
   try {
-    persistentCleared = clearPersistentHostApprovals(cwd, dbPath);
+    const persistentCleared = clearPersistentHostApprovals(cwd, dbPath);
+    if (persistentCleared > 0) {
+      log.info("tool_host_approvals_forgotten", { mode, persistentCleared });
+    }
+    return { persistentCleared, failed: false };
   } catch (err) {
-    log.warn("tool_host_approvals_clear_failed", { cwd }, err);
+    log.error("tool_host_approvals_clear_failed", { cwd }, err);
+    return {
+      persistentCleared: 0,
+      failed: true,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
-  if (persistentCleared > 0) {
-    log.info("tool_host_approvals_forgotten", { mode, persistentCleared });
-  }
-  return { persistentCleared };
 }
 
 // ── Rule Layer Loading & Last-Match-Wins Evaluation ────────────────────────
+
+export interface ToolPermissionLayer {
+  rules: ToolPermissions;
+  /** False for git-tracked or symlinked project settings: may tighten (`deny` > `ask`), never weaken. */
+  trusted: boolean;
+}
+
+const ACTION_STRICTNESS: Record<ToolPermissionAction, number> = {
+  allow: 0,
+  ask: 1,
+  deny: 2,
+};
 
 function stripAllowFromUntrustedRules(rules: ToolPermissions): { filtered: ToolPermissions; strippedCount: number } {
   const filtered: ToolPermissions = {};
@@ -443,22 +464,25 @@ function stripAllowFromUntrustedRules(rules: ToolPermissions): { filtered: ToolP
 }
 
 /**
- * Load ordered `tool_permissions` rule layers (global first, then project).
- * If the project settings file is git-tracked or symlinked (untrusted), any project
- * `"allow"` entries are stripped so a cloned repository cannot weaken global rules.
+ * Load ordered `tool_permissions` rule layers (global first, then project) through the
+ * coordinated settings cache (zero redundant disk I/O on hot tool calls).
+ * If the project settings file is git-tracked or symlinked (untrusted), `"allow"` entries
+ * are stripped and the layer is marked `trusted: false` so it can never weaken a global
+ * `deny` (e.g. downgrading `deny` to `ask`) or grant `allow`.
  */
-export function loadToolPermissionLayers(cwd: string, log: Logger = defaultLog): ToolPermissions[] {
-  const layers: ToolPermissions[] = [];
-  const globalRules = loadGlobalSettings().tool_permissions;
+export function loadToolPermissionLayers(cwd: string, log: Logger = defaultLog): ToolPermissionLayer[] {
+  const { global: globalSettings, project: projectSettings } = getCachedSettingsLayers(cwd);
+  const layers: ToolPermissionLayer[] = [];
+  const globalRules = globalSettings.tool_permissions;
   if (globalRules && Object.keys(globalRules).length > 0) {
-    layers.push(globalRules);
+    layers.push({ rules: globalRules, trusted: true });
   }
 
-  const projectRules = loadProjectSettings(cwd).tool_permissions;
+  const projectRules = projectSettings.tool_permissions;
   if (projectRules && Object.keys(projectRules).length > 0) {
     const trust = projectSettingsTrust(cwd);
     if (trust === "untracked") {
-      layers.push(projectRules);
+      layers.push({ rules: projectRules, trusted: true });
     } else {
       const { filtered, strippedCount } = stripAllowFromUntrustedRules(projectRules);
       if (strippedCount > 0) {
@@ -468,7 +492,7 @@ export function loadToolPermissionLayers(cwd: string, log: Logger = defaultLog):
         });
       }
       if (Object.keys(filtered).length > 0) {
-        layers.push(filtered);
+        layers.push({ rules: filtered, trusted: false });
       }
     }
   }
@@ -480,26 +504,50 @@ export interface ResolvedPermissionAction {
   matchedRule: string;
 }
 
+function normalizeLayer(layer: ToolPermissions | ToolPermissionLayer): ToolPermissionLayer {
+  if ("rules" in layer && typeof (layer as ToolPermissionLayer).trusted === "boolean") {
+    return layer as ToolPermissionLayer;
+  }
+  return { rules: layer as ToolPermissions, trusted: true };
+}
+
 /**
  * Evaluate ordered rule layers using strict **last-match-wins** semantics.
+ * Untrusted layers (`trusted: false`) may only tighten (never weaken) an earlier
+ * decision (`deny` > `ask` > `allow`) and can never yield `"allow"`.
  * Pass `hostname` when evaluating a URL-scoped host target.
  */
 export function resolvePermissionAction(
-  layers: readonly ToolPermissions[],
+  layers: readonly (ToolPermissions | ToolPermissionLayer)[],
   toolName: string,
   annotations?: ToolAnnotations,
   hostname?: string,
 ): ResolvedPermissionAction | null {
   let resolved: ResolvedPermissionAction | null = null;
-  for (const layer of layers) {
-    for (const [selector, ruleValue] of Object.entries(layer)) {
+  const applyCandidate = (
+    candidate: ToolPermissionAction,
+    matchedRule: string,
+    trusted: boolean,
+  ): void => {
+    if (!trusted) {
+      if (candidate === "allow") return;
+      if (resolved && ACTION_STRICTNESS[candidate] < ACTION_STRICTNESS[resolved.action]) {
+        return;
+      }
+    }
+    resolved = { action: candidate, matchedRule };
+  };
+
+  for (const rawLayer of layers) {
+    const { rules, trusted } = normalizeLayer(rawLayer);
+    for (const [selector, ruleValue] of Object.entries(rules)) {
       if (!matchesToolSelector(selector, toolName, annotations)) continue;
       if (typeof ruleValue === "string") {
-        resolved = { action: ruleValue, matchedRule: selector };
+        applyCandidate(ruleValue, selector, trusted);
       } else if (hostname !== undefined) {
         for (const [hostPattern, hostAction] of Object.entries(ruleValue)) {
           if (matchGlob(hostPattern, hostname, true)) {
-            resolved = { action: hostAction, matchedRule: `${selector}[${hostPattern}]` };
+            applyCandidate(hostAction, `${selector}[${hostPattern}]`, trusted);
           }
         }
       }
@@ -509,7 +557,7 @@ export function resolvePermissionAction(
 }
 
 function inspectMatchingRules(
-  layers: readonly ToolPermissions[],
+  layers: readonly ToolPermissionLayer[],
   toolName: string,
   annotations?: ToolAnnotations,
 ): { matchedAny: boolean; hasHostMap: boolean; hasNonAllow: boolean } {
@@ -517,8 +565,8 @@ function inspectMatchingRules(
   let hasHostMap = false;
   let hasNonAllow = false;
 
-  for (const layer of layers) {
-    for (const [selector, ruleValue] of Object.entries(layer)) {
+  for (const { rules } of layers) {
+    for (const [selector, ruleValue] of Object.entries(rules)) {
       if (!matchesToolSelector(selector, toolName, annotations)) continue;
       matchedAny = true;
       if (typeof ruleValue === "string") {
@@ -540,9 +588,9 @@ export async function evaluateToolPermissions(
   params: EvaluateToolPermissionsInput,
 ): Promise<ToolPermissionDecision> {
   const log = params.log ?? defaultLog;
-  const layers =
+  const layers: ToolPermissionLayer[] =
     params.rules !== undefined
-      ? (Object.keys(params.rules).length > 0 ? [params.rules] : [])
+      ? (Object.keys(params.rules).length > 0 ? [{ rules: params.rules, trusted: true }] : [])
       : loadToolPermissionLayers(params.cwd, log);
 
   // Fast path: empty/unset `tool_permissions` preserves 100% existing behavior.

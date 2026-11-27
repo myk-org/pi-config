@@ -573,8 +573,10 @@ function validateAgentOverrides(
 
 const TOOL_PERMISSION_ACTIONS = new Set<string>(["allow", "ask", "deny"]);
 
-function isToolPermissionAction(val: unknown): val is ToolPermissionAction {
-  return typeof val === "string" && TOOL_PERMISSION_ACTIONS.has(val);
+function normalizeToolPermissionAction(val: unknown): ToolPermissionAction | null {
+  if (typeof val !== "string") return null;
+  const normalized = val.trim().toLowerCase();
+  return TOOL_PERMISSION_ACTIONS.has(normalized) ? (normalized as ToolPermissionAction) : null;
 }
 
 function validateToolPermissions(
@@ -583,6 +585,9 @@ function validateToolPermissions(
   mode: "strict" | "lenient",
 ): ValidationResult<ToolPermissions> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    if (mode === "lenient") {
+      log.warn("tool_permissions_invalid_type", { key });
+    }
     return {
       ok: false,
       error: `${key} must be an object mapping tool/glob/annotation selectors to "allow"|"ask"|"deny" or a nested host rule map`,
@@ -594,10 +599,12 @@ function validateToolPermissions(
     const selector = rawSelector.trim();
     if (!selector) {
       if (mode === "strict") return { ok: false, error: `${key} contains an empty rule selector` };
+      log.warn("tool_permissions_empty_selector_dropped", { key });
       continue;
     }
-    if (isToolPermissionAction(rawVal)) {
-      rules[selector] = rawVal;
+    const normalizedAction = normalizeToolPermissionAction(rawVal);
+    if (normalizedAction !== null) {
+      rules[selector] = normalizedAction;
       continue;
     }
     if (typeof rawVal === "object" && rawVal !== null && !Array.isArray(rawVal)) {
@@ -605,16 +612,35 @@ function validateToolPermissions(
       const nested: Record<string, ToolPermissionAction> = {};
       for (const [rawPattern, rawAction] of nestedEntries) {
         const pattern = rawPattern.trim();
-        if (!pattern || !isToolPermissionAction(rawAction)) {
+        const nestedAction = normalizeToolPermissionAction(rawAction);
+        if (!pattern) {
           if (mode === "strict") {
             return {
               ok: false,
               error: `${key}.${selector}.${rawPattern} must map a non-empty pattern to "allow", "ask", or "deny"`,
             };
           }
+          log.warn("tool_permissions_empty_host_pattern_dropped", { key, selector });
           continue;
         }
-        nested[pattern] = rawAction;
+        if (nestedAction === null) {
+          if (mode === "strict") {
+            return {
+              ok: false,
+              error: `${key}.${selector}.${rawPattern} must map a non-empty pattern to "allow", "ask", or "deny"`,
+            };
+          }
+          // Fail closed on typo'd/malformed host action in settings file rather than
+          // silently dropping a rule and falling through to default-allow.
+          log.warn("tool_permissions_invalid_action_fail_closed", {
+            key,
+            selector,
+            pattern,
+          });
+          nested[pattern] = "deny";
+          continue;
+        }
+        nested[pattern] = nestedAction;
       }
       if (Object.keys(nested).length > 0 || (mode === "strict" && nestedEntries.length === 0)) {
         rules[selector] = nested;
@@ -627,6 +653,10 @@ function validateToolPermissions(
         error: `${key}.${selector} must be "allow", "ask", "deny", or an object mapping patterns to actions`,
       };
     }
+    // Fail closed on typo'd/malformed selector action in settings file rather than
+    // silently disabling the rule.
+    log.warn("tool_permissions_invalid_action_fail_closed", { key, selector });
+    rules[selector] = "deny";
   }
   if (mode === "lenient" && rawEntries.length > 0 && Object.keys(rules).length === 0) {
     return { ok: false, error: `${key} has no valid permission entries` };
@@ -1050,6 +1080,17 @@ function readCachedLayer(scope: SettingsScope, cwd: string): CachedLayer {
   }
   layerCache.set(cacheKey, entry);
   return entry;
+}
+
+/**
+ * Return parsed global and project settings through the coordinated layer cache
+ * (invalidated automatically on `writeSettingsFile` / `clearSettingsCache` / TTL / mtime).
+ */
+export function getCachedSettingsLayers(cwd: string): { global: ProjectSettings; project: ProjectSettings } {
+  return {
+    global: readCachedLayer("global", cwd).parsed,
+    project: readCachedLayer("project", cwd).parsed,
+  };
 }
 
 // ── Unified resolution & source detection ───────────────────────────

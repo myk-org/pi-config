@@ -357,27 +357,51 @@ def _parse_agent_overrides(raw: Any) -> dict[str, Any] | None:
 _TOOL_PERMISSION_ACTIONS = frozenset({"allow", "ask", "deny"})
 
 
+def _normalize_tool_permission_action(val: Any) -> str | None:
+    if not isinstance(val, str):
+        return None
+    normalized = val.strip().lower()
+    return normalized if normalized in _TOOL_PERMISSION_ACTIONS else None
+
+
 def _parse_tool_permissions(raw: Any) -> dict[str, Any] | None:
-    """Parse tool_permissions rule object. Invalid → None."""
+    """Parse tool_permissions rule object. Invalid top-level → None; invalid entry actions fail closed to 'deny'."""
     if not isinstance(raw, dict):
+        log.warning("tool_permissions_invalid_type type=%s", type(raw).__name__)
         return None
     if not raw:
         return {}
     rules: dict[str, Any] = {}
     for selector, val in raw.items():
         if not isinstance(selector, str) or not selector.strip():
+            log.warning("tool_permissions_empty_selector_dropped")
             continue
         sel = selector.strip()
-        if isinstance(val, str) and val in _TOOL_PERMISSION_ACTIONS:
-            rules[sel] = val
+        action = _normalize_tool_permission_action(val)
+        if action is not None:
+            rules[sel] = action
         elif isinstance(val, dict):
-            nested = {
-                k.strip(): v
-                for k, v in val.items()
-                if isinstance(k, str) and k.strip() and isinstance(v, str) and v in _TOOL_PERMISSION_ACTIONS
-            }
+            nested: dict[str, str] = {}
+            for pattern_raw, act_raw in val.items():
+                if not isinstance(pattern_raw, str) or not pattern_raw.strip():
+                    log.warning("tool_permissions_empty_host_pattern_dropped selector=%s", sel)
+                    continue
+                pattern = pattern_raw.strip()
+                nested_action = _normalize_tool_permission_action(act_raw)
+                if nested_action is None:
+                    log.warning(
+                        "tool_permissions_invalid_action_fail_closed selector=%s pattern=%s",
+                        sel,
+                        pattern,
+                    )
+                    nested[pattern] = "deny"
+                else:
+                    nested[pattern] = nested_action
             if nested:
                 rules[sel] = nested
+        else:
+            log.warning("tool_permissions_invalid_action_fail_closed selector=%s", sel)
+            rules[sel] = "deny"
     return rules if rules else None
 
 

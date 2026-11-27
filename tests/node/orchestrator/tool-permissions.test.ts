@@ -42,6 +42,7 @@ import {
   clearPersistentHostApprovals,
   evaluateToolPermissions,
   extractTargetHosts,
+  forgetToolHostApprovals,
   hasPersistentHostApproval,
   listPersistentHostApprovals,
   matchGlob,
@@ -171,13 +172,13 @@ describe("tool_permissions schema & agent-edit protection (#1450)", () => {
     assert.equal(parseSettingInput("tool_permissions", "not-json").ok, false);
   });
 
-  it("drops malformed sibling entries in lenient mode while preserving valid rules", () => {
+  it("normalizes action case and fails closed to deny on typo actions in lenient mode", () => {
     const res = validateSetting(
       "tool_permissions",
       {
-        "mcp__*": "ask",
-        bad_tool: "invalid_action",
-        fetch_content: { "*": "ask", bad_host: 123, "github.com": "allow" },
+        "mcp__*": "ASK",
+        bad_tool: "blcok",
+        fetch_content: { "*": "Deny", bad_host: 123, "github.com": "ALLOW" },
       },
       { mode: "lenient" },
     );
@@ -185,7 +186,8 @@ describe("tool_permissions schema & agent-edit protection (#1450)", () => {
     if (res.ok) {
       assert.deepEqual(res.value, {
         "mcp__*": "ask",
-        fetch_content: { "*": "ask", "github.com": "allow" },
+        bad_tool: "deny",
+        fetch_content: { "*": "deny", bad_host: "deny", "github.com": "allow" },
       });
     }
   });
@@ -259,6 +261,75 @@ describe("tool_permissions schema & agent-edit protection (#1450)", () => {
     });
     assert.ok(fetchRes?.block, "tracked project fetch_content allow must not override global ask");
   });
+
+  it("prevents a git-tracked project ask rule from downgrading a global deny to a prompt", async () => {
+    const repo = makeTempDir("tracked-downgrade-");
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    fs.mkdirSync(path.join(repo, ".pi"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, ".pi", "pi-config-settings.json"),
+      JSON.stringify({
+        tool_permissions: {
+          "mcp__nuke": "ask",
+          "mcp__tighten": "deny",
+          fetch_content: { "blocked.example": "ask" },
+        },
+      }),
+    );
+    execFileSync("git", ["add", "-f", ".pi/pi-config-settings.json"], { cwd: repo });
+
+    const gDir = makeTempDir("tracked-downgrade-global-");
+    const gFile = path.join(gDir, "pi-config-settings.json");
+    fs.writeFileSync(
+      gFile,
+      JSON.stringify({
+        tool_permissions: {
+          "mcp__nuke": "deny",
+          "mcp__tighten": "ask",
+          fetch_content: { "blocked.example": "deny" },
+        },
+      }),
+    );
+    setGlobalSettingsPath(gFile);
+    clearSettingsCache();
+    clearTrackedSettingsCache();
+
+    let prompted = false;
+    const interactiveUi = {
+      async select() {
+        prompted = true;
+        return CHOICE_ALLOW_ONCE;
+      },
+    };
+
+    const mcpDenied = await evaluateToolPermissions({
+      toolName: "mcp__nuke",
+      input: {},
+      cwd: repo,
+      ui: interactiveUi,
+    });
+    assert.ok(mcpDenied?.block, "global deny must still block when tracked project supplies ask");
+    assert.equal(prompted, false, "must not prompt on global deny");
+
+    const hostDenied = await evaluateToolPermissions({
+      toolName: "fetch_content",
+      input: { url: "https://blocked.example/secret" },
+      cwd: repo,
+      ui: interactiveUi,
+    });
+    assert.ok(hostDenied?.block, "global host deny must still block when tracked project supplies ask");
+    assert.equal(prompted, false, "must not prompt on global host deny");
+
+    // Tracked project MAY still tighten a global ask to deny
+    const tightened = await evaluateToolPermissions({
+      toolName: "mcp__tighten",
+      input: {},
+      cwd: repo,
+      ui: interactiveUi,
+    });
+    assert.ok(tightened?.block, "tracked project deny should still tighten global ask");
+    assert.equal(prompted, false);
+  });
 });
 
 describe("empty/default tool_permissions: {} (zero behavior change)", () => {
@@ -283,6 +354,31 @@ describe("empty/default tool_permissions: {} (zero behavior change)", () => {
     assert.equal(res1, undefined);
     assert.equal(res2, undefined);
     assert.equal(fs.existsSync(dbPath), false, "empty rules must not even open SQLite DB");
+  });
+
+  it("reuses the coordinated settings cache across repeated tool calls without re-reading disk", async () => {
+    const cwd = makeTempDir("cache-reuse-");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    const projFile = path.join(cwd, ".pi", "pi-config-settings.json");
+    fs.writeFileSync(projFile, JSON.stringify({ dco: true }));
+    clearSettingsCache();
+
+    // Prime cache on first call
+    assert.equal(await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null }), undefined);
+
+    // Corrupt file on disk without clearing cache: within the 30s TTL window, cached layer is reused
+    // (proving evaluateToolPermissions does NOT synchronously re-read/re-parse on every tool call)
+    fs.writeFileSync(projFile, JSON.stringify({ tool_permissions: { read: "deny" } }));
+    assert.equal(
+      await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null }),
+      undefined,
+      "subsequent tool call should serve from coordinated layer cache",
+    );
+
+    // Clearing cache picks up the updated rules immediately
+    clearSettingsCache();
+    const afterClear = await evaluateToolPermissions({ toolName: "read", input: {}, cwd, ui: null });
+    assert.ok(afterClear?.block);
   });
 });
 
@@ -619,6 +715,36 @@ describe("HMAC-authenticated SQLite host approvals & /forget-approvals", () => {
     fs.unlinkSync(testHmacKeyPath);
     assert.equal(hasPersistentHostApproval(cwdA, "fetch_content", "valid.example.com"), false);
     assert.equal(clearPersistentHostApprovals(cwdA) >= 1, true);
+  });
+
+  it("reports deletion failure as an error in forgetToolHostApprovals and /forget-approvals", async () => {
+    const { cwd, commands } = setupEnforcementHarness();
+    // Place a directory at state.db so opening/deleting from SQLite fails deterministically
+    const badDbPath = getProjectStateDbPath(cwd);
+    fs.mkdirSync(badDbPath, { recursive: true });
+
+    const direct = forgetToolHostApprovals(cwd, "all", badDbPath);
+    assert.equal(direct.failed, true);
+    assert.equal(direct.persistentCleared, 0);
+    assert.ok(direct.error);
+
+    const notifications: Array<{ msg: string; level: string }> = [];
+    const forgetCmd = commands.get("forget-approvals");
+    assert.ok(forgetCmd);
+    await forgetCmd!.handler("", {
+      cwd,
+      hasUI: true,
+      sessionManager: { getSessionId: () => "sess-err" },
+      ui: {
+        notify(msg: string, level: string) {
+          notifications.push({ msg, level });
+        },
+      },
+    });
+    assert.ok(
+      notifications.some((n) => n.level === "error" && /failed to clear persistent tool host approvals/i.test(n.msg)),
+      "failed DB revoke must notify at error level instead of normal cleared summary",
+    );
   });
 });
 

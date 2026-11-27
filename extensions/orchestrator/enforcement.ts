@@ -574,8 +574,24 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
         sessionIdOf(ctx),
         mode,
       );
-      const { persistentCleared: hostPersistentCleared } = forgetToolHostApprovals(ctx.cwd, mode);
-      const persistentCleared = folderPersistentCleared + hostPersistentCleared;
+      const hostResult = forgetToolHostApprovals(ctx.cwd, mode);
+      if (hostResult.failed) {
+        const errSummary =
+          `Failed to clear persistent tool host approvals (${hostResult.error || "database error"}); ` +
+          `existing host grants may still be active. Cleared ${sessionCleared} session and ${folderPersistentCleared} folder persistent approval(s).`;
+        if (ctx.hasUI) {
+          ctx.ui.notify(errSummary, "error");
+        } else {
+          log.error("forget_approvals_host_clear_failed", {
+            mode,
+            sessionCleared,
+            folderPersistentCleared,
+            error: hostResult.error,
+          });
+        }
+        return;
+      }
+      const persistentCleared = folderPersistentCleared + hostResult.persistentCleared;
       const summary = `Cleared ${sessionCleared} session approval(s) and ${persistentCleared} persistent approval(s).`;
       if (ctx.hasUI) {
         ctx.ui.notify(summary, "info");
@@ -585,7 +601,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
           sessionCleared,
           persistentCleared,
           folderPersistentCleared,
-          hostPersistentCleared,
+          hostPersistentCleared: hostResult.persistentCleared,
         });
       }
     },
