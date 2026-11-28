@@ -1108,4 +1108,37 @@ describe("approval-hmac-key protected storage guard (#1495)", () => {
     assert.equal(res.action, "block");
     assert.match(res.reason ?? "", /\.approval-hmac-key/);
   });
+
+  it("blocks bash executing process substitution targeting ~/.pi/agent dynamically", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "bash <(echo 'cat ~/.pi/agent/.*')",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks bash -c sourcing process substitution targeting ~/.pi/agent dynamically", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'bash -c \'source "$1"\' _ <(echo \'cat ~/.pi/agent/.*\')',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks python3 -c variable-bound evaluator overwriting state.db from heredoc", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'python3 -c \'run=eval;globals()["run"](input())\' <<\'EOF\'\nopen(".pi/data/state.db","w").write("x")\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /state\.db/);
+  });
 });

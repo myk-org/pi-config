@@ -7259,7 +7259,7 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           );
           const dynamicEvalInInlineCode =
             hasInlineFlag &&
-            /\b(?:exec|eval|compile|Function|subprocess|spawn|execSync|execFile)\s*\(|\bos\.(?:system|popen)\s*\(/.test(
+            /\b(?:exec|eval|compile|Function|subprocess|spawn|execSync|execFile|child_process|vm|globals|locals|getattr|vars|__builtins__|builtins|__import__|importlib|Reflect|globalThis|require|system|popen|dofile|loadstring|load|instance_eval|module_eval|class_eval|public_send|send|chr|fromCharCode)\b/.test(
               expandedSeg,
             );
           const execsStdinAsCode =
@@ -7287,9 +7287,10 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
 
         // Recurse into nested shells (`bash -c`, `sh -c`, `eval`, `source`/`.`, `xargs <shell>`, or stdin/file-fed shells)
         if (isNestedShell) {
-          // If the shell invocation itself contains a command substitution (e.g. `eval "$(echo 'cat ~/.pi/agent/.*')"`),
+          // If the shell invocation itself contains a command or process substitution
+          // (e.g. `eval "$(echo 'cat ~/.pi/agent/.*')"` or `bash <(echo 'cat ~/.pi/agent/.*')`),
           // fail closed on the unstripped segment before recursion.
-          if (/\$\(|`/.test(expandedSeg) && hasRawDynamicPiAgentAccess(expandedSeg)) {
+          if (/\$\(|`|<\(/.test(expandedSeg) && hasRawDynamicPiAgentAccess(expandedSeg)) {
             enfLog.debug("nested_shell_subst_dynamic_pi_agent_blocked", "cmd", cmdWord);
             return "hmac";
           }
@@ -7356,7 +7357,7 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           }
           if (
             nested.length === 0 &&
-            (isSourceOrDot || isXargsExec || /(?:^|[\s;|&()])(?:<<<?|<(?!\())/.test(maskedSeg)) &&
+            (isSourceOrDot || isXargsExec || /(?:^|[\s;|&()])(?:<<<?|<)/.test(maskedSeg)) &&
             (hasRawDynamicPiAgentAccess(expandedSeg) ||
               (isXargsExec && inlineRuntimeDynamicPiAgentRe.test(expandedSeg)))
           ) {
