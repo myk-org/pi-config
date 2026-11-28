@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { after, afterEach, before, describe, it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { WebSocketServer } from "ws";
 import * as rootReact from "react";
-import { createServer, type ViteDevServer } from "vite";
+import { createServer as createViteServer, type ViteDevServer } from "vite";
 import * as pidashReact from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import { createRoot, type Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
-import { resolvePidashHost } from "../../../extensions/pidash/pidash.ts";
+import { registerPidash, resolvePidashHost } from "../../../extensions/pidash/pidash.ts";
 import { resolvePidiffHost, resolvePidiffPortOverride } from "../../../extensions/pidiff/pidiff.ts";
+import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
 import { isLoopbackAddress, registerPidashSession, type PiClient } from "../../../scripts/pidash-session-state.ts";
 import fs from "node:fs";
+import os from "node:os";
 import type { SessionInfo } from "../../../extensions/shared/types.ts";
 import { elements, installReactDomShim } from "./react-dom-shim.mjs";
 
@@ -18,7 +24,7 @@ let InfoBar: any;
 let ComsPanel: any;
 
 before(async () => {
-  vite = await createServer({
+  vite = await createViteServer({
     root: path.resolve("extensions/pidash/pidash-ui"),
     server: { middlewareMode: true },
     appType: "custom",
@@ -147,6 +153,112 @@ describe("PiDash session container metadata", () => {
     );
     assert.equal(client.session.container, true);
     assert.equal(client.session.containerName, "pi-peer-demo-worker");
+  });
+
+  it("propagates PI_PIDASH_HOST, PI_PIDASH_PORT, and PI_COMS_CONTAINER_NAME through registerPidash", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pidash-reg-env-"));
+    const prevEnv: Record<string, string | undefined> = {
+      PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD,
+      PI_COMS_SUPERVISED_PEER: process.env.PI_COMS_SUPERVISED_PEER,
+      PI_PIDASH_HOST: process.env.PI_PIDASH_HOST,
+      PI_PIDASH_PORT: process.env.PI_PIDASH_PORT,
+      PI_COMS_CONTAINER_NAME: process.env.PI_COMS_CONTAINER_NAME,
+    };
+
+    let healthHostHeader = "";
+    let wsHostHeader = "";
+    const server: Server = createServer((req, res) => {
+      if (req.url === "/api/health") {
+        healthHostHeader = String(req.headers.host || "");
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    const wss = new WebSocketServer({ noServer: true });
+    server.on("upgrade", (req, socket, head) => {
+      if (req.url === "/ws/pi") {
+        wsHostHeader = String(req.headers.host || "");
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+      } else {
+        socket.destroy();
+      }
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    assert.ok(addr && typeof addr !== "string");
+
+    const registerPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out waiting for register frame")), 4000);
+      timer.unref();
+      wss.on("connection", (ws) => {
+        ws.on("message", (raw) => {
+          const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (parsed.type === "register") {
+            clearTimeout(timer);
+            resolve(parsed);
+          }
+        });
+      });
+    });
+
+    const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => void>>();
+    const pi = {
+      events: new EventEmitter(),
+      on: (name: string, fn: (event: unknown, ctx: unknown) => void) => {
+        const list = handlers.get(name) ?? [];
+        list.push(fn);
+        handlers.set(name, list);
+      },
+      registerCommand: () => {},
+      getThinkingLevel: () => "medium",
+      getFlag: () => undefined,
+    } as unknown as ExtensionAPI;
+
+    try {
+      setGlobalSettingsPath(path.join(tmpDir, "global.json"));
+      clearSettingsCache();
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+      process.env.PI_PIDASH_HOST = "localhost";
+      process.env.PI_PIDASH_PORT = String(addr.port);
+      process.env.PI_COMS_CONTAINER_NAME = "pi-peer-reg-test-12345678";
+
+      registerPidash(pi, {
+        fetchGitStatus: async () => ({ branch: "main", dirty: false, changes: 0 }),
+        fetchWorktreeSummary: async () => ({ worktreeCount: 0, worktreeDirtyCount: 0, inLinkedWorktree: false }),
+      });
+
+      const ctx = {
+        mode: "rpc",
+        hasUI: false,
+        cwd: tmpDir,
+        model: null,
+        sessionManager: { getEntries: () => [], getSessionFile: () => "" },
+      };
+      for (const h of handlers.get("session_start") ?? []) h({ reason: "startup" }, ctx);
+
+      const frame = await registerPromise;
+      assert.ok(healthHostHeader.startsWith("localhost:"), `expected PI_PIDASH_HOST=localhost on health check, got ${healthHostHeader}`);
+      assert.ok(wsHostHeader.startsWith("localhost:"), `expected PI_PIDASH_HOST=localhost on ws upgrade, got ${wsHostHeader}`);
+      assert.equal(frame.container, true);
+      assert.equal(frame.containerName, "pi-peer-reg-test-12345678");
+      for (const h of handlers.get("session_shutdown") ?? []) h({}, ctx);
+    } finally {
+      for (const [k, v] of Object.entries(prevEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      setGlobalSettingsPath(null);
+      clearSettingsCache();
+      for (const c of wss.clients) c.terminate();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -1352,6 +1352,23 @@ export function runPeerImageBuildWorker(opts) {
 }
 
 // ── CLI entry point (`node scripts/podman-peer-image.mjs build ...`) ──
+function safeRealPath(filePath) {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+/**
+ * Determine whether `argv1` points to this module, resolving symlinks on both sides
+ * so dotfiles installs (e.g. `~/.pi -> ~/dotfiles/.pi`) never silently skip CLI mode.
+ */
+export function isCliEntrypoint(argv1, moduleUrl = import.meta.url) {
+  if (!argv1) return false;
+  return safeRealPath(argv1) === safeRealPath(fileURLToPath(moduleUrl));
+}
+
 function parseCliArgs(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {
@@ -1363,7 +1380,7 @@ function parseCliArgs(argv) {
   return out;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+if (isCliEntrypoint(process.argv[1], import.meta.url)) {
   const [cmd, ...rest] = process.argv.slice(2);
   if (cmd === "build") {
     const flags = parseCliArgs(rest);

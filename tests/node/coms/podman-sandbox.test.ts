@@ -15,6 +15,7 @@ import {
   computePeerImageHash,
   detectHostPiVersion,
   isBuildLockActive,
+  isCliEntrypoint,
   isSelinuxEnforcing,
   isValidPeerContainerName,
   prepareSandboxWorkspace,
@@ -1248,5 +1249,46 @@ exit 0
     assert.equal(calls.length, 2, "expected bounded retry of failed podman rm -f");
     const state = JSON.parse(fs.readFileSync(path.join(comsDir, "peers", "failrm-peer@demo.json"), "utf8"));
     assert.ok(typeof state.cleanupError === "string" && state.cleanupError.length > 0);
+  });
+});
+
+describe("CLI symlink entrypoint detection", () => {
+  it("recognizes symlinked invocation paths in isCliEntrypoint", () => {
+    const tmpDir = makeTempDir("pi-cli-symlink-");
+    const realScript = path.join(REPO_ROOT, "scripts", "podman-peer-image.mjs");
+    const linkedScript = path.join(tmpDir, "podman-peer-image-link.mjs");
+    fs.symlinkSync(realScript, linkedScript);
+    assert.equal(isCliEntrypoint(linkedScript, `file://${realScript}`), true);
+  });
+
+  it("executes the build CLI handler when invoked through a symlinked directory", () => {
+    const tmpDir = makeTempDir("pi-cli-dir-link-");
+    const linkedRepo = path.join(tmpDir, "linked-repo");
+    fs.symlinkSync(REPO_ROOT, linkedRepo);
+    const linkedScript = path.join(linkedRepo, "scripts", "podman-peer-image.mjs");
+    const statusPath = path.join(tmpDir, "status.json");
+    const lockPath = path.join(tmpDir, "build.lock");
+    const logPath = path.join(tmpDir, "build.log");
+    let exitCode = 0;
+    try {
+      // Passing invalid floating :latest base image forces an immediate worker error (exit 1)
+      // ONLY if the symlinked CLI entrypoint actually executed instead of silently no-oping (exit 0).
+      execFileSync(
+        process.execPath,
+        [
+          linkedScript,
+          "build",
+          "--base-image", "registry.fedoraproject.org/fedora:latest",
+          "--pi-version", "1.7.0",
+          "--lock-path", lockPath,
+          "--status-path", statusPath,
+          "--log-path", logPath,
+        ],
+        { stdio: "ignore", timeout: 10_000 },
+      );
+    } catch (err: any) {
+      exitCode = err?.status ?? 1;
+    }
+    assert.notEqual(exitCode, 0, "symlinked CLI invocation must execute build handler instead of silently exiting 0");
   });
 });

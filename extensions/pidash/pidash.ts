@@ -503,6 +503,9 @@ export function registerPidash(
   const registrationEnv: NodeJS.ProcessEnv = {
     PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD,
     PI_COMS_SUPERVISED_PEER: process.env.PI_COMS_SUPERVISED_PEER,
+    PI_PIDASH_HOST: process.env.PI_PIDASH_HOST,
+    PI_PIDASH_PORT: process.env.PI_PIDASH_PORT,
+    PI_COMS_CONTAINER_NAME: process.env.PI_COMS_CONTAINER_NAME,
   };
   const canConnectCtx = (ctx: unknown): boolean => isPidashConnectableCtx(ctx, registrationEnv);
   const fetchGitStatus = opts.fetchGitStatus ?? getGitStatus;

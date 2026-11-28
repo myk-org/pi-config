@@ -145,3 +145,4 @@ export declare function startBackgroundPeerImageBuildAsync(opts?: Record<string,
 export declare function resolveImageForSpawn(opts?: Record<string, any>): ResolveImageForSpawnResult;
 export declare function resolveImageForSpawnAsync(opts?: Record<string, any>): Promise<ResolveImageForSpawnResult>;
 export declare function runPeerImageBuildWorker(opts: Record<string, any>): { ok: boolean; skipped: boolean; targetTag: string; logPath: string; error?: string };
+export declare function isCliEntrypoint(argv1: string | undefined, moduleUrl?: string): boolean;
