@@ -3221,9 +3221,12 @@ recordPendingLspInstallRequest(
               resolve();
               return;
             }
+            // Keep Node 22 event loop ref'd while waiting for the .unref()'d renewTimer to fire
+            const safetyTimer = setTimeout(resolve, 2000);
             opts?.signal?.addEventListener(
               "abort",
               () => {
+                clearTimeout(safetyTimer);
                 abortedSeen = true;
                 resolve();
               },
