@@ -5,8 +5,13 @@
  * single subprocess instead of spawning `git show` up to twice per file.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { promisify } from "node:util";
 import { createLogger } from "../extensions/shared/logger.ts";
+
+const execFileAsync = promisify(execFile);
 
 const log = createLogger("pidiff");
 
@@ -239,4 +244,129 @@ export function parseWorktreeList(raw: string): WorktreeInfo[] {
   }
   pushIfValid();
   return worktrees;
+}
+
+function normalizeCheckoutPath(cwd: string): string {
+  const resolved = path.resolve(cwd);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function resolveGitCommonDir(gitBin: string, cwd: string): string | null {
+  try {
+    const out = execFileSync(gitBin, ["rev-parse", "--git-common-dir"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!out) return null;
+    return normalizeCheckoutPath(path.resolve(cwd, out));
+  } catch {
+    return null;
+  }
+}
+
+async function resolveGitCommonDirAsync(gitBin: string, cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(gitBin, ["rev-parse", "--git-common-dir"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 3000,
+    });
+    const out = stdout.trim();
+    if (!out) return null;
+    return normalizeCheckoutPath(path.resolve(cwd, out));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return true when `candidateCwd` is the same checkout as `projectCwd` or a
+ * linked worktree (or subdirectory) belonging to the same git repository.
+ */
+export function isSameGitRepoCheckout(
+  projectCwd: string,
+  candidateCwd: string,
+  gitBin = "git",
+): boolean {
+  if (!projectCwd) return true;
+  if (!candidateCwd) return false;
+  if (normalizeCheckoutPath(projectCwd) === normalizeCheckoutPath(candidateCwd)) return true;
+  const projectCommon = resolveGitCommonDir(gitBin, projectCwd);
+  if (!projectCommon) return false;
+  const candidateCommon = resolveGitCommonDir(gitBin, candidateCwd);
+  const same = candidateCommon !== null && projectCommon === candidateCommon;
+  log.debug("isSameGitRepoCheckout", { projectCwd, candidateCwd, same });
+  return same;
+}
+
+export interface RepoCheckoutMatcher {
+  isExactMatch: (candidateCwd: string) => boolean;
+  matchesAsync: (candidateCwd: string) => Promise<boolean>;
+}
+
+/**
+ * Non-blocking checkout matcher for `pidiff-server`'s `register` path.
+ * Resolves `projectCwd`'s git common dir once asynchronously, deduplicates
+ * concurrent in-flight candidate lookups, and revalidates each registration's
+ * candidate checkout against Git so a replaced path can never reuse a stale match.
+ */
+export function createRepoCheckoutMatcher(
+  projectCwd: string,
+  getGitBin: () => string = () => "git",
+  resolveCommonDir: (gitBin: string, cwd: string) => Promise<string | null> = resolveGitCommonDirAsync,
+): RepoCheckoutMatcher {
+  const normalizedProject = projectCwd ? normalizeCheckoutPath(projectCwd) : "";
+  const inFlight = new Map<string, Promise<string | null>>();
+  let projectCommonPromise: Promise<string | null> | null = normalizedProject
+    ? resolveCommonDir(getGitBin(), projectCwd)
+    : null;
+
+  function isExactMatch(candidateCwd: string): boolean {
+    if (!normalizedProject) return true;
+    if (!candidateCwd) return false;
+    return normalizeCheckoutPath(candidateCwd) === normalizedProject;
+  }
+
+  async function getProjectCommonDir(): Promise<string | null> {
+    if (!normalizedProject) return null;
+    if (!projectCommonPromise) {
+      projectCommonPromise = resolveCommonDir(getGitBin(), projectCwd);
+    }
+    const common = await projectCommonPromise;
+    if (common === null) projectCommonPromise = null;
+    return common;
+  }
+
+  async function getCandidateCommonDir(normalizedCandidate: string, rawCandidate: string): Promise<string | null> {
+    let pending = inFlight.get(normalizedCandidate);
+    if (!pending) {
+      pending = resolveCommonDir(getGitBin(), rawCandidate).finally(() => {
+        inFlight.delete(normalizedCandidate);
+      });
+      inFlight.set(normalizedCandidate, pending);
+    }
+    return pending;
+  }
+
+  async function matchesAsync(candidateCwd: string): Promise<boolean> {
+    if (!normalizedProject) return true;
+    if (!candidateCwd) return false;
+    const normalizedCandidate = normalizeCheckoutPath(candidateCwd);
+    if (normalizedCandidate === normalizedProject) return true;
+    const [projectCommon, candidateCommon] = await Promise.all([
+      getProjectCommonDir(),
+      getCandidateCommonDir(normalizedCandidate, candidateCwd),
+    ]);
+    const same = projectCommon !== null && candidateCommon !== null && projectCommon === candidateCommon;
+    log.debug("repoCheckoutMatcher.matchesAsync", { projectCwd, candidateCwd, same });
+    return same;
+  }
+
+  return { isExactMatch, matchesAsync };
 }
