@@ -340,11 +340,22 @@ export function collectPeers(deps: PidashApiDeps, projectParam: string | null, c
   const normalizedProject = projectParam && projectParam !== "*" ? projectParam.trim() : null;
 
   const piClients = deps.getPiClients();
-  const findClientParentSessionId = (project: string, name: string): string | null => {
+  const findClientParentSessionId = (
+    row: { project: string; name: string; pid: number | null },
+    container: string | null,
+  ): string | null => {
     for (const client of piClients.values()) {
       const s = client?.session;
-      if (s?.comsProject === project && s?.comsName === name && typeof s.parentSessionId === "string" && s.parentSessionId.trim()) {
-        return s.parentSessionId.trim();
+      if (!s || !s.active) continue;
+      if (s.comsProject !== row.project || s.comsName !== row.name) continue;
+      const parentId = typeof s.parentSessionId === "string" ? s.parentSessionId.trim() : "";
+      if (!parentId) continue;
+      // Match reliable live process/container identity so a retained disconnected client
+      // or a stale predecessor can never attribute an old parent to a replacement peer.
+      if (container) {
+        if (s.containerName === container) return parentId;
+      } else if (typeof row.pid === "number" && Number.isInteger(row.pid) && row.pid > 0 && s.pid === row.pid) {
+        return parentId;
       }
     }
     return null;
@@ -364,7 +375,7 @@ export function collectPeers(deps: PidashApiDeps, projectParam: string | null, c
           : (row.hostPid ?? null);
       const parentSessionId =
         (typeof sup?.parentSessionId === "string" && sup.parentSessionId.trim() ? sup.parentSessionId.trim() : null)
-        ?? findClientParentSessionId(row.project, row.name);
+        ?? findClientParentSessionId(row, container);
 
       return {
         name: row.name,

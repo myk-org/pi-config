@@ -1,6 +1,5 @@
 import type { SessionInfo } from "@/types";
 import { createLogger } from "./create-logger.ts";
-import { groupAndSortSessions } from "./group-sessions.ts";
 
 const log = createLogger("pidash-ux");
 
@@ -13,8 +12,15 @@ export interface SidebarFlags {
   archived: Set<string>;
 }
 
+function normalizeProjectPath(cwd: string | undefined | null): string {
+  const trimmed = (cwd ?? "").trim();
+  if (!trimmed) return "";
+  const stripped = trimmed.replace(/[\\/]+$/, "");
+  return stripped || trimmed;
+}
+
 function cwdBasename(cwd: string | undefined | null): string {
-  const cleaned = (cwd ?? "").trim().replace(/[\\/]+$/, "");
+  const cleaned = normalizeProjectPath(cwd);
   if (!cleaned) return "";
   return cleaned.split(/[\\/]/).pop() || cleaned;
 }
@@ -293,11 +299,13 @@ export interface SidebarSessionNode {
 }
 
 export interface SidebarProjectGroup {
+  /** Distinct canonical project-path identity (normalized cwd) so same-named folders never collide (#1527). */
+  id: string;
   name: string;
   cwd: string;
   /** Interactive sessions in this project folder, each with directly nested same-project supervised peers. */
   nodes: SidebarSessionNode[];
-  /** Same-project supervised peers matched by `comsProject` when no spawning parent session is present. */
+  /** Same-project supervised peers matched by `comsProject` or via a pinned/archived owner in this project. */
   projectPeers: SessionInfo[];
   /** Flat visual order of all sessions in this group (each parent followed by its children, then `projectPeers`). */
   sessions: SessionInfo[];
@@ -318,25 +326,23 @@ export interface SidebarSessionPartitions {
 
 function peerBelongsToParentProject(
   peer: Pick<SessionInfo, "comsProject">,
-  parent: Pick<SessionInfo, "cwd" | "comsProject">,
+  parent: Pick<SessionInfo, "cwd">,
 ): boolean {
   const peerProject = peer.comsProject?.trim();
   if (!peerProject) return true;
   if (peerProject === deriveComsProjectFromCwd(parent.cwd)) return true;
   if (peerProject === cwdBasename(parent.cwd)) return true;
-  const parentComsProject = parent.comsProject?.trim();
-  if (parentComsProject && peerProject === parentComsProject) return true;
   return false;
 }
 
 /**
  * Partition sessions into sidebar buckets without duplicating local peers or waiting-for-input sessions (#1527):
  * - `pinned`: non-archived pinned sessions.
- * - `groups`: local project folders containing interactive sessions, with same-project supervised peers
- *   nested directly under their spawning `parentSessionId` (or under the owning project folder via `comsProject`
- *   fallback when the parent is absent/restarted).
+ * - `groups`: distinct local project folders (keyed by canonical project path) containing interactive sessions,
+ *   with same-project supervised peers nested directly under their spawning `parentSessionId` (or under the
+ *   owning project folder via cwd-derived `comsProject` fallback when the parent is absent, pinned, or archived).
  * - `coms`: strictly cross-project or unattached peers (supervised peers whose `comsProject` matches no local
- *   project group, plus interactive sessions participating in a different COMS namespace than their local folder).
+ *   project's cwd identity, plus interactive sessions participating in a different COMS namespace than their local folder).
  * - `archived`: all archived sessions (for the collapsible Archived footer section).
  */
 export function partitionSidebarSessions(
@@ -372,43 +378,78 @@ export function partitionSidebarSessions(
   pinned.sort(sortByActiveThenLabel);
   archived.sort(sortByActiveThenLabel);
 
-  const baseGroups = groupAndSortSessions(regularInteractive);
-  const groups: SidebarProjectGroup[] = baseGroups.map((g) => ({
-    name: g.name,
-    cwd: g.cwd,
-    nodes: g.sessions.map((s) => ({ session: s, children: [] })),
-    projectPeers: [],
-    sessions: [],
-  }));
+  // Build distinct project groups keyed by canonical project path so two projects sharing
+  // a folder basename (e.g. `/work/alice/app` vs `/work/bob/app`) stay separate owners.
+  const groups: SidebarProjectGroup[] = [];
+  const groupByProjectKey = new Map<string, SidebarProjectGroup>();
+  const ensureProjectGroup = (projectKey: string, name: string, cwd: string): SidebarProjectGroup => {
+    let group = groupByProjectKey.get(projectKey);
+    if (!group) {
+      group = { id: projectKey, name, cwd, nodes: [], projectPeers: [], sessions: [] };
+      groupByProjectKey.set(projectKey, group);
+      groups.push(group);
+    }
+    return group;
+  };
 
-  // Index local interactive nodes and owning project groups for parent & comsProject matching.
-  const nodeBySessionId = new Map<string, { group: SidebarProjectGroup; node: SidebarSessionNode }>();
-  const groupByDerivedProject = new Map<string, SidebarProjectGroup>();
-  const groupByName = new Map<string, SidebarProjectGroup>();
-  const groupsByInteractiveComsProject = new Map<string, Set<SidebarProjectGroup>>();
+  for (const s of regularInteractive) {
+    const projectKey = normalizeProjectPath(s.cwd) || s.sessionId;
+    const name = cwdBasename(s.cwd) || s.cwd;
+    const group = ensureProjectGroup(projectKey, name, s.cwd);
+    group.nodes.push({ session: s, children: [] });
+  }
+  for (const group of groups) {
+    group.nodes.sort((a, b) => (b.session.active ? 1 : 0) - (a.session.active ? 1 : 0));
+  }
+
+  // Index ALL interactive sessions (regular, pinned, and archived) as valid local-project owners
+  // using strictly cwd-derived identity (never an interactive session's cross-project comsProject).
+  interface LocalProjectOwner {
+    session: SessionInfo;
+    projectKey: string;
+    name: string;
+    cwd: string;
+    regularNode?: SidebarSessionNode;
+  }
+  interface LocalProjectMeta {
+    projectKey: string;
+    name: string;
+    cwd: string;
+  }
+
+  const ownerBySessionId = new Map<string, LocalProjectOwner>();
+  const projectByDerivedSlug = new Map<string, LocalProjectMeta>();
+  const projectsByBasename = new Map<string, Map<string, LocalProjectMeta>>();
+
+  const registerLocalOwner = (s: SessionInfo, regularNode?: SidebarSessionNode) => {
+    const projectKey = normalizeProjectPath(s.cwd) || s.sessionId;
+    const name = cwdBasename(s.cwd) || s.cwd;
+    ownerBySessionId.set(s.sessionId, { session: s, projectKey, name, cwd: s.cwd, regularNode });
+    const meta: LocalProjectMeta = { projectKey, name, cwd: s.cwd };
+    const derived = deriveComsProjectFromCwd(s.cwd);
+    if (derived && !projectByDerivedSlug.has(derived)) {
+      projectByDerivedSlug.set(derived, meta);
+    }
+    if (name) {
+      let byKey = projectsByBasename.get(name);
+      if (!byKey) {
+        byKey = new Map();
+        projectsByBasename.set(name, byKey);
+      }
+      if (!byKey.has(projectKey)) byKey.set(projectKey, meta);
+    }
+  };
 
   for (const group of groups) {
-    if (!groupByName.has(group.name)) groupByName.set(group.name, group);
     for (const node of group.nodes) {
-      nodeBySessionId.set(node.session.sessionId, { group, node });
-      const derived = deriveComsProjectFromCwd(node.session.cwd);
-      if (derived && !groupByDerivedProject.has(derived)) {
-        groupByDerivedProject.set(derived, group);
-      }
-      const base = cwdBasename(node.session.cwd);
-      if (base && !groupByName.has(base)) {
-        groupByName.set(base, group);
-      }
-      const icp = node.session.comsProject?.trim();
-      if (icp) {
-        let set = groupsByInteractiveComsProject.get(icp);
-        if (!set) {
-          set = new Set();
-          groupsByInteractiveComsProject.set(icp, set);
-        }
-        set.add(group);
-      }
+      registerLocalOwner(node.session, node);
     }
+  }
+  for (const s of pinned) {
+    if (s.supervisedPeer !== true) registerLocalOwner(s);
+  }
+  for (const s of archived) {
+    if (s.supervisedPeer !== true) registerLocalOwner(s);
   }
 
   const supervisedById = new Map<string, SessionInfo>();
@@ -416,12 +457,12 @@ export function partitionSidebarSessions(
     supervisedById.set(peer.sessionId, peer);
   }
 
-  const resolveOwningInteractiveNode = (peer: SessionInfo): { group: SidebarProjectGroup; node: SidebarSessionNode } | null => {
+  const resolveOwningInteractive = (peer: SessionInfo): LocalProjectOwner | null => {
     const visited = new Set<string>([peer.sessionId]);
     let parentId = peer.parentSessionId?.trim();
     while (parentId && !visited.has(parentId)) {
       visited.add(parentId);
-      const direct = nodeBySessionId.get(parentId);
+      const direct = ownerBySessionId.get(parentId);
       if (direct) return direct;
       const parentPeer = supervisedById.get(parentId);
       parentId = parentPeer?.parentSessionId?.trim();
@@ -429,16 +470,14 @@ export function partitionSidebarSessions(
     return null;
   };
 
-  const resolveOwningProjectGroup = (comsProject: string | undefined): SidebarProjectGroup | null => {
+  const resolveOwningProjectMeta = (comsProject: string | undefined): LocalProjectMeta | null => {
     const project = comsProject?.trim();
     if (!project) return null;
-    const byDerived = groupByDerivedProject.get(project);
+    const byDerived = projectByDerivedSlug.get(project);
     if (byDerived) return byDerived;
-    const byName = groupByName.get(project);
-    if (byName) return byName;
-    const byInteractive = groupsByInteractiveComsProject.get(project);
-    if (byInteractive && byInteractive.size === 1) {
-      return byInteractive.values().next().value ?? null;
+    const byName = projectsByBasename.get(project);
+    if (byName && byName.size === 1) {
+      return byName.values().next().value ?? null;
     }
     return null;
   };
@@ -451,14 +490,20 @@ export function partitionSidebarSessions(
   };
 
   for (const peer of regularSupervised) {
-    const parentMatch = resolveOwningInteractiveNode(peer);
-    if (parentMatch && peerBelongsToParentProject(peer, parentMatch.node.session)) {
-      parentMatch.node.children.push(peer);
+    const owner = resolveOwningInteractive(peer);
+    if (owner && peerBelongsToParentProject(peer, owner.session)) {
+      if (owner.regularNode) {
+        owner.regularNode.children.push(peer);
+      } else {
+        const group = ensureProjectGroup(owner.projectKey, owner.name, owner.cwd);
+        group.projectPeers.push(peer);
+      }
       continue;
     }
-    const projectMatch = resolveOwningProjectGroup(peer.comsProject);
-    if (projectMatch) {
-      projectMatch.projectPeers.push(peer);
+    const projectMeta = resolveOwningProjectMeta(peer.comsProject);
+    if (projectMeta) {
+      const group = ensureProjectGroup(projectMeta.projectKey, projectMeta.name, projectMeta.cwd);
+      group.projectPeers.push(peer);
       continue;
     }
     addToComs(peer.comsProject?.trim() || "unattached", peer);
@@ -480,7 +525,9 @@ export function partitionSidebarSessions(
     const aActive = a.sessions.some((s) => s.active);
     const bActive = b.sessions.some((s) => s.active);
     if (aActive !== bActive) return bActive ? 1 : -1;
-    return a.name.localeCompare(b.name);
+    const nameDiff = a.name.localeCompare(b.name);
+    if (nameDiff !== 0) return nameDiff;
+    return a.id.localeCompare(b.id);
   });
 
   // Include non-pinned, non-archived interactive sessions only when genuinely cross-project.

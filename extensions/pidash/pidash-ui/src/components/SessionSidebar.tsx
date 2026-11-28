@@ -59,7 +59,6 @@ const LEGACY_COLLAPSED_STORAGE_KEY = "pidash-collapsed-projects";
 
 const dirKey = (name: string) => `dir:${name}`;
 const comsKey = (project: string) => `coms:${project}`;
-const parentKey = (sessionId: string) => `parent:${sessionId}`;
 
 function loadCollapsedProjects(): Set<string> {
   try {
@@ -99,6 +98,9 @@ export function SessionSidebar({
   notifications,
 }: Props) {
   const [collapsedProjects, setCollapsedProjectsRaw] = useState<Set<string>>(() => loadCollapsedProjects());
+  // Keep per-parent nested-peer collapse state in memory only (parent sessionIds embed
+  // ephemeral OS PIDs so persisting them to localStorage would accumulate stale keys).
+  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(() => new Set());
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [archivedSectionOpen, setArchivedSectionOpen] = useState(false);
@@ -124,11 +126,53 @@ export function SessionSidebar({
     [sessions, pinnedSessionIds, archivedSessionIds],
   );
 
+  // When multiple distinct local project paths share the same folder basename, disambiguate
+  // their collapse keys by canonical project path (`group.id`) so collapsing one does not
+  // collapse the other, while preserving legacy `dir:<name>` keys for unique basenames.
+  const groupNameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const g of sortedGroups) {
+      counts.set(g.name, (counts.get(g.name) ?? 0) + 1);
+    }
+    return counts;
+  }, [sortedGroups]);
+
+  const groupCollapseKey = useCallback(
+    (group: { id: string; name: string }) =>
+      dirKey((groupNameCounts.get(group.name) ?? 0) > 1 ? group.id : group.name),
+    [groupNameCounts],
+  );
+
+  // Prune in-memory collapsed parent IDs when sessions disappear so long-lived tabs stay bounded.
+  useEffect(() => {
+    const liveIds = new Set(sessions.map((s) => s.sessionId));
+    setCollapsedParents((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (liveIds.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [sessions]);
+
   // Wrap setter to persist to localStorage
   const setCollapsedProjects = useCallback((update: Set<string> | ((prev: Set<string>) => Set<string>)) => {
     setCollapsedProjectsRaw((prev) => {
       const next = typeof update === "function" ? update(prev) : update;
       saveCollapsedProjects(next);
+      return next;
+    });
+  }, []);
+
+  const toggleParentChildren = useCallback((sessionId: string) => {
+    log.debug("parent nested peers toggled", { sessionId });
+    setCollapsedParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
       return next;
     });
   }, []);
@@ -158,22 +202,30 @@ export function SessionSidebar({
     if (owningGroup) {
       lastRevealedSessionIdRef.current = activeSessionId;
       const owningParent = owningGroup.nodes.find((n) => n.children.some((c) => c.sessionId === activeSessionId));
-      const groupDirKey = dirKey(owningGroup.name);
-      const owningParentKey = owningParent ? parentKey(owningParent.session.sessionId) : null;
+      const groupDirKey = groupCollapseKey(owningGroup);
       setCollapsedProjects((prev) => {
-        const needsGroup = prev.has(groupDirKey);
-        const needsParent = Boolean(owningParentKey && prev.has(owningParentKey));
-        if (!needsGroup && !needsParent) return prev;
-        log.debug("auto-expanded project/parent container for selected session", {
+        if (!prev.has(groupDirKey)) return prev;
+        log.debug("auto-expanded project group for selected session", {
           sessionId: activeSessionId,
           group: owningGroup.name,
-          parentSessionId: owningParent?.session.sessionId ?? null,
         });
         const next = new Set(prev);
-        if (needsGroup) next.delete(groupDirKey);
-        if (owningParentKey && needsParent) next.delete(owningParentKey);
+        next.delete(groupDirKey);
         return next;
       });
+      if (owningParent) {
+        const parentSessionId = owningParent.session.sessionId;
+        setCollapsedParents((prev) => {
+          if (!prev.has(parentSessionId)) return prev;
+          log.debug("auto-expanded parent node for selected session", {
+            sessionId: activeSessionId,
+            parentSessionId,
+          });
+          const next = new Set(prev);
+          next.delete(parentSessionId);
+          return next;
+        });
+      }
       return;
     }
 
@@ -199,7 +251,7 @@ export function SessionSidebar({
     if (pinned.some((s) => s.sessionId === activeSessionId)) {
       lastRevealedSessionIdRef.current = activeSessionId;
     }
-  }, [activeSessionId, archived, pinned, sortedGroups, sortedComsProjects, setCollapsedProjects]);
+  }, [activeSessionId, archived, pinned, sortedGroups, sortedComsProjects, groupCollapseKey, setCollapsedProjects]);
 
   if (collapsed) return null;
 
@@ -515,7 +567,11 @@ export function SessionSidebar({
 
         {sortedGroups.map((group) => {
           const name = group.name;
-          const groupKey = dirKey(name);
+          const isDuplicateName = (groupNameCounts.get(name) ?? 0) > 1;
+          const parentSegment = isDuplicateName
+            ? group.id.split(/[\\/]/).filter(Boolean).slice(-2, -1)[0] || ""
+            : "";
+          const groupKey = groupCollapseKey(group);
           const isExpanded = !collapsedProjects.has(groupKey);
           const hasActive = group.sessions.some(s => s.active);
           const count = group.sessions.length;
@@ -523,7 +579,7 @@ export function SessionSidebar({
           const waitingCount = group.sessions.filter((s) => isSessionWaitingForInput(s, extraAttentionIds)).length;
 
           return (
-            <div key={name} data-project-group={name}>
+            <div key={group.id} data-project-group={name} data-project-path={group.id}>
               {/* Project header */}
               <div
                 className={cn(
@@ -535,6 +591,7 @@ export function SessionSidebar({
                 role="button"
                 tabIndex={0}
                 aria-expanded={isExpanded}
+                title={group.cwd || name}
                 onKeyDown={(e) => {
                   if (e.key !== "Enter" && e.key !== " ") return;
                   e.preventDefault();
@@ -543,7 +600,12 @@ export function SessionSidebar({
               >
                 {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
                 <Folder className="h-3 w-3 shrink-0" />
-                <span className="truncate">{name}</span>
+                <span className="truncate">
+                  {name}
+                  {parentSegment && (
+                    <span className="ml-1 text-[10px] font-normal text-muted-foreground">({parentSegment})</span>
+                  )}
+                </span>
                 <span className="ml-auto flex items-center gap-1 text-[10px] font-normal shrink-0">
                   {!isExpanded && renderAttentionBadge(waitingCount)}
                   <span>{count}</span>
@@ -563,8 +625,7 @@ export function SessionSidebar({
               {isExpanded && (
                 <>
                   {group.nodes.map((node) => {
-                    const pKey = parentKey(node.session.sessionId);
-                    const childrenExpanded = !collapsedProjects.has(pKey);
+                    const childrenExpanded = !collapsedParents.has(node.session.sessionId);
                     const childBusy = node.children.filter((c) => c.active && c.activity === "working").length;
                     const childWaiting = node.children.filter((c) => isSessionWaitingForInput(c, extraAttentionIds)).length;
                     return (
@@ -576,7 +637,7 @@ export function SessionSidebar({
                                 busy: childBusy,
                                 waiting: childWaiting,
                                 expanded: childrenExpanded,
-                                onToggle: () => toggleProject(pKey),
+                                onToggle: () => toggleParentChildren(node.session.sessionId),
                               }
                             : undefined,
                         })}

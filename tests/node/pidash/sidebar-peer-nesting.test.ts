@@ -307,6 +307,123 @@ describe("sidebar peer nesting helpers (#1527)", () => {
     });
     assert.equal(label, "peer-1527-pidash-dedup");
   });
+
+  it("routes cross-project peer to Coms when parent uses a foreign COMS namespace", () => {
+    const parentInA = makeSession("s-parent-a", {
+      cwd: "/home/dev/git/project-a",
+      comsProject: "namespace-b",
+    });
+    const peerInB = makeSession("s-peer-b", {
+      cwd: "/home/dev/.pi/sandboxes/sb-b/workspace",
+      comsProject: "namespace-b",
+      comsName: "peer-b",
+      supervisedPeer: true,
+      parentSessionId: parentInA.sessionId,
+    });
+
+    const parts = partitionSidebarSessions([parentInA, peerInB], { pinnedIds: EMPTY_IDS, archivedIds: EMPTY_IDS });
+
+    assert.deepEqual(parts.groups.map((g) => g.name), ["project-a"]);
+    assert.deepEqual(parts.groups[0].nodes[0].children, []);
+    assert.deepEqual(parts.groups[0].projectPeers, []);
+    assert.equal(parts.coms.length, 1);
+    assert.equal(parts.coms[0].project, "namespace-b");
+    assert.ok(parts.coms[0].sessions.some((s) => s.sessionId === "s-peer-b"));
+  });
+
+  it("routes parent-absent cross-project peer to Coms when an interactive session joined that namespace", () => {
+    const sessionInA = makeSession("s-a", {
+      cwd: "/home/dev/git/project-a",
+      comsProject: "namespace-b",
+    });
+    const peerInB = makeSession("s-peer-b", {
+      cwd: "/home/dev/.pi/sandboxes/sb-b/workspace",
+      comsProject: "namespace-b",
+      comsName: "peer-b",
+      supervisedPeer: true,
+    });
+
+    const parts = partitionSidebarSessions([sessionInA, peerInB], { pinnedIds: EMPTY_IDS, archivedIds: EMPTY_IDS });
+
+    assert.deepEqual(parts.groups[0].projectPeers, []);
+    assert.equal(parts.coms.length, 1);
+    assert.ok(parts.coms[0].sessions.some((s) => s.sessionId === "s-peer-b"));
+  });
+
+  it("keeps same-project peer in local project folder when its only interactive owner is pinned", () => {
+    const pinnedParent = makeSession("s-pinned-parent", {
+      cwd: "/home/dev/git/pi-config",
+      comsProject: "home__dev__git__pi-config",
+    });
+    const peer = makeSession("s-peer", {
+      cwd: "/home/dev/.pi/sandboxes/sb-1/workspace",
+      comsProject: "home__dev__git__pi-config",
+      comsName: "peer-1527",
+      supervisedPeer: true,
+      parentSessionId: pinnedParent.sessionId,
+    });
+
+    const parts = partitionSidebarSessions([pinnedParent, peer], {
+      pinnedIds: new Set(["s-pinned-parent"]),
+      archivedIds: EMPTY_IDS,
+    });
+
+    assert.deepEqual(parts.pinned.map((s) => s.sessionId), ["s-pinned-parent"]);
+    assert.deepEqual(parts.groups.map((g) => g.name), ["pi-config"]);
+    assert.deepEqual(parts.groups[0].projectPeers.map((s) => s.sessionId), ["s-peer"]);
+    assert.deepEqual(parts.coms, []);
+  });
+
+  it("keeps same-project peer in local project folder when its only interactive owner is archived", () => {
+    const archivedParent = makeSession("s-archived-parent", {
+      cwd: "/home/dev/git/pi-config",
+      comsProject: "home__dev__git__pi-config",
+    });
+    const peer = makeSession("s-peer", {
+      cwd: "/home/dev/.pi/sandboxes/sb-1/workspace",
+      comsProject: "home__dev__git__pi-config",
+      comsName: "peer-1527",
+      supervisedPeer: true,
+    });
+
+    const parts = partitionSidebarSessions([archivedParent, peer], {
+      pinnedIds: EMPTY_IDS,
+      archivedIds: new Set(["s-archived-parent"]),
+    });
+
+    assert.deepEqual(parts.archived.map((s) => s.sessionId), ["s-archived-parent"]);
+    assert.deepEqual(parts.groups.map((g) => g.name), ["pi-config"]);
+    assert.deepEqual(parts.groups[0].projectPeers.map((s) => s.sessionId), ["s-peer"]);
+    assert.deepEqual(parts.coms, []);
+  });
+
+  it("separates fallback peers across distinct projects sharing the same folder basename", () => {
+    const aliceApp = makeSession("s-alice", { cwd: "/work/alice/app", comsProject: "work__alice__app" });
+    const bobApp = makeSession("s-bob", { cwd: "/work/bob/app", comsProject: "work__bob__app" });
+    const alicePeer = makeSession("s-peer-alice", {
+      cwd: "/home/dev/.pi/sandboxes/sb-a/workspace",
+      comsProject: "work__alice__app",
+      comsName: "peer-alice",
+      supervisedPeer: true,
+    });
+    const bobPeer = makeSession("s-peer-bob", {
+      cwd: "/home/dev/.pi/sandboxes/sb-b/workspace",
+      comsProject: "work__bob__app",
+      comsName: "peer-bob",
+      supervisedPeer: true,
+    });
+
+    const parts = partitionSidebarSessions([bobApp, aliceApp, bobPeer, alicePeer], {
+      pinnedIds: EMPTY_IDS,
+      archivedIds: EMPTY_IDS,
+    });
+
+    assert.equal(parts.groups.length, 2);
+    assert.deepEqual(parts.groups.map((g) => g.id), ["/work/alice/app", "/work/bob/app"]);
+    assert.deepEqual(parts.groups[0].projectPeers.map((s) => s.sessionId), ["s-peer-alice"]);
+    assert.deepEqual(parts.groups[1].projectPeers.map((s) => s.sessionId), ["s-peer-bob"]);
+    assert.deepEqual(parts.coms, []);
+  });
 });
 
 describe("SessionSidebar component hierarchy (#1527)", () => {
@@ -424,7 +541,7 @@ describe("SessionSidebar component hierarchy (#1527)", () => {
   });
 
   it("auto-expands a collapsed parent node when selecting its nested peer", async () => {
-    installMockStorage({ "pidash-collapsed-projects-v2": JSON.stringify(["parent:s-parent"]) });
+    const storage = installMockStorage();
     const parent = makeSession("s-parent", { cwd: "/home/dev/git/pi-config", comsProject: "pi-config", name: "Main" });
     const child = makeSession("s-child", {
       cwd: "/home/dev/git/pi-config/.worktrees/wt-1",
@@ -435,7 +552,13 @@ describe("SessionSidebar component hierarchy (#1527)", () => {
     });
 
     const { container, render } = await renderSidebar({ sessions: [parent, child], activeSessionId: null });
+    assert.equal((container.textContent ?? "").includes("peer-under-collapsed-parent"), true);
+
+    const toggleBtn = elements(container, "button").find((el) => el.getAttribute("data-toggle-children") === "s-parent");
+    assert.ok(toggleBtn);
+    await act(async () => toggleBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     assert.equal((container.textContent ?? "").includes("peer-under-collapsed-parent"), false);
+    assert.equal(storage.get("pidash-collapsed-projects-v2"), undefined);
 
     await render({ sessions: [parent, child], activeSessionId: "s-child" });
     assert.equal((container.textContent ?? "").includes("peer-under-collapsed-parent"), true);
@@ -694,6 +817,130 @@ describe("parentSessionId propagation & disconnect preservation (#1527)", () => 
 
       assert.equal(summary.peers.length, 1);
       assert.equal((summary.peers[0] as any).parentSessionId, "100:/home/dev/git/pi-config");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits parentSessionId on collectPeers when only a disconnected client reuses the peer name", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pidash-api-stale-parent-"));
+    try {
+      const agentsDir = path.join(dir, "projects", "pi-config", "agents");
+      const socketsDir = path.join(dir, "sockets");
+      mkdirSync(agentsDir, { recursive: true });
+      mkdirSync(socketsDir, { recursive: true });
+      const sockPath = path.join(socketsDir, "peer-reuse.sock");
+      writeFileSync(sockPath, "");
+      const nowIso = new Date().toISOString();
+      writeFileSync(
+        path.join(agentsDir, "peer-reuse.json"),
+        JSON.stringify({
+          coms_session_id: "sid-new",
+          name: "peer-reuse",
+          project: "pi-config",
+          pid: process.pid,
+          cwd: "/home/dev/.pi/sandboxes/sb-new/workspace",
+          purpose: "replacement",
+          endpoint: sockPath,
+          busy: false,
+          started_at: nowIso,
+          heartbeat_at: nowIso,
+        }),
+      );
+
+      const sessions = new Map<string, PiClient>();
+      const staleWs = { send: () => {} };
+      const staleClient = registerPidashSession(
+        sessions,
+        staleWs,
+        {
+          sessionId: "old-peer-sid",
+          pid: process.pid,
+          cwd: "/home/dev/.pi/sandboxes/sb-old/workspace",
+          comsName: "peer-reuse",
+          comsProject: "pi-config",
+          supervisedPeer: true,
+          parentSessionId: "100:/home/dev/git/old-parent",
+        },
+        () => {},
+      );
+      disconnectPidashSession(staleClient, staleWs, "close", () => {});
+
+      const summary = collectPeers(
+        {
+          getPort: () => 19190,
+          getPiClients: () => sessions,
+          getBrowserCount: () => 0,
+          getAsyncAgents: () => [],
+          comsDir: dir,
+          now: () => Date.now(),
+        },
+        "*",
+      );
+
+      assert.equal(summary.peers.length, 1);
+      assert.equal("parentSessionId" in summary.peers[0], false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes parentSessionId on collectPeers from active piClient matching live peer pid", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pidash-api-live-parent-"));
+    try {
+      const agentsDir = path.join(dir, "projects", "pi-config", "agents");
+      const socketsDir = path.join(dir, "sockets");
+      mkdirSync(agentsDir, { recursive: true });
+      mkdirSync(socketsDir, { recursive: true });
+      const sockPath = path.join(socketsDir, "peer-live.sock");
+      writeFileSync(sockPath, "");
+      const nowIso = new Date().toISOString();
+      writeFileSync(
+        path.join(agentsDir, "peer-live.json"),
+        JSON.stringify({
+          coms_session_id: "sid-live",
+          name: "peer-live",
+          project: "pi-config",
+          pid: process.pid,
+          cwd: "/home/dev/.pi/sandboxes/sb-live/workspace",
+          purpose: "active",
+          endpoint: sockPath,
+          busy: false,
+          started_at: nowIso,
+          heartbeat_at: nowIso,
+        }),
+      );
+
+      const sessions = new Map<string, PiClient>();
+      registerPidashSession(
+        sessions,
+        { send: () => {} },
+        {
+          sessionId: "live-peer-sid",
+          pid: process.pid,
+          cwd: "/home/dev/.pi/sandboxes/sb-live/workspace",
+          comsName: "peer-live",
+          comsProject: "pi-config",
+          supervisedPeer: true,
+          parentSessionId: "555:/home/dev/git/pi-config",
+        },
+        () => {},
+      );
+
+      const summary = collectPeers(
+        {
+          getPort: () => 19190,
+          getPiClients: () => sessions,
+          getBrowserCount: () => 0,
+          getAsyncAgents: () => [],
+          comsDir: dir,
+          now: () => Date.now(),
+        },
+        "*",
+      );
+
+      assert.equal(summary.peers.length, 1);
+      assert.equal((summary.peers[0] as any).parentSessionId, "555:/home/dev/git/pi-config");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
