@@ -30,7 +30,7 @@ import {
   type PeerWorkloadCounts,
   type WorkloadTruncation,
 } from "./coms-workload.js";
-import { describePeerOrigin } from "./coms-peers.js";
+import { describePeerOrigin, isPeerBusy } from "./coms-peers.js";
 import { sanitizePeerText } from "./peer-text.js";
 import { createLogger } from "../shared/logger.js";
 
@@ -292,7 +292,7 @@ export function buildPeerInfoRow(peer: PeerInfoSource): DrilldownRow {
     ["pid", (peer.hostPid ?? peer.pid) === null || (peer.hostPid ?? peer.pid) === undefined ? "—" : String(peer.hostPid ?? peer.pid)],
     ["Socket", dash(sanitizePeerText(peer.endpoint ?? "", 80))],
     ["Heartbeat", typeof age === "number" ? `${age}s ago` : "unknown"],
-    ["State", `${peer.busy ? "busy" : "idle"}${peer.queueDepth ? ` · queue ${peer.queueDepth}` : ""}${peer.contextUsedPct === null || peer.contextUsedPct === undefined ? "" : ` · ctx ${Math.round(peer.contextUsedPct)}%`}`],
+    ["State", `${isPeerBusy(peer) ? "busy" : "idle"}${peer.queueDepth ? ` · queue ${peer.queueDepth}` : ""}${peer.contextUsedPct === null || peer.contextUsedPct === undefined ? "" : ` · ctx ${Math.round(peer.contextUsedPct)}%`}`],
     // Three cases, decided once in coms-workload: not reported is `unknown`, reported-and-empty
     // is `none active`. Turning the second into the first would claim ignorance we do not have.
     ["Workload", workloadStateLabel(peer.workload)],

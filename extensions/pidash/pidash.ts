@@ -1106,6 +1106,7 @@ export function registerPidash(
         type: "register",
         pid: process.pid,
         sessionId,
+        piSessionId: ctx.sessionManager?.getSessionId?.() || null,
         connectionGeneration: thisConnectionGeneration,
         cwd: ctx.cwd,
         branch: resolvedGit.branch,
@@ -1605,6 +1606,7 @@ export function registerPidash(
       client.send({
         type: "session_switch",
         sessionId,
+        piSessionId: switchCtx.sessionManager?.getSessionId?.() || null,
         cwd: switchCtx.cwd,
         branch: getGitBranch(switchCtx.cwd),
         worktreeCount: 0,

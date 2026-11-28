@@ -32,6 +32,7 @@ interface RunConfig {
   reviewerOutputPath?: string;
   workerDir: string;
   sessionId?: string;
+  piSessionId?: string | null;
   piCommand: string;
   piArgs: string[];
 }
@@ -109,6 +110,7 @@ async function run(config: RunConfig): Promise<void> {
         task: config.task.slice(0, 200),
         cwd: config.cwd,
         sessionId: config.sessionId,
+        piSessionId: config.piSessionId ?? null,
         taskId: config.taskId ?? null,
         startedAt,
       }));

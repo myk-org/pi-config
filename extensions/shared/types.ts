@@ -38,6 +38,8 @@ export interface SessionInfo {
   comsProject?: string;
   /** True when the session is a supervised headless COMS RPC peer (localhost-only watch/control). */
   supervisedPeer?: boolean;
+  /** Number of currently running async subagents spawned by this session (#1509). */
+  runningAsyncAgents?: number;
   /** Exact authoritative Trail savings for this parent Pi session. */
   trailTokenSavings?: number;
   /** Linked (non-main) worktree count for this session's repository. */

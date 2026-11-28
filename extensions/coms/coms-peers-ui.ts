@@ -32,6 +32,7 @@ import { buildTellRequest } from "./coms-shared.js";
 import {
   collectComsActivityEvents,
   formatComsPeersPlainText,
+  isPeerBusy,
   peerOverlayRowId,
   type RegistryRow,
 } from "./coms-peers.js";
@@ -427,7 +428,7 @@ export async function openComsPeersOverlay(
           const liveRows = rows.filter((r) => !r.stopped);
           const stoppedCount = rows.length - liveRows.length;
           const stoppedPart = stoppedCount > 0 ? ` · ${stoppedCount} stopped` : "";
-          return `peers (${projectScope === "all" ? "all projects" : "this project"}) · ${liveRows.filter((r) => r.busy).length} busy / ${liveRows.length}${stoppedPart}`;
+          return `peers (${projectScope === "all" ? "all projects" : "this project"}) · ${liveRows.filter((r) => isPeerBusy(r)).length} busy / ${liveRows.length}${stoppedPart}`;
         },
         emptyBody: () =>
           projectScope === "all"
@@ -456,12 +457,13 @@ export async function openComsPeersOverlay(
           }
           // #1083: the peer's own active work — or `unknown`, never a fabricated 0.
           const workload = renderWorkloadPart(row.workload, theme).trim();
+          const busy = isPeerBusy(row);
           return {
-            glyph: row.busy ? theme.fg("warning", "◆") : theme.fg("success", "●"),
+            glyph: busy ? theme.fg("warning", "◆") : theme.fg("success", "●"),
             title: sanitizePeerText(row.name, 100),
             idLabel: theme.fg("dim", sanitizePeerText(row.project, 100)),
             rightParts: [
-              theme.fg("muted", row.busy ? "busy" : "idle"),
+              theme.fg("muted", busy ? "busy" : "idle"),
               ...(row.queueDepth ? [theme.fg("dim", `queue:${row.queueDepth}`)] : []),
               ...(row.contextUsedPct === null ? [] : [theme.fg("dim", `ctx:${Math.round(row.contextUsedPct)}%`)]),
               ...(row.container ? [theme.fg("accent", `🐳 ${sanitizePeerText(row.container, 32)}`)] : []),
@@ -659,7 +661,7 @@ export async function openComsPeersOverlay(
 /** One line of peer identity for the section list's border: the drilldown's own header, since the
  *  old text pane is gone. */
 function peerHeader(row: Row, deps: ComsPeersOverlayDeps): string {
-  const parts = [sanitizePeerText(row.name, 40), sanitizePeerText(row.project, 40), row.busy ? "busy" : "idle"];
+  const parts = [sanitizePeerText(row.name, 40), sanitizePeerText(row.project, 40), isPeerBusy(row) ? "busy" : "idle"];
   if (row.container) parts.push(`🐳 ${sanitizePeerText(row.container, 32)}`);
   if (row.contextUsedPct !== null) parts.push(`ctx ${Math.round(row.contextUsedPct)}%`);
   if (row.queueDepth) parts.push(`queue ${row.queueDepth}`);
