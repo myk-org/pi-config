@@ -267,7 +267,6 @@ export interface PiInvocationOptions {
   execPath?: string;
   envPath?: string;
   platform?: NodeJS.Platform;
-  comspec?: string;
 }
 
 function canonicalPath(filePath: string): string {
@@ -388,39 +387,40 @@ export function resolveActivePiOnPath(
   return undefined;
 }
 
-function escapeWindowsCmdArg(arg: string): string {
-  // With whitespace/quotes, Node/libuv wraps the arg in double quotes for CreateProcessW
-  // where cmd metacharacters are inert; without quotes, `cmd /c call` parses twice so
-  // metacharacters need triple-caret escaping.
-  if (/[\s"]/.test(arg)) {
-    return arg;
-  }
-  return arg.replace(/([&|<>^()!])/g, "^^^$1");
-}
-
-function buildCommandInvocation(
-  command: string,
-  args: string[],
-  platform: NodeJS.Platform,
-  comspec?: string,
-): { command: string; args: string[] } {
-  if (platform === "win32" && WINDOWS_SCRIPT_EXT_RE.test(command)) {
-    const shellExe = comspec || process.env.ComSpec || "cmd.exe";
-    // `call` keeps the first token after /c unquoted so cmd.exe does not strip
-    // outer quotes when both script path and arguments contain spaces.
-    return {
-      command: shellExe,
-      args: ["/d", "/c", "call", command, ...args.map(escapeWindowsCmdArg)],
-    };
-  }
-  return { command, args };
-}
-
 function resolveReleaseEntryBin(releaseDir: string, platform: NodeJS.Platform): string | undefined {
   const cliJs = path.join(releaseDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
+  if (platform === "win32") {
+    // On Windows, node_modules/.bin/pi is a POSIX sh shim; only spawn the JS bundle with node/bun.
+    return fs.existsSync(cliJs) ? cliJs : undefined;
+  }
   const dotBin = path.join(releaseDir, "node_modules", ".bin", "pi");
-  const candidates = platform === "win32" ? [cliJs, dotBin] : [dotBin, cliJs];
-  return candidates.find((c) => fs.existsSync(c));
+  return fs.existsSync(dotBin) ? dotBin : (fs.existsSync(cliJs) ? cliJs : undefined);
+}
+
+function resolveDirectInvocationForPi(
+  pi: ActivePiInstall | undefined,
+  execPath: string,
+  isJsRuntime: boolean,
+  platform: NodeJS.Platform,
+  args: string[],
+): { command: string; args: string[] } | undefined {
+  if (!pi) return undefined;
+  if (!(platform === "win32" && WINDOWS_SCRIPT_EXT_RE.test(pi.command))) {
+    return { command: pi.command, args };
+  }
+  // Never spawn Windows .cmd/.bat directly (EINVAL with shell: false) or via cmd.exe
+  // (task prompts carry arbitrary quotes/metacharacters). Resolve its JS bundle instead.
+  if (!isJsRuntime) return undefined;
+  const searchRoots = [
+    ...(pi.releaseDir ? [pi.releaseDir] : []),
+    path.dirname(pi.realPath),
+    path.dirname(pi.command),
+  ];
+  for (const root of searchRoots) {
+    const cliJs = resolveReleaseEntryBin(root, platform);
+    if (cliJs) return { command: execPath, args: [cliJs, ...args] };
+  }
+  return undefined;
 }
 
 export function getPiInvocation(args: string[], opts?: PiInvocationOptions): { command: string; args: string[] } {
@@ -453,24 +453,25 @@ export function getPiInvocation(args: string[], opts?: PiInvocationOptions): { c
           || !matchingPi.releaseDir
           || canonicalPath(matchingPi.releaseDir) === canonicalPath(activeReleaseDir)
         );
-        const matchingIsScript = matchingLauncherValid
-          && platform === "win32"
-          && WINDOWS_SCRIPT_EXT_RE.test(matchingPi.command);
 
-        // 1. Prefer a directly spawnable PATH launcher verified to belong to this managed install.
-        if (matchingLauncherValid && !matchingIsScript) {
-          log.warn("pi_invocation_release_fallback", {
-            reason,
-            argv1: s,
-            releaseDir: releaseInfo.releaseDir,
-            activeReleaseDir,
-            fallback: matchingPi.command,
-          });
-          return { command: matchingPi.command, args };
+        // 1. Prefer a directly spawnable PATH launcher (or its JS bundle on Windows)
+        //    verified to belong to this managed install.
+        if (matchingLauncherValid) {
+          const direct = resolveDirectInvocationForPi(matchingPi, execPath, isJsRuntime, platform, args);
+          if (direct) {
+            log.warn("pi_invocation_release_fallback", {
+              reason,
+              argv1: s,
+              releaseDir: releaseInfo.releaseDir,
+              activeReleaseDir,
+              fallback: direct.command === execPath ? direct.args[0] : direct.command,
+            });
+            return direct;
+          }
         }
 
-        // 2. Prefer this managed install's own current-version JS entry under node/bun
-        //    (avoids unrelated PATH installs and Windows cmd.exe script-quoting hazards).
+        // 2. Prefer this managed install's own current-version entry under node/bun
+        //    over any unrelated pi earlier on PATH.
         if (activeReleaseDir && isJsRuntime) {
           const releaseBin = resolveReleaseEntryBin(activeReleaseDir, platform);
           if (releaseBin) {
@@ -485,32 +486,23 @@ export function getPiInvocation(args: string[], opts?: PiInvocationOptions): { c
           }
         }
 
-        // 3. Matching Windows .cmd/.bat launcher when no direct JS entry is available.
-        if (matchingLauncherValid) {
-          const inv = buildCommandInvocation(matchingPi.command, args, platform, opts?.comspec);
-          log.warn("pi_invocation_release_fallback", {
-            reason,
-            argv1: s,
-            releaseDir: releaseInfo.releaseDir,
-            activeReleaseDir,
-            fallback: inv.command,
-          });
-          return inv;
+        // 3. Last resort when this install has no valid current-version release:
+        //    pick a directly spawnable pi (or its JS bundle on Windows) from PATH,
+        //    never delegating to cmd.exe with untrusted task arguments.
+        let inv: { command: string; args: string[] } | undefined;
+        for (const candidate of findExecutablesOnPath("pi", envPath, platform)) {
+          inv = resolveDirectInvocationForPi(inspectPiCandidate(candidate), execPath, isJsRuntime, platform, args);
+          if (inv) break;
         }
-
-        // 4. Last resort when this install has no valid current-version release.
-        const anyPi = resolveActivePiOnPath(envPath, { platform });
-        const inv = anyPi
-          ? buildCommandInvocation(anyPi.command, args, platform, opts?.comspec)
-          : { command: "pi", args };
+        const resolved = inv ?? { command: "pi", args };
         log.warn("pi_invocation_release_fallback", {
           reason,
           argv1: s,
           releaseDir: releaseInfo.releaseDir,
           activeReleaseDir,
-          fallback: inv.command,
+          fallback: resolved.command === execPath ? resolved.args[0] : resolved.command,
         });
-        return inv;
+        return resolved;
       };
 
       if (!exists || !fs.existsSync(releaseInfo.releaseDir)) {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import {
@@ -414,31 +415,69 @@ describe("getPiInvocation pruned release recovery (#1493)", () => {
 			execPath: "C:\\node\\node.exe",
 			envPath: binDir,
 			platform: "win32",
-			comspec: "C:\\Windows\\System32\\cmd.exe",
 		});
 		assert.deepEqual(inv, { command: "C:\\node\\node.exe", args: [r170.cliJs, "--mode", "json"] });
 	});
 
-	it("wraps a Windows pi.cmd fallback in a spawnable cmd.exe call invocation when no direct binary exists", () => {
-		const root = createTempRoot("pi-inv-win-cmd-");
-		const binDir = join(root, "bin");
+	it("resolves sibling node cli.js from a global Windows pi.cmd shim without invoking cmd.exe", () => {
+		const root = createTempRoot("pi-inv-win-npm-cmd-");
+		const npmBinDir = join(root, "npm");
 		const installRoot = join(root, "install");
-		mkdirSync(binDir, { recursive: true });
-		const piCmd = join(binDir, "pi.cmd");
-		writeFileSync(piCmd, "@echo off\r\n");
+		const siblingCliJs = join(
+			npmBinDir,
+			"node_modules",
+			"@earendil-works",
+			"pi-coding-agent",
+			"dist",
+			"bundle",
+			"cli.js",
+		);
+		mkdirSync(dirname(siblingCliJs), { recursive: true });
+		writeFileSync(join(npmBinDir, "pi.cmd"), "@echo off\r\n");
+		writeFileSync(
+			siblingCliJs,
+			"const fs = require('node:fs'); fs.writeFileSync(process.env.OUT_FILE, JSON.stringify(process.argv.slice(2)));\n",
+		);
 		const r160 = createRelease(installRoot, "1.6.0");
 		rmSync(r160.releaseDir, { recursive: true, force: true });
 
-		const inv = getPiInvocation(["--mode", "json", "a&b", "Task: check & verify"], {
+		const hostileTask = 'Task: x" & whoami & " | echo %PATH% ^ (test)';
+		const inv = getPiInvocation(["--mode", "json", hostileTask], {
+			argv1: r160.releaseBin,
+			execPath: process.execPath,
+			envPath: npmBinDir,
+			platform: "win32",
+		});
+		assert.deepEqual(inv, {
+			command: process.execPath,
+			args: [siblingCliJs, "--mode", "json", hostileTask],
+		});
+
+		const outFile = join(root, "argv.json");
+		const res = spawnSync(inv.command, inv.args, {
+			shell: false,
+			env: { ...process.env, OUT_FILE: outFile },
+		});
+		assert.equal(res.status, 0);
+		assert.deepEqual(JSON.parse(readFileSync(outFile, "utf8")), ["--mode", "json", hostileTask]);
+	});
+
+	it("never spawns an opaque Windows pi.cmd via cmd.exe when no direct binary or JS entry exists", () => {
+		const root = createTempRoot("pi-inv-win-opaque-cmd-");
+		const binDir = join(root, "bin");
+		const installRoot = join(root, "install");
+		mkdirSync(binDir, { recursive: true });
+		writeFileSync(join(binDir, "pi.cmd"), "@echo off\r\n");
+		const r160 = createRelease(installRoot, "1.6.0");
+		rmSync(r160.releaseDir, { recursive: true, force: true });
+
+		const hostileTask = 'Task: x" & whoami & "';
+		const inv = getPiInvocation(["--mode", "json", hostileTask], {
 			argv1: r160.releaseBin,
 			execPath: "C:\\node\\node.exe",
 			envPath: binDir,
 			platform: "win32",
-			comspec: "C:\\Windows\\System32\\cmd.exe",
 		});
-		assert.deepEqual(inv, {
-			command: "C:\\Windows\\System32\\cmd.exe",
-			args: ["/d", "/c", "call", piCmd, "--mode", "json", "a^^^&b", "Task: check & verify"],
-		});
+		assert.deepEqual(inv, { command: "pi", args: ["--mode", "json", hostileTask] });
 	});
 });
