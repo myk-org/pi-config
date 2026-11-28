@@ -4,6 +4,7 @@ import { createLogger, logger } from "./logger.js";
 import { sanitizeForLog } from "./http-helpers.js";
 import {
   DEFAULT_TOOLS,
+  type AgentSessionRuntimeDiagnostic,
   type CreateSessionOptions,
   type DiscoveredModel,
   type DiscoveredProvider,
@@ -37,6 +38,7 @@ export {
   HEADLESS_EXCLUDED_PROVIDERS,
   INTERNAL_AGENT_DIR,
   PiProviderRuntime,
+  collectServiceDiagnostics,
   createApiKeyRedactor,
   createSessionSettingsManager,
   hasKnownPricing,
@@ -46,6 +48,7 @@ export {
   readTrustedKeyScopedProviders,
   redactApiKey,
   redactDiagnostic,
+  redactDiagnosticSecrets,
   redactorHoldback,
   redactorLiteralHoldback,
   resolveExt,
@@ -53,6 +56,7 @@ export {
   resolveExtensionPathDetailed,
   resolveInternalAgentDir,
   snapshotLegacyAmbientProviders,
+  type AgentSessionRuntimeDiagnostic,
   type CreateRuntimeSessionInput,
   type CreateSessionOptions,
   type CreatedRuntimeSession,
@@ -67,6 +71,7 @@ export {
   type ProviderRuntime,
   type ProviderStatus,
   type ResolveResult,
+  type ServiceDiagnosticsSource,
   type StoredSession,
   type TrustedProviderSnapshot,
 } from "./provider-runtime.js";
@@ -520,6 +525,11 @@ export class SessionStore {
 
   get discoveryError(): string | null {
     return this.runtime.discoveryError;
+  }
+
+  /** Read-only view of retained diagnostics from the internal registrar runtime. */
+  getInternalDiagnostics(): readonly AgentSessionRuntimeDiagnostic[] {
+    return this.runtime.getInternalDiagnostics?.() ?? [];
   }
 
   count(): number {

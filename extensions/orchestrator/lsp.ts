@@ -18,16 +18,17 @@
  *   `session_shutdown`, and silent degradation on missing binaries or errors.
  */
 
-import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import type { ExtensionAPI, ToolResultEventResult } from "@earendil-works/pi-coding-agent";
 import { acquireTokenFileLock } from "../shared/file-lock.js";
+import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { createLogger, type Logger } from "../shared/logger.js";
 import {
   loadGlobalSettings,
@@ -37,7 +38,6 @@ import {
 import { openStateDb, withTransaction } from "./state-db.js";
 import { resolveWorktreeRoot } from "./utils.js";
 
-const execFileAsync = promisify(execFile);
 const defaultLog = createLogger("lsp");
 
 export const DEFAULT_DIAGNOSTICS_TIMEOUT_MS = 1_500;
@@ -48,6 +48,9 @@ export const DEFAULT_KILL_GRACE_MS = 300;
 export const DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 2;
 export const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1_000;
 export const MAX_DIAGNOSTIC_LINES = 20;
+export const DEFAULT_PENDING_INSTALL_POLL_MS = 2_000;
+export const DEFAULT_PENDING_CLAIM_TTL_MS = 5 * 60 * 1_000;
+export const DEFAULT_PROMPT_ERROR_BACKOFF_MS = 30_000;
 
 const MAX_RPC_BUFFER_BYTES = 10 * 1024 * 1024;
 const CIRCUIT_CRASH_WINDOW_MS = 60_000;
@@ -117,6 +120,8 @@ export interface LspManagerOptions {
   brokerRunDir?: string;
   envPath?: string;
   logger?: Logger;
+  /** Internal lifecycle hook invoked when `LspManager.shutdownAll()` runs. */
+  onShutdown?: () => void;
 }
 
 export interface RegisterLspOptions extends LspManagerOptions {
@@ -125,9 +130,18 @@ export interface RegisterLspOptions extends LspManagerOptions {
   /** Override SQLite DB path for "Don't ask again" install prompt persistence in tests. */
   installPrefsDbPath?: string;
   /** Override installer execution in tests. Return `{ ok, error? }`. */
-  installRunner?: (recipe: LspInstallRecipe) => Promise<{ ok: boolean; error?: string }>;
+  installRunner?: (
+    recipe: LspInstallRecipe,
+    options?: { signal?: AbortSignal },
+  ) => Promise<{ ok: boolean; error?: string }>;
   /** Override executable verification after install in tests. */
   verifyInstalled?: (binary: string, envPath?: string) => string | null;
+  /** Poll interval for idle cross-process pending install checks (`0` disables watcher). */
+  pendingPollIntervalMs?: number;
+  /** Lease TTL for atomic cross-process pending install claims. */
+  pendingClaimTtlMs?: number;
+  /** Per-session retry backoff after a transient `ctx.ui.select()` failure. */
+  promptErrorBackoffMs?: number;
 }
 
 export const BUILTIN_INSTALL_RECIPES: Readonly<Record<string, LspInstallRecipe>> = Object.freeze({
@@ -291,9 +305,29 @@ export function getManagedLspBinDir(managedDir: string = getManagedLspDir()): st
 }
 
 function getDefaultLspSearchPath(): string {
-  const sysPath = process.env.PATH ?? "";
-  const managedBin = getManagedLspBinDir();
-  return sysPath ? `${sysPath}${path.delimiter}${managedBin}` : managedBin;
+  const sysParts = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const home = os.homedir();
+  const candidates = [
+    ...sysParts,
+    getManagedLspBinDir(),
+    path.join(home, ".local", "bin"),
+    path.join(home, "go", "bin"),
+  ];
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const dir of candidates) {
+    if (!dir || seen.has(dir)) continue;
+    seen.add(dir);
+    deduped.push(dir);
+  }
+  return deduped.join(path.delimiter);
+}
+
+function isBuiltinServerInstalled(serverId: string, envPath?: string): boolean {
+  const spec = BUILTIN_LSP_SERVERS.find((s) => s.id === serverId);
+  if (!spec) return false;
+  const searchPath = envPath === undefined ? getDefaultLspSearchPath() : envPath;
+  return spec.candidates.some((c) => findExecutableOnPath(c.command, searchPath) !== null);
 }
 
 /**
@@ -415,6 +449,27 @@ export function findMissingBuiltinServerId(
   return null;
 }
 
+/**
+ * Return `true` only when `ctx` represents a real interactive TUI session that
+ * can safely prompt with `ctx.ui.select()`.
+ *
+ * Pi `--mode rpc` (used by `scripts/coms-peer-supervisor.mjs`) sets `ctx.hasUI = true`
+ * while `ctx.mode === "rpc"` and `PI_COMS_SUPERVISED_PEER === "1"`; calling
+ * `ctx.ui.select()` there deadlocks indefinitely because the supervisor never answers
+ * `extension_ui_request`.
+ */
+export function isInteractiveTuiForLspPrompt(
+  ctx: any,
+  isSubagent: boolean = process.env.PI_SUBAGENT_CHILD === "1",
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (isSubagent) return false;
+  if (env.PI_COMS_SUPERVISED_PEER === "1") return false;
+  if (ctx?.hasUI !== true || typeof ctx?.ui?.select !== "function") return false;
+  const mode = ctx?.mode;
+  return mode === undefined || mode === "tui";
+}
+
 // ── Missing-server install prompt persistence (SQLite kv_state) ──────
 
 export function getDefaultLspPrefsDbPath(): string {
@@ -464,6 +519,290 @@ export function dismissLspInstallPermanently(serverId: string, dbPath: string = 
   }
 }
 
+export interface PendingLspInstallRequest {
+  serverId: string;
+  requestedAt: string;
+  sourceCwd: string;
+  sourceRole: string;
+}
+
+const LSP_PENDING_INSTALL_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS lsp_pending_install_requests (
+    server_id TEXT PRIMARY KEY,
+    requested_at TEXT NOT NULL,
+    source_cwd TEXT NOT NULL DEFAULT '',
+    source_role TEXT NOT NULL DEFAULT '',
+    claimed_by TEXT NOT NULL DEFAULT '',
+    claimed_at INTEGER NOT NULL DEFAULT 0
+  )
+`;
+
+function ensurePendingInstallTable(db: DatabaseSync): void {
+  db.exec(LSP_PENDING_INSTALL_TABLE_SQL);
+  const cols = db
+    .prepare("PRAGMA table_info(lsp_pending_install_requests)")
+    .all() as Array<{ name?: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("claimed_by")) {
+    db.exec("ALTER TABLE lsp_pending_install_requests ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''");
+  }
+  if (!names.has("claimed_at")) {
+    db.exec("ALTER TABLE lsp_pending_install_requests ADD COLUMN claimed_at INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+export function recordPendingLspInstallRequest(
+  serverId: string,
+  meta: { sourceCwd?: string; sourceRole?: string } = {},
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): void {
+  if (!BUILTIN_INSTALL_RECIPES[serverId]) return;
+  try {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
+    withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      db.prepare(
+        `INSERT INTO lsp_pending_install_requests (server_id, requested_at, source_cwd, source_role)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(server_id) DO UPDATE SET
+           requested_at = excluded.requested_at,
+           source_cwd = excluded.source_cwd,
+           source_role = excluded.source_role`,
+      ).run(serverId, new Date().toISOString(), meta.sourceCwd ?? "", meta.sourceRole ?? "");
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_record_pending_install_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+  }
+}
+
+export function acquirePendingLspInstallClaim(
+  serverId: string,
+  ownerId: string,
+  meta: { sourceCwd?: string; sourceRole?: string } = {},
+  dbPath: string = getDefaultLspPrefsDbPath(),
+  ttlMs: number = DEFAULT_PENDING_CLAIM_TTL_MS,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!BUILTIN_INSTALL_RECIPES[serverId]) return false;
+  try {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
+    return withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      const insertRes = db
+        .prepare(
+          `INSERT OR IGNORE INTO lsp_pending_install_requests
+           (server_id, requested_at, source_cwd, source_role, claimed_by, claimed_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          serverId,
+          new Date(nowMs).toISOString(),
+          meta.sourceCwd ?? "",
+          meta.sourceRole ?? "",
+          ownerId,
+          nowMs,
+        );
+      if (Number(insertRes.changes) > 0) return true;
+
+      const updateRes = db
+        .prepare(
+          `UPDATE lsp_pending_install_requests
+           SET claimed_by = ?, claimed_at = ?
+           WHERE server_id = ? AND (claimed_by = '' OR claimed_by = ? OR claimed_at <= ?)`,
+        )
+        .run(ownerId, nowMs, serverId, ownerId, nowMs - Math.max(0, ttlMs));
+      return Number(updateRes.changes) > 0;
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_acquire_pending_install_claim_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+    return false;
+  }
+}
+
+export function renewPendingLspInstallClaim(
+  serverId: string,
+  ownerId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+  nowMs: number = Date.now(),
+): boolean {
+  if (!fs.existsSync(dbPath)) return false;
+  try {
+    return withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      const res = db
+        .prepare("UPDATE lsp_pending_install_requests SET claimed_at = ? WHERE server_id = ? AND claimed_by = ?")
+        .run(nowMs, serverId, ownerId);
+      return Number(res.changes) > 0;
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_renew_pending_install_claim_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+    return false;
+  }
+}
+
+export function claimPendingLspInstallRequest(
+  serverId: string,
+  ownerId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+  ttlMs: number = DEFAULT_PENDING_CLAIM_TTL_MS,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!fs.existsSync(dbPath)) return false;
+  try {
+    return withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      const res = db
+        .prepare(
+          `UPDATE lsp_pending_install_requests
+           SET claimed_by = ?, claimed_at = ?
+           WHERE server_id = ? AND (claimed_by = '' OR claimed_by = ? OR claimed_at <= ?)`,
+        )
+        .run(ownerId, nowMs, serverId, ownerId, nowMs - Math.max(0, ttlMs));
+      return Number(res.changes) > 0;
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_claim_pending_install_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+    return false;
+  }
+}
+
+export function releasePendingLspInstallClaim(
+  serverId: string,
+  ownerId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): void {
+  if (!fs.existsSync(dbPath)) return;
+  try {
+    withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      db.prepare(
+        "UPDATE lsp_pending_install_requests SET claimed_by = '', claimed_at = 0 WHERE server_id = ? AND claimed_by = ?",
+      ).run(serverId, ownerId);
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_release_pending_install_claim_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+  }
+}
+
+export function releasePendingLspInstallClaimsByOwner(
+  ownerId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+  excludeServerIds?: ReadonlySet<string>,
+): void {
+  if (!fs.existsSync(dbPath)) return;
+  try {
+    withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      if (excludeServerIds && excludeServerIds.size > 0) {
+        const excluded = [...excludeServerIds];
+        const placeholders = excluded.map(() => "?").join(", ");
+        db.prepare(
+          `UPDATE lsp_pending_install_requests
+           SET claimed_by = '', claimed_at = 0
+           WHERE claimed_by = ? AND server_id NOT IN (${placeholders})`,
+        ).run(ownerId, ...excluded);
+      } else {
+        db.prepare(
+          "UPDATE lsp_pending_install_requests SET claimed_by = '', claimed_at = 0 WHERE claimed_by = ?",
+        ).run(ownerId);
+      }
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_release_pending_install_claims_failed", {
+      ownerId,
+      error: err?.message ?? String(err),
+    });
+  }
+}
+
+export function listPendingLspInstallRequests(
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): PendingLspInstallRequest[] {
+  if (!fs.existsSync(dbPath)) return [];
+  try {
+    const db = openStateDb(dbPath);
+    const rows = db
+      .prepare(
+        "SELECT server_id, requested_at, source_cwd, source_role FROM lsp_pending_install_requests ORDER BY requested_at ASC",
+      )
+      .all() as Array<{
+      server_id: string;
+      requested_at: string;
+      source_cwd: string;
+      source_role: string;
+    }>;
+    return rows.map((row) => ({
+      serverId: row.server_id,
+      requestedAt: row.requested_at,
+      sourceCwd: row.source_cwd ?? "",
+      sourceRole: row.source_role ?? "",
+    }));
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    if (msg.includes("no such table")) return [];
+    defaultLog.debug("lsp_list_pending_install_failed", { dbPath, error: msg });
+    return [];
+  }
+}
+
+export function clearPendingLspInstallRequest(
+  serverId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): void {
+  if (!fs.existsSync(dbPath)) return;
+  try {
+    withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      db.prepare("DELETE FROM lsp_pending_install_requests WHERE server_id = ?").run(serverId);
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_clear_pending_install_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+  }
+}
+
+export function clearPendingLspInstallRequestIfOwned(
+  serverId: string,
+  ownerId: string,
+  dbPath: string = getDefaultLspPrefsDbPath(),
+): boolean {
+  if (!fs.existsSync(dbPath)) return false;
+  try {
+    return withTransaction(dbPath, (db) => {
+      ensurePendingInstallTable(db);
+      const res = db
+        .prepare(
+          "DELETE FROM lsp_pending_install_requests WHERE server_id = ? AND (claimed_by = '' OR claimed_by = ?)",
+        )
+        .run(serverId, ownerId);
+      return Number(res.changes) > 0;
+    });
+  } catch (err: any) {
+    defaultLog.warn("lsp_clear_pending_install_failed", {
+      serverId,
+      error: err?.message ?? String(err),
+    });
+    return false;
+  }
+}
+
 function prependDirToProcessPath(binDir: string): void {
   if (!binDir || !path.isAbsolute(binDir)) return;
   const current = process.env.PATH ?? "";
@@ -471,6 +810,231 @@ function prependDirToProcessPath(binDir: string): void {
   if (!parts.includes(binDir)) {
     process.env.PATH = current ? `${binDir}${path.delimiter}${current}` : binDir;
   }
+}
+
+const MAX_INSTALL_OUTPUT_BYTES = 64 * 1024;
+const PROCESS_GROUP_POLL_MS = 20;
+const PROCESS_GROUP_TERM_WAIT_MS = 500;
+const PROCESS_GROUP_KILL_WAIT_MS = 1_000;
+
+function createAbortError(message = "Install aborted"): Error {
+  const err = new Error(message);
+  err.name = "AbortError";
+  return err;
+}
+
+function isProcessGroupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err: any) {
+    return err?.code === "EPERM";
+  }
+}
+
+async function runAbortableProcessGroup(
+  command: string,
+  args: string[],
+  options: { timeoutMs: number; signal?: AbortSignal },
+): Promise<{ stdout: string; stderr: string }> {
+  if (options.signal?.aborted) {
+    throw createAbortError();
+  }
+
+  const child = spawn(command, args, {
+    detached: process.platform !== "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+
+  child.stdout?.on("data", (chunk: Buffer) => {
+    const remaining = MAX_INSTALL_OUTPUT_BYTES - stdoutBytes;
+    if (remaining <= 0) return;
+    const slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+    stdoutChunks.push(slice);
+    stdoutBytes += slice.byteLength;
+  });
+
+  child.stderr?.on("data", (chunk: Buffer) => {
+    const remaining = MAX_INSTALL_OUTPUT_BYTES - stderrBytes;
+    if (remaining <= 0) return;
+    const slice = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+    stderrChunks.push(slice);
+    stderrBytes += slice.byteLength;
+  });
+
+  const state: {
+    aborted: boolean;
+    timedOut: boolean;
+    childClosed: boolean;
+    spawnError: Error | null;
+    exitCode: number | null;
+    exitSignal: NodeJS.Signals | null;
+    terminatePromise: Promise<void> | null;
+  } = {
+    aborted: false,
+    timedOut: false,
+    childClosed: false,
+    spawnError: null,
+    exitCode: null,
+    exitSignal: null,
+    terminatePromise: null,
+  };
+
+  let resolveChildClose!: () => void;
+  const childClosePromise = new Promise<void>((resolve) => {
+    resolveChildClose = resolve;
+  });
+  const markChildClosed = (): void => {
+    if (state.childClosed) return;
+    state.childClosed = true;
+    resolveChildClose();
+  };
+
+  const waitUntilGroupDead = async (pgid: number, maxWaitMs: number): Promise<boolean> => {
+    const deadline = Date.now() + maxWaitMs;
+    while (!state.childClosed || isProcessGroupAlive(pgid)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise((r) => setTimeout(r, Math.min(PROCESS_GROUP_POLL_MS, remaining)));
+    }
+    return true;
+  };
+
+  const signalProcessGroup = (pgid: number, sig: NodeJS.Signals): void => {
+    try {
+      process.kill(-pgid, sig);
+    } catch (err: any) {
+      if (err?.code !== "ESRCH") {
+        defaultLog.debug("lsp_install_pgid_signal_failed", {
+          pgid,
+          signal: sig,
+          error: err?.message ?? String(err),
+        });
+      }
+    }
+  };
+
+  const terminateProcessGroupAndWait = (target: ChildProcess): Promise<void> => {
+    if (state.terminatePromise) return state.terminatePromise;
+    state.terminatePromise = (async () => {
+      const pid = target.pid;
+      if (!pid || pid <= 0) {
+        await childClosePromise;
+        return;
+      }
+
+      if (process.platform === "win32") {
+        await new Promise<void>((resolve) => {
+          try {
+            const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+              stdio: "ignore",
+              windowsHide: true,
+            });
+            killer.once("error", () => resolve());
+            killer.once("close", () => resolve());
+          } catch {
+            resolve();
+          }
+        });
+        await childClosePromise;
+        return;
+      }
+
+      const pgid = pid;
+      signalProcessGroup(pgid, "SIGTERM");
+      if (await waitUntilGroupDead(pgid, PROCESS_GROUP_TERM_WAIT_MS)) {
+        return;
+      }
+      signalProcessGroup(pgid, "SIGKILL");
+      await waitUntilGroupDead(pgid, PROCESS_GROUP_KILL_WAIT_MS);
+    })();
+    return state.terminatePromise;
+  };
+
+  child.once("error", (err) => {
+    state.spawnError = err;
+    if (!child.pid) {
+      markChildClosed();
+    } else {
+      void terminateProcessGroupAndWait(child);
+    }
+  });
+
+  child.once("exit", (code, signal) => {
+    state.exitCode = code;
+    state.exitSignal = signal;
+    if (process.platform !== "win32" && child.pid && child.pid > 0 && isProcessGroupAlive(child.pid)) {
+      void terminateProcessGroupAndWait(child);
+    }
+  });
+
+  child.once("close", (code, signal) => {
+    if (state.exitCode === null && code !== null) state.exitCode = code;
+    if (state.exitSignal === null && signal !== null) state.exitSignal = signal;
+    markChildClosed();
+    if (process.platform !== "win32" && child.pid && child.pid > 0 && isProcessGroupAlive(child.pid)) {
+      void terminateProcessGroupAndWait(child);
+    }
+  });
+
+  const onAbort = (): void => {
+    state.aborted = true;
+    void terminateProcessGroupAndWait(child);
+  };
+
+  const timer = setTimeout(() => {
+    if (!state.aborted && state.exitCode === null && state.exitSignal === null) {
+      state.timedOut = true;
+    }
+    void terminateProcessGroupAndWait(child);
+  }, Math.max(1, options.timeoutMs));
+  timer.unref();
+
+  if (options.signal) {
+    if (options.signal.aborted) {
+      onAbort();
+    } else {
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    }
+  }
+
+  try {
+    await childClosePromise;
+    if (state.terminatePromise) {
+      await state.terminatePromise;
+    } else if (process.platform !== "win32" && child.pid && child.pid > 0 && isProcessGroupAlive(child.pid)) {
+      await terminateProcessGroupAndWait(child);
+    }
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+
+  if (state.aborted || options.signal?.aborted) {
+    throw createAbortError();
+  }
+  if (state.timedOut) {
+    throw new Error("Install timed out");
+  }
+
+  const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+  const stderr = Buffer.concat(stderrChunks).toString("utf8");
+
+  if (state.spawnError) {
+    const detail = stderr.trim();
+    throw new Error(detail || state.spawnError.message || `Failed to run ${command}`);
+  }
+  if (state.exitCode === 0 && state.exitSignal === null) {
+    return { stdout, stderr };
+  }
+  const detail = stderr.trim();
+  const reason = state.exitSignal ? `signal ${state.exitSignal}` : `exit code ${state.exitCode ?? "unknown"}`;
+  throw new Error(detail || `${command} exited with ${reason}`);
 }
 
 /**
@@ -482,25 +1046,47 @@ function prependDirToProcessPath(binDir: string): void {
 export async function runLspServerInstall(
   recipe: LspInstallRecipe,
   envPath: string = process.env.PATH ?? "",
-  options: { managedLspDir?: string } = {},
+  options: { managedLspDir?: string; signal?: AbortSignal } = {},
 ): Promise<{ ok: boolean; error?: string }> {
+  if (options.signal?.aborted) {
+    return { ok: false, error: "Install aborted" };
+  }
   const prereqBin = findExecutableOnPath(recipe.prereq, envPath);
   if (!prereqBin) {
     return { ok: false, error: `${recipe.prereq} is not installed on PATH` };
   }
+  if (recipe.serverId !== "typescript" && recipe.serverId !== "python" && recipe.serverId !== "go") {
+    return { ok: false, error: `Unsupported server recipe: ${recipe.serverId}` };
+  }
 
+  let releaseLock: (() => void) | null = null;
   try {
+    const managedDir = options.managedLspDir ?? getManagedLspDir();
+    fs.mkdirSync(managedDir, { recursive: true });
+    releaseLock = acquireTokenFileLock(
+      path.join(managedDir, `.install-${recipe.serverId}.lock`),
+      { uniqueClaim: true, linkTemp: true },
+    );
+    if (!releaseLock) {
+      return { ok: false, error: "Another LSP installation is already in progress" };
+    }
+    if (options.signal?.aborted) {
+      return { ok: false, error: "Install aborted" };
+    }
+
     if (recipe.serverId === "typescript") {
-      const managedDir = options.managedLspDir ?? getManagedLspDir();
       const prefixDir = getManagedTsLspPrefix(managedDir);
       const binDir = getManagedLspBinDir(managedDir);
       fs.mkdirSync(prefixDir, { recursive: true });
       fs.mkdirSync(binDir, { recursive: true });
-      await execFileAsync(
+      await runAbortableProcessGroup(
         prereqBin,
         ["install", "--prefix", prefixDir, "typescript@6", "typescript-language-server"],
-        { timeout: 180_000 },
+        { timeoutMs: 180_000, signal: options.signal },
       );
+      if (options.signal?.aborted) {
+        return { ok: false, error: "Install aborted" };
+      }
       const target = path.join(prefixDir, "node_modules", ".bin", "typescript-language-server");
       const link = path.join(binDir, "typescript-language-server");
       if (fs.existsSync(target)) {
@@ -517,29 +1103,48 @@ export async function runLspServerInstall(
     }
 
     if (recipe.serverId === "python") {
-      await execFileAsync(prereqBin, ["tool", "install", "--upgrade", "basedpyright"], { timeout: 180_000 });
+      await runAbortableProcessGroup(prereqBin, ["tool", "install", "--upgrade", "basedpyright"], {
+        timeoutMs: 180_000,
+        signal: options.signal,
+      });
+      if (options.signal?.aborted) {
+        return { ok: false, error: "Install aborted" };
+      }
       prependDirToProcessPath(path.join(os.homedir(), ".local", "bin"));
       return { ok: true };
     }
 
-    if (recipe.serverId === "go") {
-      await execFileAsync(prereqBin, ["install", "golang.org/x/tools/gopls@latest"], { timeout: 180_000 });
-      let goBin = path.join(os.homedir(), "go", "bin");
-      try {
-        const { stdout } = await execFileAsync(prereqBin, ["env", "GOPATH"], { timeout: 5_000 });
-        const gopath = stdout.trim().split(path.delimiter)[0];
-        if (gopath && path.isAbsolute(gopath)) goBin = path.join(gopath, "bin");
-      } catch {
-        // Fallback to ~/go/bin
-      }
-      prependDirToProcessPath(goBin);
-      return { ok: true };
+    await runAbortableProcessGroup(prereqBin, ["install", "golang.org/x/tools/gopls@latest"], {
+      timeoutMs: 180_000,
+      signal: options.signal,
+    });
+    if (options.signal?.aborted) {
+      return { ok: false, error: "Install aborted" };
     }
-
-    return { ok: false, error: `Unsupported server recipe: ${recipe.serverId}` };
+    let goBin = path.join(os.homedir(), "go", "bin");
+    try {
+      const { stdout } = await runAbortableProcessGroup(prereqBin, ["env", "GOPATH"], {
+        timeoutMs: 5_000,
+        signal: options.signal,
+      });
+      const gopath = stdout.trim().split(path.delimiter)[0];
+      if (gopath && path.isAbsolute(gopath)) goBin = path.join(gopath, "bin");
+    } catch {
+      if (options.signal?.aborted) {
+        return { ok: false, error: "Install aborted" };
+      }
+      // Fallback to ~/go/bin
+    }
+    prependDirToProcessPath(goBin);
+    return { ok: true };
   } catch (err: any) {
+    if (options.signal?.aborted || err?.name === "AbortError" || err?.code === "ABORT_ERR") {
+      return { ok: false, error: "Install aborted" };
+    }
     const detail = (err?.stderr || err?.message || String(err)).toString().trim().slice(0, 300);
     return { ok: false, error: detail };
+  } finally {
+    releaseLock?.();
   }
 }
 
@@ -1405,6 +2010,7 @@ export class LspManager {
   private readonly brokerRunDir: string;
   private readonly envPath?: string;
   private readonly log: Logger;
+  private readonly onShutdown?: () => void;
   private exitHookRegistered = false;
   private shuttingDown = false;
   private readonly onProcessExit = (): void => {
@@ -1434,6 +2040,7 @@ export class LspManager {
     this.brokerRunDir = options.brokerRunDir ?? getDefaultLspBrokerRunDir();
     this.envPath = options.envPath;
     this.log = options.logger ?? defaultLog;
+    this.onShutdown = options.onShutdown;
   }
 
   private circuitKey(worktreeRoot: string, server: ResolvedLspServer): string {
@@ -1834,6 +2441,7 @@ export class LspManager {
 
   async shutdownAll(): Promise<void> {
     this.shuttingDown = true;
+    this.onShutdown?.();
     while (this.allClients.size > 0 || this.replacing.size > 0) {
       const pendingReplaces = [...this.replacing.values()];
       const active = [...this.allClients];
@@ -1854,15 +2462,250 @@ export class LspManager {
 
 export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}): { manager: LspManager } {
   const log = options.logger ?? defaultLog;
-  // Default to the shared per-worktree UNIX-socket broker in production registration
-  // so main session, COMS peers, and editing subagents share 1 warm LSP server per worktree.
-  const manager = new LspManager({ useBroker: true, ...options });
   const checkSubagent = options.isSubagentChild ?? (() => process.env.PI_SUBAGENT_CHILD === "1");
-  const installRunner = options.installRunner ?? ((recipe) => runLspServerInstall(recipe, options.envPath));
+  const installRunner =
+    options.installRunner ??
+    ((recipe, runOpts) => runLspServerInstall(recipe, options.envPath, { signal: runOpts?.signal }));
   const verifyInstalled = options.verifyInstalled ?? ((binary, envPath) => findExecutableOnPath(binary, envPath));
+  const pendingPollIntervalMs = options.pendingPollIntervalMs ?? DEFAULT_PENDING_INSTALL_POLL_MS;
+  const claimTtlMs = options.pendingClaimTtlMs ?? DEFAULT_PENDING_CLAIM_TTL_MS;
+  const promptErrorBackoffMs = options.promptErrorBackoffMs ?? DEFAULT_PROMPT_ERROR_BACKOFF_MS;
+  const claimOwnerId = `${process.pid}-${randomUUID()}`;
   const warnedUntrustedProject = new Set<string>();
   const promptedThisSession = new Set<string>();
-  const promptInFlight = new Map<string, Promise<string | null>>();
+  const promptInFlight = new Map<string, Promise<boolean>>();
+  const promptRetryAfter = new Map<string, number>();
+  const activeInstallServerIds = new Set<string>();
+  let shuttingDown = false;
+  let drainingPendingPrompts = false;
+  let hasPendingClaims = false;
+  let lastInteractiveCtx: any = null;
+  let pendingPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  const isPromptBackedOff = (serverId: string): boolean => {
+    const until = promptRetryAfter.get(serverId);
+    if (until === undefined) return false;
+    if (Date.now() < until) return true;
+    promptRetryAfter.delete(serverId);
+    return false;
+  };
+
+  const stopPendingPollTimer = (): void => {
+    if (pendingPollTimer) {
+      clearInterval(pendingPollTimer);
+      pendingPollTimer = null;
+    }
+  };
+
+  const cleanupRegistration = (): void => {
+    shuttingDown = true;
+    stopPendingPollTimer();
+    lastInteractiveCtx = null;
+    if (hasPendingClaims) {
+      releasePendingLspInstallClaimsByOwner(
+        claimOwnerId,
+        options.installPrefsDbPath ?? getDefaultLspPrefsDbPath(),
+        activeInstallServerIds,
+      );
+      hasPendingClaims = activeInstallServerIds.size > 0;
+    }
+  };
+
+  // Default to the shared per-worktree UNIX-socket broker in production registration
+  // so main session, COMS peers, and editing subagents share 1 warm LSP server per worktree.
+  const manager = new LspManager({
+    useBroker: true,
+    ...options,
+    onShutdown: () => {
+      cleanupRegistration();
+      options.onShutdown?.();
+    },
+  });
+
+  const promptAndInstallMissingServer = async (
+    serverId: string,
+    ctx: any,
+    prefsDbPath: string,
+    sourceRole?: string,
+  ): Promise<boolean> => {
+    const existingPrompt = promptInFlight.get(serverId);
+    if (existingPrompt) {
+      return existingPrompt;
+    }
+
+    const recipe = BUILTIN_INSTALL_RECIPES[serverId];
+    if (
+      !recipe ||
+      shuttingDown ||
+      promptedThisSession.has(serverId) ||
+      isLspInstallDismissed(serverId, prefsDbPath) ||
+      isPromptBackedOff(serverId)
+    ) {
+      releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+      return false;
+    }
+
+    const runPrompt = (async (): Promise<boolean> => {
+      let ownershipLost = false;
+      let claimFinalized = false;
+      const installAbortController = new AbortController();
+      let renewTimer: ReturnType<typeof setInterval> | null = null;
+      const stopRenewTimer = (): void => {
+        if (renewTimer) {
+          clearInterval(renewTimer);
+          renewTimer = null;
+        }
+      };
+
+      if (claimTtlMs > 0) {
+        const renewIntervalMs = Math.max(10, Math.floor(Math.max(30, claimTtlMs) / 3));
+        renewTimer = setInterval(() => {
+          if (shuttingDown && !activeInstallServerIds.has(serverId)) {
+            stopRenewTimer();
+            return;
+          }
+          if (!renewPendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath)) {
+            ownershipLost = true;
+            stopRenewTimer();
+            installAbortController.abort(new Error("LSP install claim lost"));
+          }
+        }, renewIntervalMs);
+        renewTimer.unref();
+      }
+
+      try {
+        const installChoice = `Install ${recipe.label}`;
+        const notNowChoice = "Not now";
+        const dismissChoice = `Don't ask again for ${recipe.label}`;
+        const title =
+          `LSP server "${recipe.label}" is not installed on PATH.\n` +
+          `Command: ${recipe.displayCmd}`;
+
+        let choice: string | undefined;
+        try {
+          choice = await ctx.ui.select(title, [installChoice, notNowChoice, dismissChoice]);
+        } catch (err: any) {
+          log.warn("lsp_install_prompt_failed", { serverId, error: err?.message ?? String(err) });
+          releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+          claimFinalized = true;
+          promptRetryAfter.set(serverId, Date.now() + Math.max(0, promptErrorBackoffMs));
+          return false;
+        }
+
+        if (shuttingDown) {
+          releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+          claimFinalized = true;
+          return false;
+        }
+
+        if (ownershipLost || !renewPendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath)) {
+          log.warn("lsp_install_claim_lost", { serverId });
+          claimFinalized = true;
+          return false;
+        }
+
+        if (choice === dismissChoice) {
+          promptRetryAfter.delete(serverId);
+          promptedThisSession.add(serverId);
+          dismissLspInstallPermanently(serverId, prefsDbPath);
+          clearPendingLspInstallRequestIfOwned(serverId, claimOwnerId, prefsDbPath);
+          claimFinalized = true;
+          log.info("lsp_install_prompt_dismissed_permanently", { serverId });
+          return false;
+        }
+
+        if (choice !== installChoice) {
+          promptRetryAfter.delete(serverId);
+          promptedThisSession.add(serverId);
+          clearPendingLspInstallRequestIfOwned(serverId, claimOwnerId, prefsDbPath);
+          claimFinalized = true;
+          log.info("lsp_install_prompt_skipped_session", { serverId });
+          return false;
+        }
+
+        const notifyUi = (msg: string, level: "info" | "warning"): void => {
+          if (!shuttingDown && isLiveExtensionCtx(ctx)) {
+            ctx.ui?.notify?.(msg, level);
+          }
+        };
+
+        notifyUi(`Installing ${recipe.label}...`, "info");
+        log.info("lsp_install_started", { serverId, command: recipe.displayCmd });
+        let result: { ok: boolean; error?: string };
+        activeInstallServerIds.add(serverId);
+        try {
+          result = await installRunner(recipe, { signal: installAbortController.signal });
+        } catch (err: any) {
+          result = { ok: false, error: err?.message ?? String(err) };
+        } finally {
+          activeInstallServerIds.delete(serverId);
+          if (shuttingDown && activeInstallServerIds.size === 0) {
+            hasPendingClaims = false;
+          }
+        }
+
+        if (
+          ownershipLost ||
+          installAbortController.signal.aborted ||
+          !renewPendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath)
+        ) {
+          log.warn("lsp_install_claim_lost", { serverId, stage: "post_install" });
+          releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+          claimFinalized = true;
+          promptRetryAfter.set(serverId, Date.now() + Math.max(0, promptErrorBackoffMs));
+          return false;
+        }
+
+        if (!result.ok) {
+          log.warn("lsp_install_failed", { serverId, error: result.error });
+          releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+          claimFinalized = true;
+          promptRetryAfter.set(serverId, Date.now() + Math.max(0, promptErrorBackoffMs));
+          notifyUi(`Failed to install ${recipe.label}: ${result.error || "unknown error"}`, "warning");
+          return false;
+        }
+
+        const verified = verifyInstalled(recipe.binary, options.envPath ?? getDefaultLspSearchPath());
+        if (!verified) {
+          log.warn("lsp_install_binary_not_on_path", { serverId, binary: recipe.binary });
+          releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+          claimFinalized = true;
+          promptRetryAfter.set(serverId, Date.now() + Math.max(0, promptErrorBackoffMs));
+          notifyUi(
+            `Installed ${recipe.label}, but "${recipe.binary}" is not yet on PATH.`,
+            "warning",
+          );
+          return false;
+        }
+
+        promptRetryAfter.delete(serverId);
+        promptedThisSession.add(serverId);
+        clearPendingLspInstallRequestIfOwned(serverId, claimOwnerId, prefsDbPath);
+        claimFinalized = true;
+        log.info("lsp_install_verified", {
+          serverId,
+          binary: verified,
+          ...(sourceRole ? { sourceRole } : {}),
+        });
+        notifyUi(`Installed ${recipe.label} — LSP diagnostics active.`, "info");
+        return true;
+      } finally {
+        stopRenewTimer();
+        if (!claimFinalized) {
+          releasePendingLspInstallClaim(serverId, claimOwnerId, prefsDbPath);
+        }
+      }
+    })();
+
+    promptInFlight.set(serverId, runPrompt);
+    try {
+      return await runPrompt;
+    } finally {
+      if (promptInFlight.get(serverId) === runPrompt) {
+        promptInFlight.delete(serverId);
+      }
+    }
+  };
 
   const handleMissingServer = async (
     missingId: string,
@@ -1879,91 +2722,161 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
       return null;
     }
 
-    const existingPrompt = promptInFlight.get(missingId);
-    if (existingPrompt) {
-      await existingPrompt;
-      return null;
-    }
-
-    const runPrompt = (async (): Promise<string | null> => {
-      if (promptedThisSession.has(missingId) || isLspInstallDismissed(missingId, prefsDbPath)) {
+    // Interactive TUI: ask user once with 3 clear choices
+    if (isInteractiveTuiForLspPrompt(ctx, checkSubagent())) {
+      if (shuttingDown || isPromptBackedOff(missingId)) {
         return null;
       }
-
-      // Interactive TUI: ask user once with 3 clear choices
-      if (ctx?.hasUI === true && typeof ctx.ui?.select === "function") {
-        const installChoice = `Install ${recipe.label}`;
-        const notNowChoice = "Not now";
-        const dismissChoice = `Don't ask again for ${recipe.label}`;
-        const title =
-          `LSP server "${recipe.label}" is not installed on PATH.\n` +
-          `Command: ${recipe.displayCmd}`;
-
-        let choice: string | undefined;
-        try {
-          choice = await ctx.ui.select(title, [installChoice, notNowChoice, dismissChoice]);
-        } catch (err: any) {
-          log.debug("lsp_install_prompt_failed", { serverId: missingId, error: err?.message });
-          promptedThisSession.add(missingId);
-          return null;
-        }
-
-        promptedThisSession.add(missingId);
-
-        if (choice === dismissChoice) {
-          dismissLspInstallPermanently(missingId, prefsDbPath);
-          log.info("lsp_install_prompt_dismissed_permanently", { serverId: missingId });
-          return null;
-        }
-
-        if (choice !== installChoice) {
-          log.info("lsp_install_prompt_skipped_session", { serverId: missingId });
-          return null;
-        }
-
-        ctx.ui?.notify?.(`Installing ${recipe.label}...`, "info");
-        log.info("lsp_install_started", { serverId: missingId, command: recipe.displayCmd });
-        const result = await installRunner(recipe);
-        if (!result.ok) {
-          log.warn("lsp_install_failed", { serverId: missingId, error: result.error });
-          ctx.ui?.notify?.(`Failed to install ${recipe.label}: ${result.error || "unknown error"}`, "warning");
-          return null;
-        }
-
-        const verified = verifyInstalled(recipe.binary, options.envPath ?? getDefaultLspSearchPath());
-        if (!verified) {
-          log.warn("lsp_install_binary_not_on_path", { serverId: missingId, binary: recipe.binary });
-          ctx.ui?.notify?.(
-            `Installed ${recipe.label}, but "${recipe.binary}" is not yet on PATH.`,
-            "warning",
-          );
-          return null;
-        }
-
-        log.info("lsp_install_verified", { serverId: missingId, binary: verified });
-        ctx.ui?.notify?.(`Installed ${recipe.label} — LSP diagnostics active.`, "info");
-        return manager.getDiagnosticsForFile(cwd, filePath, overrides);
+      const existingPrompt = promptInFlight.get(missingId);
+      if (existingPrompt) {
+        const installed = await existingPrompt;
+        return installed ? manager.getDiagnosticsForFile(cwd, filePath, overrides) : null;
       }
+      if (
+        !acquirePendingLspInstallClaim(
+          missingId,
+          claimOwnerId,
+          { sourceCwd: cwd, sourceRole: "tui" },
+          prefsDbPath,
+          claimTtlMs,
+        )
+      ) {
+        return null;
+      }
+      hasPendingClaims = true;
+      const installed = await promptAndInstallMissingServer(missingId, ctx, prefsDbPath, "tui");
+      return installed ? manager.getDiagnosticsForFile(cwd, filePath, overrides) : null;
+    }
 
-      // Headless COMS peer / subagent: never block; emit a concise 1-line hint once per server
-      promptedThisSession.add(missingId);
-      log.info("lsp_missing_server_hint", { serverId: missingId, binary: recipe.binary });
-      return `[LSP] ${recipe.label} not found on PATH; run \`uv run scripts/install.py\` or edit in TUI to install (${recipe.displayCmd}).`;
-    })();
+    // Headless / RPC / supervised peer / subagent: never block; record pending
+    // request for the interactive TUI and emit a concise 1-line hint once per server.
+    const sourceRole = checkSubagent()
+      ? "subagent"
+      : process.env.PI_COMS_SUPERVISED_PEER === "1"
+        ? "coms-peer"
+        : typeof ctx?.mode === "string"
+          ? ctx.mode
+          : "headless";
+    recordPendingLspInstallRequest(missingId, { sourceCwd: cwd, sourceRole }, prefsDbPath);
+    promptedThisSession.add(missingId);
+    log.info("lsp_missing_server_hint", { serverId: missingId, binary: recipe.binary, sourceRole });
+    return `[LSP] ${recipe.label} not found on PATH; run \`uv run scripts/install.py\` or edit in TUI to install (${recipe.displayCmd}).`;
+  };
 
-    promptInFlight.set(missingId, runPrompt);
+  const drainPendingLspInstallPrompts = async (ctx: any): Promise<void> => {
+    if (
+      shuttingDown ||
+      drainingPendingPrompts ||
+      !isLiveExtensionCtx(ctx) ||
+      !isInteractiveTuiForLspPrompt(ctx, checkSubagent()) ||
+      !resolveTrustedLspEnabled()
+    ) {
+      return;
+    }
+
+    drainingPendingPrompts = true;
     try {
-      return await runPrompt;
-    } finally {
-      if (promptInFlight.get(missingId) === runPrompt) {
-        promptInFlight.delete(missingId);
+      const prefsDbPath = options.installPrefsDbPath ?? getDefaultLspPrefsDbPath();
+      const pending = listPendingLspInstallRequests(prefsDbPath);
+      if (pending.length === 0) return;
+
+      const overrides = resolveTrustedLspServers();
+      for (const req of pending) {
+        if (shuttingDown) break;
+        if (
+          !BUILTIN_INSTALL_RECIPES[req.serverId] ||
+          req.serverId in overrides ||
+          isLspInstallDismissed(req.serverId, prefsDbPath) ||
+          isBuiltinServerInstalled(req.serverId, options.envPath)
+        ) {
+          clearPendingLspInstallRequestIfOwned(req.serverId, claimOwnerId, prefsDbPath);
+          continue;
+        }
+
+        if (
+          promptedThisSession.has(req.serverId) ||
+          isPromptBackedOff(req.serverId) ||
+          promptInFlight.has(req.serverId)
+        ) {
+          continue;
+        }
+
+        if (!claimPendingLspInstallRequest(req.serverId, claimOwnerId, prefsDbPath, claimTtlMs)) {
+          continue;
+        }
+        hasPendingClaims = true;
+
+        log.info("lsp_pending_install_prompt_draining", {
+          serverId: req.serverId,
+          sourceRole: req.sourceRole,
+          sourceCwd: req.sourceCwd,
+        });
+        await promptAndInstallMissingServer(req.serverId, ctx, prefsDbPath, req.sourceRole);
       }
+    } catch (err: any) {
+      log.warn("lsp_pending_install_drain_error", { error: err?.message ?? String(err) });
+    } finally {
+      drainingPendingPrompts = false;
     }
   };
 
+  const ensureIdlePendingWatcher = (ctx: any): void => {
+    if (
+      shuttingDown ||
+      pendingPollIntervalMs <= 0 ||
+      !isLiveExtensionCtx(ctx) ||
+      !isInteractiveTuiForLspPrompt(ctx, checkSubagent())
+    ) {
+      return;
+    }
+    lastInteractiveCtx = ctx;
+    if (pendingPollTimer) return;
+
+    pendingPollTimer = setInterval(() => {
+      if (shuttingDown || drainingPendingPrompts) return;
+      const liveCtx = lastInteractiveCtx;
+      if (!liveCtx || !isLiveExtensionCtx(liveCtx)) {
+        lastInteractiveCtx = null;
+        stopPendingPollTimer();
+        return;
+      }
+      if (!isInteractiveTuiForLspPrompt(liveCtx, checkSubagent())) {
+        return;
+      }
+      if (typeof liveCtx.isIdle === "function") {
+        let idle = false;
+        try {
+          idle = liveCtx.isIdle() === true;
+        } catch {
+          lastInteractiveCtx = null;
+          stopPendingPollTimer();
+          return;
+        }
+        if (!idle) return;
+      }
+      void drainPendingLspInstallPrompts(liveCtx);
+    }, pendingPollIntervalMs);
+    pendingPollTimer.unref();
+  };
+
+  pi.on("session_start", async (_event, ctx) => {
+    ensureIdlePendingWatcher(ctx);
+    if (
+      isLiveExtensionCtx(ctx) &&
+      (typeof (ctx as any)?.isIdle !== "function" || (ctx as any).isIdle() === true)
+    ) {
+      await drainPendingLspInstallPrompts(ctx);
+    }
+  });
+
   pi.on("tool_result", async (event, ctx): Promise<ToolResultEventResult | undefined> => {
     try {
+      ensureIdlePendingWatcher(ctx);
       const toolName = (event as any).toolName as string;
+      if (toolName === "subagent") {
+        await drainPendingLspInstallPrompts(ctx);
+        return undefined;
+      }
       if (toolName !== "write" && toolName !== "edit") return undefined;
       if ((event as any).isError === true) return undefined;
 
@@ -2017,7 +2930,18 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
     }
   });
 
+  pi.on("turn_end", async (_event, ctx) => {
+    ensureIdlePendingWatcher(ctx);
+    await drainPendingLspInstallPrompts(ctx);
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    ensureIdlePendingWatcher(ctx);
+    await drainPendingLspInstallPrompts(ctx);
+  });
+
   pi.on("session_shutdown", async () => {
+    cleanupRegistration();
     log.debug("lsp_session_shutdown", { active: manager.activeCount });
     await manager.shutdownAll();
   });

@@ -1,6 +1,7 @@
 export {
   SessionStore,
   PiProviderRuntime,
+  type AgentSessionRuntimeDiagnostic,
   type SessionStoreOptions,
   type ProviderRuntime,
   type PiProviderRuntimeOptions,
