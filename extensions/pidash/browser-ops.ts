@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { createLogger } from "../shared/logger.js";
+import { createLogger, type Logger } from "../shared/logger.js";
 import type {
   WorktreeDetailPayload,
   WorktreeItem,
@@ -192,20 +192,64 @@ export async function runMcp(args: string[], cwd: string, timeoutMs = 60000): Pr
   return stdout;
 }
 
-/** Parse `pi mcp list --json` output. Returns servers array or error. */
-export async function mcpList(cwd: string): Promise<{ servers?: unknown[]; raw?: string; error?: string }> {
+function isPlainObject(v: unknown): boolean {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+function parseMcpServerList(raw: string, allowSingleObject: boolean): unknown[] | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  let parsed: unknown;
   try {
-    const out = await runMcp(["list", "--json"], cwd);
-    try {
-      const parsed = JSON.parse(out);
-      return { servers: Array.isArray(parsed) ? parsed : parsed?.servers ?? [parsed] };
-    } catch {
-      // Not JSON — return raw text for display
-      return { raw: out };
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (Array.isArray(parsed)) {
+    return parsed.every(isPlainObject) ? parsed : null;
+  }
+  if (parsed !== null && typeof parsed === "object") {
+    const servers = (parsed as { servers?: unknown }).servers;
+    if (Array.isArray(servers)) {
+      return servers.every(isPlainObject) ? servers : null;
     }
+    if (allowSingleObject) return [parsed];
+  }
+  return null;
+}
+
+/** Parse `pi mcp list --json` output. Returns servers array or error. */
+export async function mcpList(
+  cwd: string,
+  runner: (args: string[], cwd: string) => Promise<string> = runMcp,
+  logger: Pick<Logger, "warn"> = log,
+): Promise<{ servers?: unknown[]; raw?: string; error?: string }> {
+  try {
+    const out = await runner(["list", "--json"], cwd);
+    const servers = parseMcpServerList(out, true);
+    return servers !== null ? { servers } : { raw: out };
   } catch (e: any) {
-    log.warn("mcp_list_failed", { error: e?.message });
-    return { error: (e?.stderr || e?.message || String(e)).slice(0, 2000) };
+    // `pi mcp list --json` exits non-zero when any server is errored, while
+    // still emitting the full `{ servers: [...] }` payload on stdout.
+    const errStdout =
+      typeof e?.stdout === "string"
+        ? e.stdout
+        : Buffer.isBuffer(e?.stdout)
+          ? e.stdout.toString("utf-8")
+          : "";
+    const servers = parseMcpServerList(errStdout, false);
+    if (servers !== null && servers.length > 0) {
+      const errStderr =
+        typeof e?.stderr === "string"
+          ? e.stderr.trim()
+          : Buffer.isBuffer(e?.stderr)
+            ? e.stderr.toString("utf-8").trim()
+            : "";
+      logger.warn("mcp_list_nonzero_parsed", { count: servers.length, code: e?.code ?? null, stderr: errStderr });
+      return { servers };
+    }
+    logger.warn("mcp_list_failed", { error: e?.message });
+    return { error: String(e?.stderr || e?.message || e) };
   }
 }
 

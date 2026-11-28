@@ -23,7 +23,7 @@ import { applyExtensionDefaults } from "./themeMap.js";
 import {
 	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, resolvePeerTaskStorePath, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, isPeerTaskCreator, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin, loadPitasks, summarizeTaskList, getComsOriginTask, getComsOriginTasks,
 	COMS_INBOUND_CUSTOM_TYPE, COMS_RESPONSE_CUSTOM_TYPE, COMS_PEER_JOINED_CUSTOM_TYPE, COMS_PEER_LEFT_CUSTOM_TYPE,
-	type ComsInboundDetails, type ComsResponseDetails, type ComsPeerEventDetails,
+	type ComsInboundDetails, type ComsResponseDetails, type ComsPeerEventDetails, type ComsPeerCard,
 } from "./coms-shared.js";
 import {
 	createCompactOneLineComponent,
@@ -158,6 +158,17 @@ export interface ComsPeerRuntimeOptions {
 	registerSignalHandlers?: boolean;
 	/** Override reload-handoff queue TTL in ms (primarily for isolated tests; default 60s). */
 	reloadQueueTtlMs?: number;
+	/** Optional hook called when live peer cards/queue change (used by coms-wrapper to own pidash broadcasts). */
+	onPeersChanged?: () => void;
+}
+
+export interface LocalQueueItem {
+	id: string;
+	msg_id: string;
+	sender_name: string;
+	prompt: string;
+	status: "processing" | "pending";
+	receivedAt: number;
 }
 
 export interface ComsPeerRuntime {
@@ -167,6 +178,9 @@ export interface ComsPeerRuntime {
 	isActive(): boolean;
 	sendAsUser(params: ComsUserSendParams): Promise<ComsUserSendResult>;
 	openQueueOverlay(args: string, ctx: any): Promise<void>;
+	listLocalInboundQueue(): LocalQueueItem[];
+	killLocalInboundQueueItem(msgId: string): Promise<{ killed: true; msg_id: string; sender_name: string } | { killed: false }>;
+	getPeerCards(): ReadonlyArray<ComsPeerCard>;
 	readonly gatedToolNames: ReadonlySet<string>;
 }
 
@@ -1118,6 +1132,9 @@ export function createComsPeerRuntime(
 			openQueueOverlay: async (_args: string, ctx: any) => {
 				try { ctx?.ui?.notify?.("📡 coms not active — no queue. Activate coms with coms_start first.", "info"); } catch { /* ignore */ }
 			},
+			listLocalInboundQueue: () => [],
+			killLocalInboundQueueItem: async () => ({ killed: false }),
+			getPeerCards: () => [],
 			gatedToolNames,
 		};
 	}
@@ -1681,6 +1698,7 @@ export function createComsPeerRuntime(
 			currentInbound = null;
 			inboundDelivered = false;
 			setProcessingInbound(false);
+			emitComsQueue();
 			return;
 		}
 		const failOrphanPending = async (orphans: InboundContext[]): Promise<boolean> => {
@@ -1716,6 +1734,7 @@ export function createComsPeerRuntime(
 				injectInbound(next, { streaming: opts.streaming, ctx: opts.ctx });
 				writeLiveRegistry();
 				maybeRefreshWidget();
+				emitComsQueue();
 			} catch (drainErr: any) {
 				if (opts.onFail === "fail_orphans") {
 					log.error("fifo_drain_failed", next.msg_id, drainErr?.message);
@@ -1724,6 +1743,7 @@ export function createComsPeerRuntime(
 				currentInbound = null;
 				inboundDelivered = false;
 				setProcessingInbound(false);
+				emitComsQueue();
 			}
 			return;
 		}
@@ -1740,6 +1760,7 @@ export function createComsPeerRuntime(
 				injectInbound(next, { streaming: opts.streaming, ctx: opts.ctx });
 				writeLiveRegistry();
 				maybeRefreshWidget();
+				emitComsQueue();
 			} catch (err: any) {
 				if (opts.onFail === "fail_orphans") {
 					log.error("fifo_drain_failed", next.msg_id, err?.message);
@@ -1753,6 +1774,7 @@ export function createComsPeerRuntime(
 				inboundDelivered = false;
 				bundledInbounds = [];
 				setProcessingInbound(false);
+				emitComsQueue();
 			}
 			return;
 		}
@@ -1769,6 +1791,7 @@ export function createComsPeerRuntime(
 			injectInbound(primary, { bundled: { ...bundle, ids: senderPending.map(i => i.msg_id), attempt: bundleAttempt }, streaming: opts.streaming, ctx: opts.ctx });
 			writeLiveRegistry();
 			maybeRefreshWidget();
+			emitComsQueue();
 		} catch (err: any) {
 			if (opts.onFail === "fail_orphans") {
 				log.error("fifo_bundle_failed", primary.msg_id, err?.message);
@@ -1784,6 +1807,7 @@ export function createComsPeerRuntime(
 			inboundDelivered = false;
 			bundledInbounds = [];
 			setProcessingInbound(false);
+			emitComsQueue();
 		}
 	}
 	/** True when the agent is running a turn NOT triggered by a coms inbound.
@@ -2044,6 +2068,7 @@ export function createComsPeerRuntime(
 		// 3. If already processing another inbound, just queue — turn_end/agent_end will drain FIFO.
 		if (processingInbound) {
 			writeLiveRegistry();
+			emitComsQueue();
 			ackOk(socket, env.msg_id);
 
 			log.debug("inbound_queued", env.msg_id, "from", env.sender_name, "depth", getPendingInboundCount());
@@ -2063,13 +2088,15 @@ export function createComsPeerRuntime(
 			const errIb = inboundQueue.get(env.msg_id);
 			if (errIb) errIb.fulfilled = true;
 			inboundQueue.delete(env.msg_id);
-			maybeRefreshWidget();
 			currentInbound = null;
 			inboundDelivered = false;
 			setProcessingInbound(false);
+			maybeRefreshWidget();
+			emitComsQueue();
 			nack(socket, env.msg_id, "internal error");
 			return;
 		}
+		emitComsQueue();
 
 		// 5. Ack + audit log
 		ackOk(socket, env.msg_id);
@@ -4296,15 +4323,6 @@ Do not respond to this message.`;
 		},
 	});
 
-	interface LocalQueueItem {
-		id: string;
-		msg_id: string;
-		sender_name: string;
-		prompt: string;
-		status: "processing" | "pending";
-		receivedAt: number;
-	}
-
 	function listLocalInboundQueue(): LocalQueueItem[] {
 		const items: LocalQueueItem[] = [];
 		const now = Date.now();
@@ -4360,6 +4378,7 @@ Do not respond to this message.`;
 			bundledInbounds = bundledInbounds.filter((b) => b.msg_id !== msgId);
 		}
 		maybeRefreshWidget();
+		emitComsQueue();
 		// Send error response to sender
 		if (identity) {
 			try {
@@ -5247,6 +5266,7 @@ Do not respond to this message.`;
 			}
 			currentInbound = inbound;
 			inboundDelivered = false;
+			emitComsQueue();
 			return true;
 		} catch (err: any) {
 			log.error("agent_end_undelivered_reinject_failed", inbound.msg_id, err?.message);
@@ -5268,6 +5288,7 @@ Do not respond to this message.`;
 		finalizingMsgIds.add(inbound.msg_id);
 		bundledInbounds = [];
 		maybeRefreshWidget();
+		emitComsQueue();
 		const queuedIds: string[] = [];
 		for (const i of inboundQueue.values()) if (!i.fulfilled && i !== inbound) queuedIds.push(i.msg_id);
 		try {
@@ -5427,6 +5448,10 @@ Do not respond to this message.`;
 	// resolveTarget/deliverPrompt path as coms_send — identical delivery
 	// semantics, browser is just another transport.
 	function emitComsPeers(): void {
+		if (options.onPeersChanged) {
+			try { options.onPeersChanged(); } catch { /* ignore */ }
+			return;
+		}
 		try {
 			pi.events.emit("pidash:coms-peers", buildComsPeersPayload(
 				peerCards.values(),
@@ -5434,23 +5459,92 @@ Do not respond to this message.`;
 			));
 		} catch { /* pidash not loaded */ }
 	}
-	pi.events.on("pidash:coms-peers-request", () => emitComsPeers());
+	let lastEmittedQueueKey = "";
+	function emitComsQueue(force = false): void {
+		try {
+			const items = listLocalInboundQueue();
+			const key = `${identity ? 1 : 0}|${items.map((i) => `${i.msg_id}:${i.status}`).join(",")}`;
+			if (!force && key === lastEmittedQueueKey) return;
+			lastEmittedQueueKey = key;
+			pi.events.emit("pidash:coms-queue", {
+				items,
+				active: identity !== null,
+			});
+		} catch { /* pidash not loaded */ }
+	}
+	if (!options.onPeersChanged) {
+		pi.events.on("pidash:coms-peers-request", () => emitComsPeers());
+	}
+	pi.events.on("pidash:coms-queue-request", () => emitComsQueue(true));
+	pi.events.on("pidash:coms-queue-kill", async (data: unknown) => {
+		const d = data as { requestId?: string; msg_id?: string };
+		const msgId = typeof d?.msg_id === "string" ? d.msg_id.trim() : "";
+		if (!msgId) {
+			pi.events.emit("pidash:coms-queue-kill-result", {
+				requestId: d?.requestId,
+				ok: false,
+				error: "msg_id required",
+			});
+			return;
+		}
+		try {
+			const res = await killLocalInboundQueueItem(msgId);
+			if (res.killed) {
+				log.info("pidash_coms_queue_kill", { msg_id: res.msg_id, sender: res.sender_name });
+				pi.events.emit("pidash:coms-queue-kill-result", {
+					requestId: d?.requestId,
+					ok: true,
+					msg_id: res.msg_id,
+					sender_name: res.sender_name,
+				});
+			} else {
+				log.debug("pidash_coms_queue_kill_missing", { msg_id: msgId });
+				pi.events.emit("pidash:coms-queue-kill-result", {
+					requestId: d?.requestId,
+					ok: false,
+					msg_id: msgId,
+					error: `queued message not found: ${msgId}`,
+				});
+			}
+		} catch (e) {
+			const error = e instanceof Error ? e.message : String(e);
+			log.warn("pidash_coms_queue_kill_failed", { msg_id: msgId, error });
+			pi.events.emit("pidash:coms-queue-kill-result", {
+				requestId: d?.requestId,
+				ok: false,
+				msg_id: msgId,
+				error,
+			});
+		} finally {
+			emitComsQueue(true);
+		}
+	});
 	pi.events.on("pidash:coms-send", async (data: unknown) => {
-		const d = data as { requestId?: string; target?: string; prompt?: string; steer?: boolean; priority?: boolean };
+		const d = data as { requestId?: string; target?: string; project?: string; prompt?: string; steer?: boolean; priority?: boolean };
 		if (!d?.target || !d?.prompt) {
 			pi.events.emit("pidash:coms-send-result", { requestId: d?.requestId, ok: false, error: "target and prompt required" });
 			return;
 		}
 		try {
 			if (!identity) throw new Error("coms not initialised");
-			const target = await resolveTarget(d.target);
+			let target: RegistryEntry | null = null;
+			let targetProject: string | undefined;
+			if (typeof d.project === "string" && d.project.trim()) {
+				const resolved = await resolveUserTarget(d.target, d.project.trim());
+				if (!resolved.target) throw new Error(resolved.error ?? `peer not found: ${d.target}`);
+				target = resolved.target;
+				targetProject = resolved.project;
+			} else {
+				target = await resolveTarget(d.target);
+			}
 			if (!target) throw new Error(`peer not found: ${d.target}`);
 			const { msg_id } = await deliverPrompt(target, {
 				prompt: d.prompt,
 				...(d.steer ? { steer: true } : {}),
 				...(d.priority ? { priority: true } : {}),
+				...(targetProject ? { targetProject } : {}),
 			});
-			log.info("pidash_coms_send", { target: target.name, msg_id, steer: !!d.steer });
+			log.info("pidash_coms_send", { target: target.name, project: targetProject ?? identity.project, msg_id, steer: !!d.steer });
 			pi.events.emit("pidash:coms-send-result", { requestId: d.requestId, ok: true, msg_id, target: target.name });
 		} catch (e) {
 			const error = e instanceof Error ? e.message : String(e);
@@ -5773,6 +5867,7 @@ Do not respond to this message.`;
 		finalizingInbound = false;
 		processingInbound = false;
 		pendingDrainAfterKill = false;
+		emitComsQueue(true);
 		if (agentRunning || beforeAgentStartPending) {
 			log.debug("agent_busy_transition", { busy: false, agentRunning: false, beforeAgentStartPending: false, processingInbound: false, reason: "shutdown" });
 		}
@@ -5847,6 +5942,9 @@ Do not respond to this message.`;
 		isActive: () => identity !== null,
 		sendAsUser,
 		openQueueOverlay,
+		listLocalInboundQueue,
+		killLocalInboundQueueItem,
+		getPeerCards: () => [...peerCards.values()],
 		gatedToolNames,
 	};
 }

@@ -8,7 +8,7 @@ import type { SessionInfo, NotificationPreferences } from "@/types";
 import { sessionActivityDisplay } from "@/lib/activity-display";
 import { loadTheme, setTheme, type Theme } from "@/lib/theme";
 import { createLogger } from "@/lib/create-logger";
-import { isSessionWaitingForInput, partitionSidebarSessions } from "@/lib/pidash-ux-helpers";
+import { isSessionWaitingForInput, partitionSidebarSessions, sessionRowDisplayLabel } from "@/lib/pidash-ux-helpers";
 
 const log = createLogger("SessionSidebar");
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
@@ -193,7 +193,7 @@ export function SessionSidebar({
   /** One session row — shared by Pinned, directory groups, Coms, and Archived. */
   const renderSession = (
     s: SessionInfo,
-    opts: { showLocation?: boolean; keyPrefix?: string; compactIndent?: boolean } = {},
+    opts: { showLocation?: boolean; keyPrefix?: string; compactIndent?: boolean; preferComsName?: boolean } = {},
   ) => {
     const isActive = s.sessionId === activeSessionId;
     const isPinned = Boolean(pinnedSessionIds?.has(s.sessionId));
@@ -201,6 +201,7 @@ export function SessionSidebar({
     const isWaiting = isSessionWaitingForInput(s, extraAttentionIds);
     const status = sessionActivityDisplay(s);
     const rowKey = opts.keyPrefix ? `${opts.keyPrefix}:${s.sessionId}` : s.sessionId;
+    const displayLabel = sessionRowDisplayLabel(s, { preferComsName: opts.preferComsName });
     return (
       <div
         key={rowKey}
@@ -256,7 +257,7 @@ export function SessionSidebar({
             />
           ) : (
             <>
-              <span className="truncate min-w-0 flex-1">{s.name || s.model || "—"}</span>
+              <span className="truncate min-w-0 flex-1">{displayLabel}</span>
               {(onRename || onTogglePin || onToggleArchive) && (
                 <span className="flex items-center gap-0.5 shrink-0">
                   {onRename && (
@@ -526,7 +527,7 @@ export function SessionSidebar({
                       <span>{info.sessions.length}</span>
                     </span>
                   </div>
-                  {isProjectOpen && info.sessions.map((s) => renderSession(s, { showLocation: true, keyPrefix: `coms:${project}` }))}
+                  {isProjectOpen && info.sessions.map((s) => renderSession(s, { showLocation: true, keyPrefix: `coms:${project}`, preferComsName: true }))}
                 </div>
               );
             })}

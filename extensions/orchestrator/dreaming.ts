@@ -185,6 +185,7 @@ export function registerDreaming(
     // knowledge rather than re-derivable history is put back below (issue #1010).
     const topicsBeforeDream = snapshotTopicLines(topicsDir);
     const dreamStartedAt = Date.now();
+    let dreamId = "";
     const { id, error } = spawnAsyncAgent(
       "worker",
       buildDreamPrompt(lastSessionFile, topicsDir),
@@ -196,7 +197,10 @@ export function registerDreaming(
         parentModelId: dreamModelId,
         parentProvider: dreamProvider,
         onComplete: () => {
-          dreamInFlight = false;
+          if (!dreamId || currentDreamId === dreamId) {
+            dreamInFlight = false;
+            currentDreamId = "";
+          }
           log.info("dream complete", cwd);
           updateDreamStatus();
           // Undo any deletion of learned knowledge before anything reads the topics.
@@ -255,14 +259,15 @@ export function registerDreaming(
       updateDreamStatus();
       return { started: false, id: "", error: error || "Failed to start dream worker" };
     }
+    dreamId = id;
     currentDreamId = id;
     // Safety fallback: if onComplete never fires (runner crash/hang),
     // reset dreamInFlight after 30 min so future dreams aren't blocked.
     // Capture the current dream ID to avoid cross-run races.
-    const dreamId = id;
     const fallbackTimer = setTimeout(() => {
       if (dreamInFlight && currentDreamId === dreamId) {
         dreamInFlight = false;
+        currentDreamId = "";
         updateDreamStatus();
         fileLog(
           "dreaming",
@@ -448,12 +453,59 @@ export function registerDreaming(
     syncAutoDreamTimer(ctx.cwd);
   });
 
+  // ── #1481: PiDash manual Dream trigger ─────────────────────────────
+  let unsubPidashDream: (() => void) | undefined;
+  const ensurePidashDreamSubscription = (): void => {
+    if (unsubPidashDream) return;
+    try {
+      const unsub = pi.events.on("pidash:memory-dream-request", (data: unknown) => {
+        const payload = (typeof data === "object" && data !== null ? data : {}) as { cwd?: unknown; requestId?: unknown };
+        const requestId = typeof payload.requestId === "string" ? payload.requestId : undefined;
+        const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : (lastCwd || process.cwd());
+        if (dreamInFlight) {
+          log.info("pidash_memory_dream_already_running", { currentDreamId });
+          pi.events.emit("pidash:memory-dream-result", {
+            requestId,
+            ok: false,
+            inFlight: true,
+            id: currentDreamId || null,
+            message: "Dream already running — wait for it to finish.",
+          });
+          return;
+        }
+        lastCwd = cwd;
+        const res = runDreamAsync(cwd);
+        if (res.started) {
+          log.info("pidash_memory_dream_started", { id: res.id });
+          pi.events.emit("pidash:memory-dream-result", {
+            requestId,
+            ok: true,
+            id: res.id,
+            message: `Started background memory consolidation (job ${res.id}).`,
+          });
+        } else {
+          log.warn("pidash_memory_dream_failed", { error: res.error });
+          pi.events.emit("pidash:memory-dream-result", {
+            requestId,
+            ok: false,
+            error: res.error,
+            message: `Failed to start memory dreaming: ${res.error || "unknown error"}.`,
+          });
+        }
+      });
+      if (typeof unsub === "function") unsubPidashDream = unsub;
+    } catch (err) {
+      log.warn("pidash_memory_dream_subscribe_failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  ensurePidashDreamSubscription();
+
   // Update cwd on session start
   pi.on("session_start", (_event, ctx) => {
     lastCwd = ctx.cwd;
     lastCtx = ctx;
     enabledOverride = null;
-    dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
+    ensurePidashDreamSubscription();
     // Skip auto-dream timer in print/json; shutdown dream is skipped in
     // session_shutdown via shouldSkipOneshotShutdownDream.
     if (ctx.mode === "print" || ctx.mode === "json") {
@@ -468,6 +520,13 @@ export function registerDreaming(
   // Skip oneshot print/json or the child keeps the parent event loop alive.
   pi.on("session_shutdown", (event) => {
     stopTimer();
+    const reason = (event as any)?.reason;
+    // Only drop the PiDash listener on terminal quit or reload (reload registers a fresh module);
+    // continuing session switches (new/fork/resume) also call ensurePidashDreamSubscription on session_start.
+    if (!reason || reason === "quit" || reason === "reload") {
+      try { unsubPidashDream?.(); } catch { /* ignore */ }
+      unsubPidashDream = undefined;
+    }
     if (shouldSkipOneshotShutdownDream(lastCtx?.mode)) {
       log.info("skip shutdown dream: oneshot print/json");
       return;

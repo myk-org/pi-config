@@ -796,15 +796,36 @@ export function registerPidash(
           pi.events.emit("pidash:task-op", parsed);
         }
         if (parsed.command === "coms-peers") {
-          pi.events.emit("pidash:coms-peers-request", undefined);
+          pi.events.emit("pidash:coms-peers-request", {
+            scope: parsed.scope === "all" ? "all" : "project",
+            requestId: typeof parsed.requestId === "string" ? parsed.requestId : undefined,
+          });
         }
         if (parsed.command === "coms-send") {
           pi.events.emit("pidash:coms-send", {
             requestId: parsed.requestId,
             target: parsed.target,
+            project: typeof parsed.project === "string" ? parsed.project : undefined,
             prompt: parsed.prompt,
             steer: parsed.steer === true,
             priority: parsed.priority === true,
+          });
+        }
+        if (parsed.command === "coms-kill") {
+          pi.events.emit("pidash:coms-kill", {
+            requestId: parsed.requestId,
+            name: typeof parsed.name === "string" ? parsed.name : "",
+            project: typeof parsed.project === "string" ? parsed.project : undefined,
+            scope: parsed.scope === "all" ? "all" : "project",
+          });
+        }
+        if (parsed.command === "coms-queue") {
+          pi.events.emit("pidash:coms-queue-request", undefined);
+        }
+        if (parsed.command === "coms-queue-kill") {
+          pi.events.emit("pidash:coms-queue-kill", {
+            requestId: parsed.requestId,
+            msg_id: typeof parsed.msg_id === "string" ? parsed.msg_id : "",
           });
         }
         if (parsed.command === "memory-status") {
@@ -812,6 +833,12 @@ export function registerPidash(
           // browser may be watching a session in a different project than
           // this process's cwd.
           pi.events.emit("pidash:memory-status-request", { cwd: client.lastCtx?.cwd || process.cwd() });
+        }
+        if (parsed.command === "memory-dream") {
+          pi.events.emit("pidash:memory-dream-request", {
+            cwd: client.lastCtx?.cwd || process.cwd(),
+            requestId: typeof parsed.requestId === "string" ? parsed.requestId : undefined,
+          });
         }
 
         // ── #968 part F: MCP management ─────────────────────────────
@@ -825,10 +852,10 @@ export function registerPidash(
           try {
             const out = await runMcp(["login", String(parsed.server)], cwd, 180000);
             log.info("mcp-login from browser", { server: parsed.server });
-            client.send({ type: "mcp-op-result", op: "login", server: parsed.server, ok: true, output: out.slice(0, 4000) });
+            client.send({ type: "mcp-op-result", op: "login", server: parsed.server, ok: true, output: out });
           } catch (e: any) {
             log.warn(`mcp-login error: ${e?.message}`);
-            client.send({ type: "mcp-op-result", op: "login", server: parsed.server, ok: false, output: String(e?.stderr || e?.message || e).slice(0, 4000) });
+            client.send({ type: "mcp-op-result", op: "login", server: parsed.server, ok: false, output: String(e?.stderr || e?.message || e) });
           }
         }
         if (parsed.command === "mcp-logout" && parsed.server) {
@@ -836,10 +863,10 @@ export function registerPidash(
           try {
             const out = await runMcp(["logout", String(parsed.server)], cwd);
             log.info("mcp-logout from browser", { server: parsed.server });
-            client.send({ type: "mcp-op-result", op: "logout", server: parsed.server, ok: true, output: out.slice(0, 4000) });
+            client.send({ type: "mcp-op-result", op: "logout", server: parsed.server, ok: true, output: out });
           } catch (e: any) {
             log.warn(`mcp-logout error: ${e?.message}`);
-            client.send({ type: "mcp-op-result", op: "logout", server: parsed.server, ok: false, output: String(e?.stderr || e?.message || e).slice(0, 4000) });
+            client.send({ type: "mcp-op-result", op: "logout", server: parsed.server, ok: false, output: String(e?.stderr || e?.message || e) });
           }
         }
 
@@ -1318,22 +1345,37 @@ export function registerPidash(
       client.send({ type: "cron-status", ...(data as any) });
     });
 
-    // Forward task list updates to browser (#968 A)
+    // Forward task list updates & correlated op results to browser (#968 A, #1481)
     pi.events.on("pidash:tasks-list", (data: unknown) => {
       client.send({ type: "tasks-list", ...(data as any) });
     });
+    pi.events.on("pidash:task-op-result", (data: unknown) => {
+      client.send({ type: "task-op-result", ...(data as any) });
+    });
 
-    // Forward coms peer list / send results to browser (#968 C)
+    // Forward coms peer list / send / kill / queue results to browser (#968 C, #1481)
     pi.events.on("pidash:coms-peers", (data: unknown) => {
       client.send({ type: "coms-peers", ...(data as any) });
     });
     pi.events.on("pidash:coms-send-result", (data: unknown) => {
       client.send({ type: "coms-send-result", ...(data as any) });
     });
+    pi.events.on("pidash:coms-kill-result", (data: unknown) => {
+      client.send({ type: "coms-kill-result", ...(data as any) });
+    });
+    pi.events.on("pidash:coms-queue", (data: unknown) => {
+      client.send({ type: "coms-queue", ...(data as any) });
+    });
+    pi.events.on("pidash:coms-queue-kill-result", (data: unknown) => {
+      client.send({ type: "coms-queue-kill-result", ...(data as any) });
+    });
 
-    // Forward memory status to browser (#968 E)
+    // Forward memory status & dream results to browser (#968 E, #1481)
     pi.events.on("pidash:memory-status", (data: unknown) => {
       client.send({ type: "memory-status", ...(data as any) });
+    });
+    pi.events.on("pidash:memory-dream-result", (data: unknown) => {
+      client.send({ type: "memory-dream-result", ...(data as any) });
     });
 
     // Forward coms peer join/leave events to browser

@@ -9,7 +9,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
-import { parseFlags, persistState, syncComsActiveTools } from "./coms-shared.js";
+import { buildPidashComsPeersPayload, parseFlags, persistState, syncComsActiveTools } from "./coms-shared.js";
 import {
     createComsPeerRuntime,
     type ComsActivationOrigin,
@@ -94,6 +94,9 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     let cachedRegistry: ComsRegistry | null = null;
     let cachedHistoryReader: { path: string; reader: ReturnType<typeof createTailHistoryReader> } | null = null;
     let pidashUnsubscribe: (() => void) | null = null;
+    let pidashInterested = false;
+    let pidashPeersDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const PIDASH_PEERS_DEBOUNCE_MS = 600;
     /** In-flight peer revives keyed by `project::name`, tagged per launch token so an older exit never clears a newer claim. */
     const revivingPeers = new Map<string, { claimedAt: number; token: symbol }>();
     const REVIVE_CLAIM_TTL_MS = 45_000;
@@ -123,6 +126,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         allowSubagentChild: options.allowSubagentChild,
         registerSignalHandlers: options.registerSignalHandlers,
         reloadQueueTtlMs: options.reloadQueueTtlMs,
+        onPeersChanged: () => schedulePidashComsSnapshot(),
     });
 
     const gatedTools = new Set<string>(runtime.gatedToolNames);
@@ -155,14 +159,123 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         setComsActive(nextActive, nextKey, nextActive ? peerName : undefined);
     };
 
+    const clearPidashPeersDebounce = (): void => {
+        if (pidashPeersDebounceTimer) {
+            clearTimeout(pidashPeersDebounceTimer);
+            pidashPeersDebounceTimer = null;
+        }
+    };
+
+    const emitPidashComsSnapshot = (scopeOverride: "project" | "all" = "all", requestId?: string): void => {
+        try {
+            const ownProj = ownProject();
+            const records = readSupervisionRecords();
+            const supervisedKeys = supervisedPeerKeys(records);
+            const allLiveRows = attachCreatedBy(getRegistry().readLiveRows(), records);
+            const selfInfo = runtime.getSelf();
+            const selfObj = selfInfo
+                ? {
+                      name: selfInfo.name,
+                      purpose: String(flagValues.get("purpose") ?? ""),
+                      project: selfInfo.project,
+                      endpoint: selfInfo.endpoint,
+                  }
+                : null;
+            const allPayload = buildPidashComsPeersPayload({
+                rows: allLiveRows,
+                cards: runtime.getPeerCards(),
+                supervisedKeys,
+                self: selfObj,
+                scope: "all",
+                ownProject: ownProj,
+            });
+            const scopedPeers = scopeOverride === "project"
+                ? allPayload.peers.filter((p) => p.project === ownProj)
+                : allPayload.peers;
+            pi.events.emit("pidash:coms-peers", {
+                ...allPayload,
+                scope: scopeOverride,
+                peers: scopedPeers,
+                // Always include the full live peer list so multi-tab browsers
+                // apply their own tab-local scope without clobbering each other (#1481).
+                allPeers: allPayload.peers,
+                ...(requestId ? { requestId } : {}),
+            });
+        } catch (err) {
+            log.warn("pidash_coms_snapshot_failed", { error: err instanceof Error ? err.message : String(err) });
+        }
+    };
+
+    const schedulePidashComsSnapshot = (): void => {
+        if (!pidashInterested) return;
+        if (pidashPeersDebounceTimer) return;
+        pidashPeersDebounceTimer = setTimeout(() => {
+            pidashPeersDebounceTimer = null;
+            if (!pidashInterested) return;
+            emitPidashComsSnapshot("all");
+        }, PIDASH_PEERS_DEBOUNCE_MS);
+        pidashPeersDebounceTimer.unref?.();
+    };
+
     const ensurePidashRegistration = (): void => {
         if (pidashUnsubscribe) return;
         try {
             const registerWithPidash = () => {
                 pi.events.emit("pidash:register-command", { name: "coms", handler: comsCmdHandler });
             };
-            const unsub = pi.events.on("pidash:request-commands", registerWithPidash);
-            if (typeof unsub === "function") pidashUnsubscribe = unsub;
+            const unsubs: Array<() => void> = [];
+            const addUnsub = (u: unknown) => {
+                if (typeof u === "function") unsubs.push(u as () => void);
+            };
+            addUnsub(pi.events.on("pidash:request-commands", registerWithPidash));
+            addUnsub(
+                pi.events.on("pidash:coms-peers-request", (data: unknown) => {
+                    const req = data as { scope?: string; requestId?: string } | undefined;
+                    const scope: "project" | "all" = req?.scope === "all" ? "all" : "project";
+                    const requestId = typeof req?.requestId === "string" ? req.requestId : undefined;
+                    pidashInterested = true;
+                    clearPidashPeersDebounce();
+                    log.debug("pidash_coms_peers_request", { scope });
+                    emitPidashComsSnapshot(scope, requestId);
+                }),
+            );
+            addUnsub(
+                pi.events.on("pidash:coms-kill", (data: unknown) => {
+                    const req = data as { requestId?: string; name?: string; project?: string; scope?: string } | undefined;
+                    const name = typeof req?.name === "string" ? req.name.trim() : "";
+                    const project = typeof req?.project === "string" && req.project.trim() ? req.project.trim() : ownProject();
+                    const scope: "project" | "all" = req?.scope === "all" ? "all" : "project";
+                    pidashInterested = true;
+                    if (!name) {
+                        pi.events.emit("pidash:coms-kill-result", {
+                            requestId: req?.requestId,
+                            ok: false,
+                            killed: 0,
+                            message: "Peer name required.",
+                        });
+                        return;
+                    }
+                    const result = killPeers({ name, project });
+                    log.info("pidash_coms_kill", { name, project, killed: result.killed });
+                    pi.events.emit("pidash:coms-kill-result", {
+                        requestId: req?.requestId,
+                        ok: result.killed > 0,
+                        killed: result.killed,
+                        message: result.text,
+                        name,
+                        project,
+                    });
+                    clearPidashPeersDebounce();
+                    emitPidashComsSnapshot(scope);
+                }),
+            );
+            pidashUnsubscribe = () => {
+                clearPidashPeersDebounce();
+                pidashInterested = false;
+                for (const u of unsubs) {
+                    try { u(); } catch { /* ignore */ }
+                }
+            };
             registerWithPidash();
         } catch (err) {
             log.warn("pidash_command_register_failed", { error: err instanceof Error ? err.message : String(err) });

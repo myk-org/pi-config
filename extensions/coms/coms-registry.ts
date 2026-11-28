@@ -348,6 +348,7 @@ export class ComsRegistry {
 						pid: Number.isInteger(entry.pid) ? entry.pid : null,
 						cwd: typeof entry.cwd === "string" ? entry.cwd : "",
 						purpose: typeof entry.purpose === "string" ? entry.purpose : "",
+						model: typeof entry.model === "string" ? entry.model : "",
 						endpoint: typeof entry.endpoint === "string" ? entry.endpoint : "",
 						busy: entry.busy === true,
 						queueDepth: typeof entry.queue_depth === "number" ? entry.queue_depth : null,

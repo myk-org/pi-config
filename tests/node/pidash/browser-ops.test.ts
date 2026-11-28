@@ -5,7 +5,7 @@ import { readFileSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node
 import { execFileSync } from "node:child_process";
 
 import { join } from "node:path";
-import { applySetting, buildSettingsPayload, validateSettingValue } from "../../../extensions/pidash/browser-ops.ts";
+import { applySetting, buildSettingsPayload, mcpList, validateSettingValue } from "../../../extensions/pidash/browser-ops.ts";
 import { SETTINGS_KEYS } from "../../../extensions/orchestrator/project-settings.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
@@ -242,5 +242,99 @@ describe("validateSettingValue", () => {
     assert.match(validateSettingValue("widgets_default_mode", "")!, /must be one of/);
     assert.match(validateSettingValue("log_coms", "loud")!, /must be one of/);
     assert.equal(validateSettingValue("widgets_default_mode", "collapsed"), null);
+  });
+});
+
+describe("mcpList (#1481)", () => {
+  it("parses servers with untruncated >250-char error from err.stdout when pi mcp list --json exits code 1", async () => {
+    const longErr = `MCP_BROKEN_${"E".repeat(260)}_TAIL`;
+    const payload = {
+      servers: [
+        { name: "healthy", state: "connected", tools: ["ping"] },
+        { name: "broken", state: "error", error: longErr },
+      ],
+    };
+    const runner = async () => {
+      throw Object.assign(new Error("Command failed: pi mcp list --json"), {
+        code: 1,
+        stdout: JSON.stringify(payload),
+        stderr: "1 server failed\n",
+      });
+    };
+    const warns: unknown[][] = [];
+
+    const res = await mcpList("/tmp", runner, { warn: (...args: unknown[]) => warns.push(args) });
+
+    assert.equal(res.error, undefined);
+    assert.equal(res.servers?.length, 2);
+    const [healthy, broken] = res.servers as Array<{ name: string; state: string; tools?: string[]; error?: string }>;
+    assert.deepEqual(healthy, { name: "healthy", state: "connected", tools: ["ping"] });
+    assert.equal(broken.name, "broken");
+    assert.equal(broken.state, "error");
+    assert.equal(broken.error, longErr);
+    assert.ok(broken.error!.length > 250);
+    assert.deepEqual(warns, [["mcp_list_nonzero_parsed", { count: 2, code: 1, stderr: "1 server failed" }]]);
+  });
+
+  it("parses top-level JSON array from Buffer err.stdout on non-zero exit", async () => {
+    const runner = async () => {
+      throw Object.assign(new Error("Command failed: pi mcp list --json"), {
+        code: 1,
+        stdout: Buffer.from(JSON.stringify([{ name: "srv", state: "error", error: "fail" }]), "utf-8"),
+        stderr: "",
+      });
+    };
+
+    const res = await mcpList("/tmp", runner);
+
+    assert.equal(res.error, undefined);
+    assert.equal(res.servers?.length, 1);
+    const [srv] = res.servers as Array<{ name: string; state: string; error?: string }>;
+    assert.deepEqual(srv, { name: "srv", state: "error", error: "fail" });
+  });
+
+  it("falls back to error when non-zero exit stdout is non-JSON", async () => {
+    const runner = async () => {
+      throw Object.assign(new Error("Command failed: pi mcp list --json"), {
+        code: 1,
+        stdout: "not valid json",
+        stderr: "pi mcp failed",
+      });
+    };
+
+    const res = await mcpList("/tmp", runner);
+
+    assert.equal(res.servers, undefined);
+    assert.equal(res.error, "pi mcp failed");
+  });
+
+  it("falls back to error when non-zero exit stdout is a plain JSON error object", async () => {
+    const runner = async () => {
+      throw Object.assign(new Error("Command failed: pi mcp list --json"), {
+        code: 1,
+        stdout: JSON.stringify({ error: "not logged in" }),
+        stderr: "",
+      });
+    };
+
+    const res = await mcpList("/tmp", runner);
+
+    assert.equal(res.servers, undefined);
+    assert.equal(res.error, "Command failed: pi mcp list --json");
+  });
+
+  it("falls back to error when non-zero exit stdout has an empty server list", async () => {
+    const runner = async () => {
+      throw Object.assign(new Error("Command failed: pi mcp list --json"), {
+        code: 1,
+        stdout: JSON.stringify({ servers: [] }),
+        stderr: "mcp daemon unavailable",
+      });
+    };
+
+    const res = await mcpList("/tmp", runner);
+
+    assert.equal(res.servers, undefined);
+    assert.equal(res.error, "mcp daemon unavailable");
   });
 });
