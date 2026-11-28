@@ -1,6 +1,7 @@
 import type { Api, AuthResult, Model, Provider, RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
+import { assertMinPiVersionOnLoad } from "../shared/pi-version.js";
 import {
   buildOpenAiCompatibleCapabilitiesUrl,
   buildOpenAiCompatibleModelsRequest,
@@ -151,6 +152,8 @@ function discoverySummaryComponent(summary: string, theme: { fg: (color: "muted"
 }
 
 export default function (pi: ExtensionAPI) {
+  assertMinPiVersionOnLoad("openai-compatible-discovery");
+
   pi.registerEntryRenderer<OpenAiCompatibleDiscoverySummary>(
     "openai-compatible-discovery-summary",
     (entry, _options, theme) => discoverySummaryComponent(entry.data?.summary ?? "", theme),

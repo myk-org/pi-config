@@ -75,16 +75,16 @@ describe("MIN_PI_VERSION", () => {
   });
 
   it("matches the pi-config orchestrator floor", function () {
-    // True sync check — parse the orchestrator's constant instead of duplicating
+    // True sync check — parse the shared floor constant instead of duplicating
     // a literal here (a hardcoded string would silently tolerate drift).
-    const orchSrc = new URL("../../../../extensions/orchestrator/utils.ts", import.meta.url);
-    if (!fs.existsSync(orchSrc)) {
-      // Published tarballs ship only packages/ — orchestrator source is a
+    const sharedSrc = new URL("../../../../extensions/shared/pi-version.ts", import.meta.url);
+    if (!fs.existsSync(sharedSrc)) {
+      // Published tarballs ship only packages/ — extension source is a
       // monorepo-only artifact, so cross-package sync cannot be verified there.
       this.skip();
     }
-    const m = fs.readFileSync(orchSrc, "utf8").match(/MIN_PI_VERSION = "([^\"]+)"/);
-    assert.ok(m, "MIN_PI_VERSION not found in extensions/orchestrator/utils.ts");
+    const m = fs.readFileSync(sharedSrc, "utf8").match(/MIN_PI_VERSION = "([^\"]+)"/);
+    assert.ok(m, "MIN_PI_VERSION not found in extensions/shared/pi-version.ts");
     assert.equal(MIN_PI_VERSION, m[1]);
   });
 });
@@ -103,6 +103,16 @@ describe("assertPiVersionFloor", () => {
     } else {
       assert.throws(() => assertPiVersionFloor(), new RegExp(`below the required floor ${MIN_PI_VERSION}`));
     }
+  });
+
+  it("recommends re-resolving sidecar npm dependencies rather than global pi update on SDK floor failure", () => {
+    const source = fs.readFileSync(new URL("../../src/pi-version.ts", import.meta.url), "utf8");
+    const sdkThrowBlock = source.slice(
+      source.indexOf("if (compareVersions(installed, MIN_PI_VERSION) < 0)"),
+      source.indexOf("PI_VERSION_CHECK_OK"),
+    );
+    assert.match(sdkThrowBlock, /re-resolve your sidecar npm dependencies/);
+    assert.doesNotMatch(sdkThrowBlock, /pi update/);
   });
 
   it("keeps pi-version.ts free of SDK runtime imports so floor checks precede ESM linking", () => {

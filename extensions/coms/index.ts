@@ -13,11 +13,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
+import { assertMinPiVersionOnLoad } from "../shared/pi-version.js";
 import { registerComs } from "./coms-wrapper.js";
 
 const log = createLogger("coms");
 
 export default function (pi: ExtensionAPI) {
+    assertMinPiVersionOnLoad("coms");
     if (shouldSkipOneshotRegister(log)) return;
     log.debug("register coms");
     registerComs(pi);

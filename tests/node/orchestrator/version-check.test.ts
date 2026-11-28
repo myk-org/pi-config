@@ -1,41 +1,59 @@
 /**
- * Tests for pi version detection (utils.ts#getPiVersion / compareSemver /
- * checkMinPiVersion).
+ * Tests for process-authoritative Pi version detection and enforcement
+ * (`extensions/shared/pi-version.ts` + `extensions/orchestrator/session-validation.ts`
+ * + standalone extension entrypoints).
  *
- * Hermetic by construction: the `pi --version` CLI fallback is exercised
- * against a throwaway fake `pi` on an isolated PATH, so results never depend
- * on the host's global pi installation (Qodo finding, PR #774 cycle 2).
+ * Hermetic by construction: never depends on any host `pi` binary on PATH.
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
   MIN_PI_VERSION,
+  assertMinPiVersionOnLoad,
   compareSemver,
   checkMinPiVersion,
-  getPiVersion,
-} from "../../../extensions/orchestrator/utils.ts";
-import {
   formatMinPiVersionError,
-  registerSessionValidation,
-} from "../../../extensions/orchestrator/session-validation.ts";
+  getPiVersion,
+  resetPiVersionCache,
+  setPiVersionResolverForTests,
+} from "../../../extensions/orchestrator/utils.ts";
+import { registerSessionValidation } from "../../../extensions/orchestrator/session-validation.ts";
 import orchestratorExtension from "../../../extensions/orchestrator/index.ts";
+import comsExtension from "../../../extensions/coms/index.ts";
+import comsP2pExtension from "../../../extensions/coms/coms-p2p.ts";
+import discoveryExtension from "../../../extensions/openai-compatible-discovery/index.ts";
+import pitasksExtension from "../../../extensions/pitasks/index.ts";
+import pidashExtension from "../../../extensions/pidash/index.ts";
+import pidiffExtension from "../../../extensions/pidiff/index.ts";
+import providersExtension from "../../../extensions/providers/index.ts";
+import reloadFlagExtension from "../../../extensions/reload-flag/index.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
-
 
 let cleanupFns: Array<() => void> = [];
 
-/** Put a fake `pi` that prints `version` at the front of PATH for this test. */
-function useFakePi(version: string): void {
-  const binDir = makeTempDir("fake-pi-bin-");
-  const script = path.join(binDir, "pi");
+/** Create a fake `@earendil-works/pi-coding-agent` package directory with a CLI script. */
+function makeFakePiPackage(version: string): { pkgDir: string; cliPath: string } {
+  const pkgDir = makeTempDir("fake-pi-pkg-");
+  const distDir = path.join(pkgDir, "dist");
+  fs.mkdirSync(distDir, { recursive: true });
   fs.writeFileSync(
-    script,
-    `#!/bin/sh\nprintf '%s\\n' '${version}'\n`,
-    { mode: 0o755 },
+    path.join(pkgDir, "package.json"),
+    JSON.stringify({ name: "@earendil-works/pi-coding-agent", version }),
+    "utf-8",
   );
+  const cliPath = path.join(distDir, "cli.js");
+  fs.writeFileSync(cliPath, "// fake pi cli\n", "utf-8");
+  cleanupFns.push(() => fs.rmSync(pkgDir, { recursive: true, force: true }));
+  return { pkgDir, cliPath };
+}
+
+/** Put an unrelated fake `pi` binary reporting `version` at the front of PATH. */
+function putStalePiOnPath(version: string): void {
+  const binDir = makeTempDir("stale-pi-path-");
+  const script = path.join(binDir, "pi");
+  fs.writeFileSync(script, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`, { mode: 0o755 });
   const prevPath = process.env.PATH ?? "";
   process.env.PATH = `${binDir}${path.delimiter}${prevPath}`;
   cleanupFns.push(() => {
@@ -44,15 +62,8 @@ function useFakePi(version: string): void {
   });
 }
 
-function useEmptyPath(): void {
-  const prevPath = process.env.PATH ?? "";
-  process.env.PATH = "";
-  cleanupFns.push(() => {
-    process.env.PATH = prevPath;
-  });
-}
-
 afterEach(() => {
+  resetPiVersionCache();
   for (const fn of cleanupFns.reverse()) {
     try { fn(); } catch {}
   }
@@ -97,53 +108,112 @@ describe("compareSemver", () => {
   });
 });
 
-describe("getPiVersion", () => {
-  it("returns the version reported by pi on PATH", () => {
-    useFakePi("4.5.6");
-    assert.equal(getPiVersion(), "4.5.6");
+describe("getPiVersion (process-authoritative & cached)", () => {
+  it("resolves version from PI_PACKAGE_DIR when present", () => {
+    const { pkgDir } = makeFakePiPackage("2.3.4");
+    assert.equal(
+      getPiVersion({ packageDir: pkgDir, argv1: null, runtimeModuleVersion: "1.7.0" }),
+      "2.3.4",
+    );
   });
 
-  it("returns null when no pi is reachable", () => {
-    useEmptyPath();
-    assert.equal(getPiVersion(), null);
+  it("resolves version from argv[1] package root", () => {
+    const { cliPath } = makeFakePiPackage("1.8.2");
+    assert.equal(
+      getPiVersion({ packageDir: null, argv1: cliPath, runtimeModuleVersion: "1.7.0" }),
+      "1.8.2",
+    );
+  });
+
+  it("ignores an unrelated stale pi binary on PATH when running Pi 1.7.0 through a wrapper", () => {
+    const wrapperDir = makeTempDir("pi-wrapper-");
+    const wrapperPath = path.join(wrapperDir, "custom-pi-wrapper.js");
+    fs.writeFileSync(wrapperPath, "// wrapper without @earendil-works/pi-coding-agent package.json\n", "utf-8");
+    cleanupFns.push(() => fs.rmSync(wrapperDir, { recursive: true, force: true }));
+
+    putStalePiOnPath("1.5.0");
+
+    // Even with an older `pi` 1.5.0 first on PATH and a wrapper argv[1], runtime module VERSION wins.
+    const detected = getPiVersion({ packageDir: null, argv1: wrapperPath, runtimeModuleVersion: "1.7.0" });
+    assert.equal(detected, "1.7.0");
+    assert.equal(
+      checkMinPiVersion(MIN_PI_VERSION, { packageDir: null, argv1: wrapperPath, runtimeModuleVersion: "1.7.0" }).ok,
+      true,
+    );
+  });
+
+  it("returns null when no process-authoritative version source is available (never shells out to PATH)", () => {
+    putStalePiOnPath("9.9.9");
+    assert.equal(
+      getPiVersion({ packageDir: null, argv1: null, runtimeModuleVersion: null }),
+      null,
+    );
+  });
+
+  it("caches the resolved version per process until resetPiVersionCache() is called", () => {
+    const prevPkgDir = process.env.PI_PACKAGE_DIR;
+    const { pkgDir: firstPkg } = makeFakePiPackage("1.7.5");
+    const { pkgDir: secondPkg } = makeFakePiPackage("1.6.0");
+    cleanupFns.push(() => {
+      if (prevPkgDir === undefined) delete process.env.PI_PACKAGE_DIR;
+      else process.env.PI_PACKAGE_DIR = prevPkgDir;
+    });
+
+    process.env.PI_PACKAGE_DIR = firstPkg;
+    resetPiVersionCache();
+    assert.equal(getPiVersion(), "1.7.5");
+
+    // Mutating env after first lookup must still return the cached process value.
+    process.env.PI_PACKAGE_DIR = secondPkg;
+    assert.equal(getPiVersion(), "1.7.5");
+
+    // After resetting cache, the new env value is picked up.
+    resetPiVersionCache();
+    assert.equal(getPiVersion(), "1.6.0");
   });
 });
 
 describe("checkMinPiVersion", () => {
   it("reports the configured floor as required", () => {
-    useFakePi("4.5.6");
+    setPiVersionResolverForTests(() => "4.5.6");
     assert.equal(checkMinPiVersion().required, MIN_PI_VERSION);
   });
 
   it("marks installs at or above the floor as ok", () => {
-    useFakePi("99.0.0");
+    setPiVersionResolverForTests(() => "99.0.0");
     const r = checkMinPiVersion();
     assert.equal(r.installed, "99.0.0");
     assert.equal(r.ok, true);
   });
 
-  it("rejects older and prerelease versions of the floor while accepting exact and higher stable versions", () => {
-    useFakePi("1.6.1");
+  it("rejects older, prerelease, and undetermined versions while accepting exact and higher stable versions", () => {
+    setPiVersionResolverForTests(() => "1.6.1");
     const older = checkMinPiVersion();
     assert.equal(older.installed, "1.6.1");
     assert.equal(older.required, "1.7.0");
     assert.equal(older.ok, false);
 
-    useFakePi("1.7.0-beta.1");
+    setPiVersionResolverForTests(() => "1.7.0-beta.1");
     const pre = checkMinPiVersion();
     assert.equal(pre.installed, "1.7.0-beta.1");
     assert.equal(pre.required, "1.7.0");
     assert.equal(pre.ok, false);
 
-    useFakePi("1.7.0");
+    setPiVersionResolverForTests(() => null);
+    const unknown = checkMinPiVersion();
+    assert.equal(unknown.installed, null);
+    assert.equal(unknown.required, "1.7.0");
+    assert.equal(unknown.ok, false);
+
+    setPiVersionResolverForTests(() => "1.7.0");
     assert.equal(checkMinPiVersion().ok, true);
 
-    useFakePi("1.7.1");
+    setPiVersionResolverForTests(() => "1.7.1");
     assert.equal(checkMinPiVersion().ok, true);
   });
 
   it("marks installs below a custom floor as not ok", () => {
-    useFakePi("0.0.1");
+    setPiVersionResolverForTests(() => "0.0.1");
     const r = checkMinPiVersion("999.0.0");
     assert.equal(r.required, "999.0.0");
     assert.equal(r.installed, "0.0.1");
@@ -160,7 +230,7 @@ describe("formatMinPiVersionError", () => {
     assert.match(msg, /restart/i);
   });
 
-  it("reports undetermined installed version with actionable upgrade guidance", () => {
+  it("reports undetermined running version with actionable upgrade guidance", () => {
     const msg = formatMinPiVersionError({ installed: null, required: "1.7.0" });
     assert.match(msg, /Pi >= 1\.7\.0/);
     assert.match(msg, /could not be determined/);
@@ -206,6 +276,24 @@ describe("registerSessionValidation minimum Pi version enforcement", () => {
     );
   });
 
+  it("fails closed consistently when Pi version is undetermined (matching load-time guard)", async () => {
+    const handler = setupValidation(() => ({ ok: false, installed: null, required: "1.7.0" }));
+    const notices: Array<{ message: string; type: string }> = [];
+    await handler({}, {
+      hasUI: true,
+      cwd: process.cwd(),
+      ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+    });
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].type, "error");
+    assert.match(notices[0].message, /could not be determined/);
+
+    await assert.rejects(
+      () => handler({}, { hasUI: false, cwd: process.cwd(), ui: { notify: () => {} } }),
+      /Pi >= 1\.7\.0.*could not be determined.*pi update/,
+    );
+  });
+
   it("does not emit a version error when Pi meets MIN_PI_VERSION", async () => {
     const handler = setupValidation(() => ({ ok: true, installed: "1.7.0", required: "1.7.0" }));
     const notices: Array<{ message: string; type: string }> = [];
@@ -218,14 +306,40 @@ describe("registerSessionValidation minimum Pi version enforcement", () => {
   });
 });
 
-describe("orchestrator extension load-time minimum Pi version guard", () => {
-  it("throws a clear upgrade error before registering any Pi 1.7.0+ APIs when Pi is below MIN_PI_VERSION", () => {
-    useFakePi("1.6.1");
-    // Deliberately pass an empty mock API — if the guard did not fail fast,
-    // registration would crash with a TypeError on missing Pi 1.7.0 APIs.
-    assert.throws(
-      () => orchestratorExtension({} as any),
-      /pi-config requires Pi >= 1\.7\.0, but Pi 1\.6\.1 is installed.*pi update/,
-    );
+describe("load-time minimum Pi version guard across all standalone extensions", () => {
+  const standaloneEntrypoints: Array<[string, (pi: any) => unknown]> = [
+    ["orchestrator", (pi) => orchestratorExtension(pi)],
+    ["coms", (pi) => comsExtension(pi)],
+    ["coms-p2p", (pi) => comsP2pExtension(pi)],
+    ["openai-compatible-discovery", (pi) => discoveryExtension(pi)],
+    ["pitasks", (pi) => pitasksExtension(pi)],
+    ["pidash", (pi) => pidashExtension(pi)],
+    ["pidiff", (pi) => pidiffExtension(pi)],
+    ["providers", (pi) => providersExtension(pi, { argv: ["node", "pi"] })],
+    ["reload-flag", (pi) => reloadFlagExtension(pi)],
+  ];
+
+  for (const [name, loadExtension] of standaloneEntrypoints) {
+    it(`${name}: throws a clear upgrade error before calling Pi 1.7.0 APIs when Pi is 1.6.1`, () => {
+      setPiVersionResolverForTests(() => "1.6.1");
+      // Empty mock API proves the guard runs BEFORE any missing Pi 1.7.0 API TypeError.
+      assert.throws(
+        () => loadExtension({}),
+        /pi-config requires Pi >= 1\.7\.0, but Pi 1\.6\.1 is installed.*pi update/,
+      );
+    });
+
+    it(`${name}: fails closed with a clear upgrade error when running Pi version is undetermined`, () => {
+      setPiVersionResolverForTests(() => null);
+      assert.throws(
+        () => loadExtension({}),
+        /pi-config requires Pi >= 1\.7\.0, but the running Pi version could not be determined.*pi update/,
+      );
+    });
+  }
+
+  it("assertMinPiVersionOnLoad succeeds cleanly when running Pi meets MIN_PI_VERSION", () => {
+    setPiVersionResolverForTests(() => "1.7.0");
+    assert.doesNotThrow(() => assertMinPiVersionOnLoad("test-ext"));
   });
 });

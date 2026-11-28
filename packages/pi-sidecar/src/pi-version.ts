@@ -144,7 +144,7 @@ export function assertPiVersionFloor(): void {
     logger.error(`[sidecar] PI_VERSION_CHECK_FAILED: installed=${installed}, min_version=${MIN_PI_VERSION}`);
     throw new Error(
       `@earendil-works/pi-coding-agent ${installed} is below the required floor ${MIN_PI_VERSION}. ` +
-      `Run \`pi update\` (or upgrade \`@earendil-works/pi-coding-agent\`) and restart.`,
+      `Upgrade and re-resolve your sidecar npm dependencies (\`rm -rf node_modules package-lock.json && npm install\` for \`@earendil-works/pi-coding-agent\` >= ${MIN_PI_VERSION}), then restart the sidecar.`,
     );
   }
   logger.info(`[sidecar] PI_VERSION_CHECK_OK: installed=${installed}, min_version=${MIN_PI_VERSION}`);
@@ -153,6 +153,8 @@ export function assertPiVersionFloor(): void {
   // Match installed-SDK policy: prerelease/build suffixes are unparsable and
   // must not silently satisfy the floor (PATH `pi` is what subagents spawn).
   if (pathVersion && (!parseVersion(pathVersion) || compareVersions(pathVersion, MIN_PI_VERSION) < 0)) {
-    logger.warn(`[sidecar] PI_PATH_VERSION_BELOW_FLOOR: path_version=${pathVersion}, min_version=${MIN_PI_VERSION}, reason=subagent_subprocess_may_fail`);
+    logger.warn(
+      `[sidecar] PI_PATH_VERSION_BELOW_FLOOR: path_version=${pathVersion}, min_version=${MIN_PI_VERSION}, reason=subagent_subprocess_may_fail, hint="run 'pi update' to upgrade the pi CLI on PATH"`,
+    );
   }
 }

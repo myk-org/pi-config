@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setUvAvailable, isUvAvailable } from "./bash-policy.js";
-import { checkMinPiVersion } from "./utils.js";
+import { checkMinPiVersion, formatMinPiVersionError } from "../shared/pi-version.js";
+export { formatMinPiVersionError };
 import { createLogger } from "../shared/logger.js";
 import { resolveBinary } from "../shared/resolve-binary.js";
 
@@ -346,20 +347,6 @@ async function checkUpgradeChangelog(ctx: any): Promise<void> {
 
 export interface SessionValidationOptions {
   checkPiVersion?: typeof checkMinPiVersion;
-}
-
-/** Build a clear, actionable upgrade error when installed Pi is below MIN_PI_VERSION. */
-export function formatMinPiVersionError(versionCheck: { installed: string | null; required: string }): string {
-  if (versionCheck.installed === null) {
-    return (
-      `pi-config requires Pi >= ${versionCheck.required}, but the installed Pi version could not be determined. ` +
-      `Run \`pi update\` (or \`npm install -g @earendil-works/pi-coding-agent\`) and restart Pi.`
-    );
-  }
-  return (
-    `pi-config requires Pi >= ${versionCheck.required}, but Pi ${versionCheck.installed} is installed. ` +
-    `Run \`pi update\` (or \`npm install -g @earendil-works/pi-coding-agent\`) and restart Pi.`
-  );
 }
 
 export function registerSessionValidation(
