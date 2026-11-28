@@ -288,4 +288,102 @@ describe("PiDash SettingsPanel global_only parity (#1491)", () => {
     );
     assert.equal(blockedRows.length, 0);
   });
+
+  async function withPidashDebugLogs(fn: (logs: () => Array<{ name: string; level: string; msg: string }>) => Promise<void>) {
+    const state = globalThis as Record<string, unknown>;
+    const prevDebug = state.__PIDASH_DEBUG;
+    const prevLogs = state.__pidashUiLogs;
+    state.__PIDASH_DEBUG = true;
+    state.__pidashUiLogs = [];
+    try {
+      await fn(() => (state.__pidashUiLogs as Array<{ name: string; level: string; msg: string }>) ?? []);
+    } finally {
+      if (prevDebug === undefined) delete state.__PIDASH_DEBUG;
+      else state.__PIDASH_DEBUG = prevDebug;
+      if (prevLogs === undefined) delete state.__pidashUiLogs;
+      else state.__pidashUiLogs = prevLogs;
+    }
+  }
+
+  it("logs debug event when clicking a blocked global_only bool control", async () => {
+    await withPidashDebugLogs(async (getLogs) => {
+      const view = await mountSettingsPanel();
+      const toggleBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "disabled");
+      assert.ok(toggleBtn);
+      await act(async () => {
+        toggleBtn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      assert.ok(
+        getLogs().some(
+          (e) =>
+            e.name === "SettingsPanel" &&
+            e.level === "debug" &&
+            e.msg.includes("global_only bool blocked in project scope") &&
+            e.msg.includes("lsp_enabled"),
+        ),
+      );
+    });
+  });
+
+  it("logs debug event when clicking a blocked global_only input", async () => {
+    await withPidashDebugLogs(async (getLogs) => {
+      const view = await mountSettingsPanel();
+      const textInput = elements(view.container, "input").find((el) => el.getAttribute("aria-disabled") === "true");
+      assert.ok(textInput);
+      await act(async () => {
+        textInput!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      assert.ok(
+        getLogs().some(
+          (e) =>
+            e.name === "SettingsPanel" &&
+            e.level === "debug" &&
+            e.msg.includes("global_only input clicked in project scope") &&
+            e.msg.includes("lsp_servers"),
+        ),
+      );
+    });
+  });
+
+  it("logs debug event when clicking a blocked global_only row container", async () => {
+    await withPidashDebugLogs(async (getLogs) => {
+      const view = await mountSettingsPanel();
+      const blockedRow = elements(view.container, "div").find(
+        (el) => el.getAttribute("data-global-only-blocked") === "true",
+      );
+      assert.ok(blockedRow);
+      await act(async () => {
+        blockedRow!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      assert.ok(
+        getLogs().some(
+          (e) =>
+            e.name === "SettingsPanel" &&
+            e.level === "debug" &&
+            e.msg.includes("global_only setting row clicked in project scope") &&
+            e.msg.includes("lsp_enabled"),
+        ),
+      );
+    });
+  });
+
+  it("logs debug event on blocked keydown in a global_only input", async () => {
+    await withPidashDebugLogs(async (getLogs) => {
+      const view = await mountSettingsPanel();
+      const textInput = elements(view.container, "input").find((el) => el.getAttribute("aria-disabled") === "true");
+      assert.ok(textInput);
+      await act(async () => {
+        textInput!.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+      });
+      assert.ok(
+        getLogs().some(
+          (e) =>
+            e.name === "SettingsPanel" &&
+            e.level === "debug" &&
+            e.msg.includes("global_only input keydown blocked in project scope") &&
+            e.msg.includes("lsp_servers"),
+        ),
+      );
+    });
+  });
 });

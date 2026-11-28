@@ -38,6 +38,11 @@ import {
   endSettingsEditSession,
   getFilePathForScope,
 } from "../../../extensions/orchestrator/project-settings.js";
+import {
+  getPiLogPath,
+  setGlobalSessionId,
+  setLogLevelPin,
+} from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -1691,5 +1696,96 @@ describe("global_only settings UX in TUI (#1491)", () => {
     const rendered = stripAnsi(overlay.render(120).join("\n"));
     assert.match(rendered, /lsp_enabled is global-only — press Tab to switch to Global scope/);
     assert.equal(notifications.length, 0);
+  });
+
+  function withIsolatedSettingsTuiDebugLog(fn: (readLog: () => string) => void): void {
+    const logHome = makeTempDir("settings-1491-logs-");
+    const prevHome = process.env.HOME;
+    const prevSidEnv = process.env.__PI_CONFIG_SESSION_ID;
+    const prevSidGlobal = (globalThis as any).__piConfigSessionId;
+    process.env.HOME = logHome;
+    setGlobalSessionId(`settings-1491-${process.pid}-${Date.now()}`);
+    setLogLevelPin("settings_tui", "debug");
+    try {
+      fn(() => {
+        const logPath = getPiLogPath("settings_tui");
+        assert.ok(logPath, "expected settings_tui log path");
+        return existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+      });
+    } finally {
+      setLogLevelPin("settings_tui", null);
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevSidEnv === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+      else process.env.__PI_CONFIG_SESSION_ID = prevSidEnv;
+      (globalThis as any).__piConfigSessionId = prevSidGlobal;
+      rmSync(logHome, { recursive: true, force: true });
+    }
+  }
+
+  it("logs settings_global_only_blocked on blocked Enter edit in project scope", () => {
+    withIsolatedSettingsTuiDebugLog((readLog) => {
+      const overlay = new SettingsOverlay(
+        makeFakeTui(30),
+        recordingTheme,
+        projectDir,
+        undefined,
+        "project",
+        () => {},
+        () => {},
+      );
+      for (const ch of "lsp_enabled") overlay.handleInput(ch);
+      overlay.handleInput(ENTER);
+      const logBody = readLog();
+      assert.match(logBody, /settings_global_only_blocked/);
+      assert.match(logBody, /"key":"lsp_enabled"/);
+      assert.match(logBody, /"action":"edit"/);
+    });
+  });
+
+  it("logs settings_global_only_blocked on blocked Delete in project scope", () => {
+    withIsolatedSettingsTuiDebugLog((readLog) => {
+      const lspCategory = CATEGORIES.find((c) => c.keys.includes("lsp_enabled"))!;
+      const overlay = new SettingsOverlay(
+        makeFakeTui(30),
+        recordingTheme,
+        projectDir,
+        undefined,
+        "project",
+        () => {},
+        () => {},
+        undefined,
+        { categories: [lspCategory] },
+      );
+      overlay.handleInput(DEL);
+      const logBody = readLog();
+      assert.match(logBody, /settings_global_only_blocked/);
+      assert.match(logBody, /"key":"lsp_enabled"/);
+      assert.match(logBody, /"action":"delete"/);
+    });
+  });
+
+  it("logs settings_global_only_blocked on direct SettingsList onChange in project scope", () => {
+    withIsolatedSettingsTuiDebugLog((readLog) => {
+      const lspCategory = CATEGORIES.find((c) => c.keys.includes("lsp_enabled"))!;
+      const overlay = new SettingsOverlay(
+        makeFakeTui(30),
+        recordingTheme,
+        projectDir,
+        undefined,
+        "project",
+        () => {},
+        () => {},
+        undefined,
+        { categories: [lspCategory] },
+      );
+      (overlay as any).settingsList.onChange("lsp_enabled", "true");
+      const rendered = stripAnsi(overlay.render(120).join("\n"));
+      assert.match(rendered, /lsp_enabled is global-only — press Tab to switch to Global scope/);
+      const logBody = readLog();
+      assert.match(logBody, /settings_global_only_blocked/);
+      assert.match(logBody, /"key":"lsp_enabled"/);
+      assert.match(logBody, /"action":"change"/);
+    });
   });
 });
