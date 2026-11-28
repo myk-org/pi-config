@@ -542,6 +542,7 @@ describe("SessionSidebar component hierarchy (#1527)", () => {
 
   it("auto-expands a collapsed parent node when selecting its nested peer", async () => {
     const storage = installMockStorage();
+    const selected: string[] = [];
     const parent = makeSession("s-parent", { cwd: "/home/dev/git/pi-config", comsProject: "pi-config", name: "Main" });
     const child = makeSession("s-child", {
       cwd: "/home/dev/git/pi-config/.worktrees/wt-1",
@@ -551,17 +552,123 @@ describe("SessionSidebar component hierarchy (#1527)", () => {
       parentSessionId: "s-parent",
     });
 
-    const { container, render } = await renderSidebar({ sessions: [parent, child], activeSessionId: null });
+    const { container, render } = await renderSidebar({
+      sessions: [parent, child],
+      activeSessionId: null,
+      onSelect: (s: SessionInfo) => selected.push(s.sessionId),
+    });
     assert.equal((container.textContent ?? "").includes("peer-under-collapsed-parent"), true);
 
     const toggleBtn = elements(container, "button").find((el) => el.getAttribute("data-toggle-children") === "s-parent");
     assert.ok(toggleBtn);
+    assert.match(toggleBtn.textContent ?? "", /1 peer/);
     await act(async () => toggleBtn.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    assert.deepEqual(selected, []);
     assert.equal((container.textContent ?? "").includes("peer-under-collapsed-parent"), false);
-    assert.equal(storage.get("pidash-collapsed-projects-v2"), undefined);
+    assert.deepEqual(JSON.parse(storage.get("pidash-collapsed-projects-v2") ?? "[]"), ["peers:session:s-parent"]);
 
     await render({ sessions: [parent, child], activeSessionId: "s-child" });
     assert.equal((container.textContent ?? "").includes("peer-under-collapsed-parent"), true);
+  });
+
+  it("prunes stale persisted parent peer collapse keys when the parent session is gone", async () => {
+    const storage = installMockStorage({
+      "pidash-collapsed-projects-v2": JSON.stringify(["dir:other", "peers:session:stale-parent", "peers:session:live-parent"]),
+    });
+    const liveParent = makeSession("live-parent", { cwd: "/home/dev/git/pi-config", comsProject: "pi-config", name: "Live" });
+
+    await renderSidebar({ sessions: [liveParent], activeSessionId: null });
+
+    const persisted = JSON.parse(storage.get("pidash-collapsed-projects-v2") ?? "[]") as string[];
+    assert.deepEqual(persisted, ["dir:other", "peers:session:live-parent"]);
+  });
+
+  it("collapses project-level fallback peers independently of the project folder with busy badge", async () => {
+    const storage = installMockStorage();
+    const mainSession = makeSession("s-main", {
+      cwd: "/home/dev/git/pi-config",
+      comsProject: "home__dev__git__pi-config",
+      name: "Main LLM",
+    });
+    const fallbackBusy = makeSession("s-fb-1", {
+      cwd: "/home/dev/.pi/sandboxes/sb-1/workspace",
+      comsProject: "home__dev__git__pi-config",
+      comsName: "peer-fallback-busy",
+      supervisedPeer: true,
+      runningAsyncAgents: 2,
+    });
+    const fallbackWait = makeSession("s-fb-2", {
+      cwd: "/home/dev/.pi/sandboxes/sb-2/workspace",
+      comsProject: "home__dev__git__pi-config",
+      comsName: "peer-fallback-wait",
+      supervisedPeer: true,
+      activity: "waiting_for_input",
+    });
+
+    const { container } = await renderSidebar({ sessions: [mainSession, fallbackBusy, fallbackWait] });
+
+    assert.equal((container.textContent ?? "").includes("peer-fallback-busy"), true);
+    const peersToggle = elements(container, "div").find(
+      (el) => el.getAttribute("data-toggle-project-peers") === "/home/dev/git/pi-config",
+    );
+    assert.ok(peersToggle);
+    assert.match(peersToggle.textContent ?? "", /Peers \(2\)/);
+
+    await act(async () => peersToggle.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    assert.equal(peersToggle.getAttribute("aria-expanded"), "false");
+    assert.equal((container.textContent ?? "").includes("Main LLM"), true);
+    assert.equal((container.textContent ?? "").includes("peer-fallback-busy"), false);
+    assert.equal((container.textContent ?? "").includes("peer-fallback-wait"), false);
+    const busyBadge = elements(peersToggle, "span").find((el) => el.getAttribute("data-busy-badge") === "true");
+    assert.equal(busyBadge?.textContent?.trim(), "●1");
+    const waitBadge = elements(peersToggle, "span").find((el) => el.getAttribute("data-attention-badge") === "true");
+    assert.equal(waitBadge?.textContent?.trim(), "1");
+    assert.deepEqual(
+      JSON.parse(storage.get("pidash-collapsed-projects-v2") ?? "[]"),
+      ["peers:project:pi-config"],
+    );
+  });
+
+  it("auto-expands a collapsed project-level Peers sub-header when selecting a fallback peer", async () => {
+    installMockStorage({
+      "pidash-collapsed-projects-v2": JSON.stringify(["peers:project:pi-config"]),
+    });
+    const mainSession = makeSession("s-main", {
+      cwd: "/home/dev/git/pi-config",
+      comsProject: "home__dev__git__pi-config",
+      name: "Main LLM",
+    });
+    const fallbackPeer = makeSession("s-fb-hidden", {
+      cwd: "/home/dev/.pi/sandboxes/sb-hidden/workspace",
+      comsProject: "home__dev__git__pi-config",
+      comsName: "peer-fallback-hidden",
+      supervisedPeer: true,
+    });
+
+    const { container, render } = await renderSidebar({ sessions: [mainSession, fallbackPeer], activeSessionId: null });
+    assert.equal((container.textContent ?? "").includes("peer-fallback-hidden"), false);
+
+    await render({ sessions: [mainSession, fallbackPeer], activeSessionId: "s-fb-hidden" });
+    assert.equal((container.textContent ?? "").includes("peer-fallback-hidden"), true);
+  });
+
+  it("keeps opacity-65 dark-theme contrast class on disconnected nested peer rows", async () => {
+    installMockStorage();
+    const parent = makeSession("s-parent", { cwd: "/home/dev/git/pi-config", comsProject: "pi-config", name: "Main" });
+    const stoppedChild = makeSession("s-stopped", {
+      cwd: "/home/dev/.pi/sandboxes/sb-stop/workspace",
+      comsProject: "pi-config",
+      comsName: "peer-stopped",
+      supervisedPeer: true,
+      parentSessionId: "s-parent",
+      active: false,
+    });
+
+    const { container } = await renderSidebar({ sessions: [parent, stoppedChild] });
+    const stoppedRow = elements(container, "div").find((el) => el.getAttribute("data-session-id") === "s-stopped");
+    assert.ok(stoppedRow);
+    assert.match(stoppedRow.getAttribute("class") ?? "", /\bopacity-65\b/);
   });
 
   it("auto-expands a collapsed cross-project Coms section when selecting an unattached peer", async () => {

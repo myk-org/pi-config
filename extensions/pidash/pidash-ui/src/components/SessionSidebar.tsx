@@ -9,7 +9,7 @@ import { sessionActivityDisplay } from "@/lib/activity-display";
 import { isPeerBusy } from "../../../../coms/coms-registry-core.ts";
 import { loadTheme, setTheme, type Theme } from "@/lib/theme";
 import { createLogger } from "@/lib/create-logger";
-import { isSessionWaitingForInput, partitionSidebarSessions, sessionRowDisplayLabel } from "@/lib/pidash-ux-helpers";
+import { capSessionIdSet, isSessionWaitingForInput, MAX_PERSISTED_SESSION_IDS, partitionSidebarSessions, sessionRowDisplayLabel } from "@/lib/pidash-ux-helpers";
 
 const log = createLogger("SessionSidebar");
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
@@ -70,11 +70,29 @@ const LEGACY_COLLAPSED_STORAGE_KEY = "pidash-collapsed-projects";
 
 const dirKey = (name: string) => `dir:${name}`;
 const comsKey = (project: string) => `coms:${project}`;
+const PEER_SESSION_KEY_PREFIX = "peers:session:";
+const projectPeersKey = (projectIdOrName: string) => `peers:project:${projectIdOrName}`;
+const parentPeersKey = (sessionId: string) => `${PEER_SESSION_KEY_PREFIX}${sessionId}`;
+
+/** Cap per-session `peers:session:*` keys so persisted collapse state stays bounded across restarts. */
+function boundCollapsedProjects(projects: ReadonlySet<string>): Set<string> {
+  const staticKeys: string[] = [];
+  const sessionPeerKeys = new Set<string>();
+  for (const key of projects) {
+    if (key.startsWith(PEER_SESSION_KEY_PREFIX)) {
+      sessionPeerKeys.add(key);
+    } else {
+      staticKeys.push(key);
+    }
+  }
+  const cappedSessionKeys = capSessionIdSet(sessionPeerKeys, MAX_PERSISTED_SESSION_IDS);
+  return new Set([...staticKeys, ...cappedSessionKeys]);
+}
 
 function loadCollapsedProjects(): Set<string> {
   try {
     const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
-    if (raw) return new Set(JSON.parse(raw) as string[]);
+    if (raw) return boundCollapsedProjects(new Set(JSON.parse(raw) as string[]));
     const legacy = localStorage.getItem(LEGACY_COLLAPSED_STORAGE_KEY);
     if (legacy) {
       // Every v1 entry was a directory name, colons and all.
@@ -88,7 +106,7 @@ function loadCollapsedProjects(): Set<string> {
 }
 
 function saveCollapsedProjects(projects: Set<string>): void {
-  try { localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...projects])); } catch {}
+  try { localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...boundCollapsedProjects(projects)])); } catch {}
 }
 
 export function SessionSidebar({
@@ -109,9 +127,6 @@ export function SessionSidebar({
   notifications,
 }: Props) {
   const [collapsedProjects, setCollapsedProjectsRaw] = useState<Set<string>>(() => loadCollapsedProjects());
-  // Keep per-parent nested-peer collapse state in memory only (parent sessionIds embed
-  // ephemeral OS PIDs so persisting them to localStorage would accumulate stale keys).
-  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(() => new Set());
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [archivedSectionOpen, setArchivedSectionOpen] = useState(false);
@@ -148,49 +163,57 @@ export function SessionSidebar({
     return counts;
   }, [sortedGroups]);
 
-  const groupCollapseKey = useCallback(
+  const groupCollapseSuffix = useCallback(
     (group: { id: string; name: string }) =>
-      dirKey((groupNameCounts.get(group.name) ?? 0) > 1 ? group.id : group.name),
+      (groupNameCounts.get(group.name) ?? 0) > 1 ? group.id : group.name,
     [groupNameCounts],
   );
 
-  // Prune in-memory collapsed parent IDs when sessions disappear so long-lived tabs stay bounded.
-  useEffect(() => {
-    const liveIds = new Set(sessions.map((s) => s.sessionId));
-    setCollapsedParents((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
-      const next = new Set<string>();
-      for (const id of prev) {
-        if (liveIds.has(id)) next.add(id);
-        else changed = true;
-      }
-      return changed ? next : prev;
-    });
-  }, [sessions]);
+  const groupCollapseKey = useCallback(
+    (group: { id: string; name: string }) => dirKey(groupCollapseSuffix(group)),
+    [groupCollapseSuffix],
+  );
 
-  // Wrap setter to persist to localStorage
+  const projectPeersCollapseKey = useCallback(
+    (group: { id: string; name: string }) => projectPeersKey(groupCollapseSuffix(group)),
+    [groupCollapseSuffix],
+  );
+
+  // Wrap setter to persist bounded state to localStorage
   const setCollapsedProjects = useCallback((update: Set<string> | ((prev: Set<string>) => Set<string>)) => {
     setCollapsedProjectsRaw((prev) => {
-      const next = typeof update === "function" ? update(prev) : update;
+      const rawNext = typeof update === "function" ? update(prev) : update;
+      const next = boundCollapsedProjects(rawNext);
       saveCollapsedProjects(next);
       return next;
     });
   }, []);
 
-  const toggleParentChildren = useCallback((sessionId: string) => {
-    log.debug("parent nested peers toggled", { sessionId });
-    setCollapsedParents((prev) => {
-      const next = new Set(prev);
-      if (next.has(sessionId)) next.delete(sessionId);
-      else next.add(sessionId);
+  // Prune stale `peers:session:*` keys once sessions are loaded so restarted parent PIDs never accumulate.
+  useEffect(() => {
+    if (sessions.length === 0) return;
+    const liveIds = new Set(sessions.map((s) => s.sessionId));
+    setCollapsedProjectsRaw((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const key of prev) {
+        if (key.startsWith(PEER_SESSION_KEY_PREFIX)) {
+          const sid = key.slice(PEER_SESSION_KEY_PREFIX.length);
+          if (liveIds.has(sid)) next.add(key);
+          else changed = true;
+        } else {
+          next.add(key);
+        }
+      }
+      if (!changed) return prev;
+      saveCollapsedProjects(next);
       return next;
     });
-  }, []);
+  }, [sessions]);
 
   // Reveal a newly selected session (e.g. via Ctrl+1..9 or SessionSwitcher) when its
-  // owning directory group, parent node, Coms section/sub-project, or Archived section
-  // is collapsed, without fighting manual collapse while the same session stays selected.
+  // owning directory group, parent peers list, project fallback peers list, Coms section,
+  // or Archived section is collapsed, without fighting manual collapse while selected.
   const lastRevealedSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!activeSessionId) {
@@ -213,30 +236,23 @@ export function SessionSidebar({
     if (owningGroup) {
       lastRevealedSessionIdRef.current = activeSessionId;
       const owningParent = owningGroup.nodes.find((n) => n.children.some((c) => c.sessionId === activeSessionId));
-      const groupDirKey = groupCollapseKey(owningGroup);
+      const inProjectPeers = owningGroup.projectPeers.some((p) => p.sessionId === activeSessionId);
+      const keysToExpand = [groupCollapseKey(owningGroup)];
+      if (owningParent) keysToExpand.push(parentPeersKey(owningParent.session.sessionId));
+      if (inProjectPeers) keysToExpand.push(projectPeersCollapseKey(owningGroup));
+
       setCollapsedProjects((prev) => {
-        if (!prev.has(groupDirKey)) return prev;
-        log.debug("auto-expanded project group for selected session", {
+        const missing = keysToExpand.filter((k) => prev.has(k));
+        if (missing.length === 0) return prev;
+        log.debug("auto-expanded nested peer container for selected session", {
           sessionId: activeSessionId,
           group: owningGroup.name,
+          expandedKeys: missing,
         });
         const next = new Set(prev);
-        next.delete(groupDirKey);
+        for (const k of missing) next.delete(k);
         return next;
       });
-      if (owningParent) {
-        const parentSessionId = owningParent.session.sessionId;
-        setCollapsedParents((prev) => {
-          if (!prev.has(parentSessionId)) return prev;
-          log.debug("auto-expanded parent node for selected session", {
-            sessionId: activeSessionId,
-            parentSessionId,
-          });
-          const next = new Set(prev);
-          next.delete(parentSessionId);
-          return next;
-        });
-      }
       return;
     }
 
@@ -262,7 +278,7 @@ export function SessionSidebar({
     if (pinned.some((s) => s.sessionId === activeSessionId)) {
       lastRevealedSessionIdRef.current = activeSessionId;
     }
-  }, [activeSessionId, archived, pinned, sortedGroups, sortedComsProjects, groupCollapseKey, setCollapsedProjects]);
+  }, [activeSessionId, archived, pinned, sortedGroups, sortedComsProjects, groupCollapseKey, projectPeersCollapseKey, setCollapsedProjects]);
 
   if (collapsed) return null;
 
@@ -339,22 +355,6 @@ export function SessionSidebar({
           {opts.nested && (
             <span aria-hidden="true" className="text-[10px] text-muted-foreground/70 shrink-0 select-none">↳</span>
           )}
-          {opts.childSummary && (
-            <button
-              type="button"
-              data-toggle-children={s.sessionId}
-              className="p-0.5 -ml-1 rounded text-muted-foreground hover:text-primary hover:bg-accent/50 cursor-pointer shrink-0"
-              aria-expanded={opts.childSummary.expanded}
-              aria-label={opts.childSummary.expanded ? "Collapse nested peers" : "Expand nested peers"}
-              title={opts.childSummary.expanded ? "Collapse nested peers" : `Expand ${opts.childSummary.count} nested peer${opts.childSummary.count === 1 ? "" : "s"}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                opts.childSummary!.onToggle();
-              }}
-            >
-              {opts.childSummary.expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            </button>
-          )}
           {opts.showLocation && (
             <span
               className="shrink-0 flex items-center gap-0.5 px-1 rounded border border-border bg-muted text-[9px] font-normal text-muted-foreground"
@@ -402,14 +402,26 @@ export function SessionSidebar({
           ) : (
             <>
               <span className="truncate min-w-0 flex-1">{displayLabel}</span>
-              {opts.childSummary && !opts.childSummary.expanded && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-normal text-muted-foreground shrink-0">
-                  {renderAttentionBadge(opts.childSummary.waiting)}
-                  <span className="px-1 rounded bg-muted/70">{opts.childSummary.count}</span>
-                  {opts.childSummary.busy > 0 && (
-                    <span className="text-green-600 dark:text-green-400">●{opts.childSummary.busy}</span>
+              {opts.childSummary && (
+                <button
+                  type="button"
+                  data-toggle-children={s.sessionId}
+                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-muted/70 hover:bg-accent text-[10px] font-normal text-muted-foreground hover:text-primary cursor-pointer shrink-0"
+                  aria-expanded={opts.childSummary.expanded}
+                  aria-label={opts.childSummary.expanded ? `Collapse ${opts.childSummary.count} nested peer${opts.childSummary.count === 1 ? "" : "s"}` : `Expand ${opts.childSummary.count} nested peer${opts.childSummary.count === 1 ? "" : "s"}`}
+                  title={opts.childSummary.expanded ? "Collapse nested peers" : `Expand ${opts.childSummary.count} nested peer${opts.childSummary.count === 1 ? "" : "s"}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    opts.childSummary!.onToggle();
+                  }}
+                >
+                  {opts.childSummary.expanded ? <ChevronDown className="h-2.5 w-2.5 shrink-0" /> : <ChevronRight className="h-2.5 w-2.5 shrink-0" />}
+                  <span>{opts.childSummary.count} {opts.childSummary.count === 1 ? "peer" : "peers"}</span>
+                  {!opts.childSummary.expanded && renderAttentionBadge(opts.childSummary.waiting)}
+                  {!opts.childSummary.expanded && opts.childSummary.busy > 0 && (
+                    <span data-busy-badge="true" className="text-green-600 dark:text-green-400">●{opts.childSummary.busy}</span>
                   )}
-                </span>
+                </button>
               )}
               {(onRename || onTogglePin || onToggleArchive) && (
                 <span className="flex items-center gap-0.5 shrink-0">
@@ -642,11 +654,12 @@ export function SessionSidebar({
                 </span>
               </div>
 
-              {/* Sessions in this group (with same-project supervised peers nested under parent or project) */}
+              {/* Sessions in this group (with same-project supervised peers nested under parent or collapsible Peers sub-header) */}
               {isExpanded && (
                 <>
                   {group.nodes.map((node) => {
-                    const childrenExpanded = !collapsedParents.has(node.session.sessionId);
+                    const pKey = parentPeersKey(node.session.sessionId);
+                    const childrenExpanded = !collapsedProjects.has(pKey);
                     const childBusy = node.children.filter((c) => isSessionBusy(c)).length;
                     const childWaiting = node.children.filter((c) => isSessionWaitingForInput(c, extraAttentionIds)).length;
                     return (
@@ -658,7 +671,7 @@ export function SessionSidebar({
                                 busy: childBusy,
                                 waiting: childWaiting,
                                 expanded: childrenExpanded,
-                                onToggle: () => toggleParentChildren(node.session.sessionId),
+                                onToggle: () => toggleProject(pKey),
                               }
                             : undefined,
                         })}
@@ -671,12 +684,51 @@ export function SessionSidebar({
                       </div>
                     );
                   })}
-                  {group.projectPeers.map((peer) =>
-                    renderSession(peer, {
-                      nested: true,
-                      nestedUnderProject: name,
-                    }),
-                  )}
+                  {group.projectPeers.length > 0 && (() => {
+                    const fallbackPeersKey = projectPeersCollapseKey(group);
+                    const fallbackPeersExpanded = !collapsedProjects.has(fallbackPeersKey);
+                    const fallbackBusy = group.projectPeers.filter((p) => isSessionBusy(p)).length;
+                    const fallbackWaiting = group.projectPeers.filter((p) => isSessionWaitingForInput(p, extraAttentionIds)).length;
+                    return (
+                      <div data-project-peers-group={group.id}>
+                        <div
+                          data-toggle-project-peers={group.id}
+                          className="flex items-center gap-1.5 pl-7 pr-2.5 py-1.5 cursor-pointer text-[11px] font-medium text-muted-foreground border-b border-border/50 bg-muted/15 hover:bg-accent/30 focus:outline-none focus:ring-1 focus:ring-primary focus:ring-inset min-w-0"
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={fallbackPeersExpanded}
+                          title={fallbackPeersExpanded ? "Collapse project peers" : `Expand ${group.projectPeers.length} project peer${group.projectPeers.length === 1 ? "" : "s"}`}
+                          onClick={() => toggleProject(fallbackPeersKey)}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter" && e.key !== " ") return;
+                            e.preventDefault();
+                            toggleProject(fallbackPeersKey);
+                          }}
+                        >
+                          {fallbackPeersExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+                          <span className="truncate">Peers ({group.projectPeers.length})</span>
+                          <span className="ml-auto flex items-center gap-1 text-[10px] font-normal shrink-0">
+                            {!fallbackPeersExpanded && renderAttentionBadge(fallbackWaiting)}
+                            {!fallbackPeersExpanded && fallbackBusy > 0 && (
+                              <span
+                                data-busy-badge="true"
+                                className="text-green-600 dark:text-green-400"
+                                title={`${fallbackBusy} busy peer${fallbackBusy === 1 ? "" : "s"}`}
+                              >
+                                ●{fallbackBusy}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        {fallbackPeersExpanded && group.projectPeers.map((peer) =>
+                          renderSession(peer, {
+                            nested: true,
+                            nestedUnderProject: name,
+                          }),
+                        )}
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </div>
