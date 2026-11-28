@@ -6505,7 +6505,9 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     const unresolvedVarOrPositionalRe = /\$(?:\{[^}]+\}|[A-Za-z_0-9@*!])/;
     const hmacKeyRe = /(?:\.|\b)approval[-_]?hmac[-_]?key\b/i;
     const dynamicPiAgentAccessRe =
-      /(?:~|\$HOME|\$\{HOME\}|\/[^\s"'`;|&)]*)\/\.pi\/agent\/[^\s"'`;|&)]*(?:\$|[*?{`])/i;
+      /(?:~|\$HOME|\$\{HOME\}|\/[^\s"'`;|&)]*)\/\.pi\/agent\/[^\s"'`;|&)]*["']?(?:\$|[*?{`])/i;
+    const inlineRuntimeDynamicPiAgentRe =
+      /(?:\.pi\/agent\/?["'`]\s*\)?\s*(?:[+./,%]|\.\s*format\b)|["'`]\.pi["'`]\s*,\s*["'`]agent["'`]|(?:readdir|listdir|scandir|glob|iglob|walk|iterdir)\w*\s*\([^)]*\.pi\/agent)/i;
     const settingsPathRe =
       /(?:^|[\s"'`=:(/<>|;&,])(?:~\/|\/[^\s"'`;|&)]*\/|\.?\/)?\.pi\/(?:pi-config-settings[^\s"'`;|&)]*|pi-config-[^\s"'`;|&)]*[*?[{][^\s"'`;|&)]*|\*[^\s"'`;|&)]*settings[^\s"'`;|&)]*)/i;
     const stateDbUncondRe =
@@ -6584,6 +6586,316 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
       return true;
     };
 
+    /**
+     * Strip closed quoted heredoc bodies (`<<'EOF'`, `<<-'EOF'`, `<<"EOF"`, `<<-"EOF"`)
+     * where bash performs zero expansion, while keeping unquoted (`<<EOF`) and unclosed
+     * heredoc bodies verbatim (fail-closed). Tracks double-quote and `$(...)` nesting so
+     * `"$(cat <<'EOF'\n...\nEOF\n)"` works while literal `<<'EOF'` inside plain `"..."`
+     * cannot hide an active `$(...)` substitution.
+     */
+    const extractQuotedHeredocs = (
+      input: string,
+    ): { stripped: string; quotedBodies: string[] } => {
+      if (!input.includes("<<")) return { stripped: input, quotedBodies: [] };
+      const quotedBodies: string[] = [];
+      const pending: { delim: string; expand: boolean; stripTabs: boolean }[] = [];
+      type Frame = { kind: "double" } | { kind: "subst"; parenDepth: number };
+      const stack: Frame[] = [];
+      let out = "";
+      let i = 0;
+
+      while (i < input.length) {
+        const top = stack[stack.length - 1];
+        const ch = input[i]!;
+
+        if (top?.kind === "double") {
+          if (ch === "\\" && i + 1 < input.length) {
+            out += input.slice(i, i + 2);
+            i += 2;
+            continue;
+          }
+          if (ch === "$" && input[i + 1] === "(") {
+            stack.push({ kind: "subst", parenDepth: 1 });
+            out += "$(";
+            i += 2;
+            continue;
+          }
+          if (ch === '"') stack.pop();
+          out += ch;
+          i++;
+          continue;
+        }
+
+        if (ch === "\\" && i + 1 < input.length) {
+          out += input.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (ch === "#" && (i === 0 || /[\s;&|(]/.test(input[i - 1]!))) {
+          const nl = input.indexOf("\n", i);
+          if (nl === -1) {
+            out += input.slice(i);
+            break;
+          }
+          out += input.slice(i, nl);
+          i = nl;
+          continue;
+        }
+        if (ch === "'") {
+          const close = input.indexOf("'", i + 1);
+          if (close === -1) {
+            out += input.slice(i);
+            break;
+          }
+          out += input.slice(i, close + 1);
+          i = close + 1;
+          continue;
+        }
+        if (ch === '"') {
+          stack.push({ kind: "double" });
+          out += ch;
+          i++;
+          continue;
+        }
+        if (ch === "$" && input[i + 1] === "(") {
+          stack.push({ kind: "subst", parenDepth: 1 });
+          out += "$(";
+          i += 2;
+          continue;
+        }
+        if (top?.kind === "subst") {
+          if (ch === "(") {
+            top.parenDepth++;
+            out += ch;
+            i++;
+            continue;
+          }
+          if (ch === ")") {
+            top.parenDepth--;
+            if (top.parenDepth === 0) stack.pop();
+            out += ch;
+            i++;
+            continue;
+          }
+        }
+        if (ch === "<" && input[i + 1] === "<" && input[i + 2] !== "<") {
+          const m = matchHeredocOpener(input.slice(i), "executable");
+          if (m) {
+            pending.push({ delim: m.delim, expand: m.expand, stripTabs: m.stripTabs });
+            out += input.slice(i, i + m.length);
+            i += m.length;
+            continue;
+          }
+        }
+        if (ch === "\n" && pending.length > 0) {
+          const bodies: string[][] = pending.map(() => []);
+          const { next, closed } = skipHeredocBody(input, i + 1, pending, {
+            stripCr: true,
+            onBodyLine: (line, hIdx) => bodies[hIdx]!.push(line),
+          });
+          if (!closed) {
+            // Unclosed heredoc: fail closed by keeping remainder verbatim.
+            out += input.slice(i);
+            break;
+          }
+          out += "\n";
+          for (let hIdx = 0; hIdx < pending.length; hIdx++) {
+            const bodyText = bodies[hIdx]!.join("\n");
+            if (pending[hIdx]!.expand) {
+              out += `${bodyText}\n`;
+            } else {
+              quotedBodies.push(bodyText);
+            }
+          }
+          pending.length = 0;
+          i = next;
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+
+      if (quotedBodies.length > 0) {
+        enfLog.debug("extract_quoted_heredocs", "count", quotedBodies.length);
+      }
+      return { stripped: out, quotedBodies };
+    };
+
+    /**
+     * Replace standalone single-quoted spans (`'...'` and `'\''`-chained literal words)
+     * with `''` so inert Markdown prose (e.g. `'see \`~/.pi/agent/bin/pi\`'`) does not
+     * trip dynamic shell-expansion guards. Double-quoted spans, glued single quotes
+     * (e.g. `cat '/home/u/.pi/agent/'*`), and unterminated quotes stay verbatim (fail-closed).
+     */
+    const stripStandaloneSingleQuotes = (input: string): string => {
+      if (!input.includes("'")) return input;
+      type Frame = { kind: "double" } | { kind: "subst"; parenDepth: number };
+      const stack: Frame[] = [];
+      let out = "";
+      let i = 0;
+
+      while (i < input.length) {
+        const top = stack[stack.length - 1];
+        const ch = input[i]!;
+
+        if (top?.kind === "double") {
+          if (ch === "\\" && i + 1 < input.length) {
+            out += input.slice(i, i + 2);
+            i += 2;
+            continue;
+          }
+          if (ch === "$" && input[i + 1] === "(") {
+            stack.push({ kind: "subst", parenDepth: 1 });
+            out += "$(";
+            i += 2;
+            continue;
+          }
+          if (ch === '"') stack.pop();
+          out += ch;
+          i++;
+          continue;
+        }
+
+        if (ch === "\\" && i + 1 < input.length) {
+          out += input.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (ch === "#" && (i === 0 || /[\s;&|(]/.test(input[i - 1]!))) {
+          const nl = input.indexOf("\n", i);
+          if (nl === -1) {
+            out += input.slice(i);
+            break;
+          }
+          out += input.slice(i, nl);
+          i = nl;
+          continue;
+        }
+        if (ch === '"') {
+          stack.push({ kind: "double" });
+          out += ch;
+          i++;
+          continue;
+        }
+        if (ch === "$" && input[i + 1] === "(") {
+          stack.push({ kind: "subst", parenDepth: 1 });
+          out += "$(";
+          i += 2;
+          continue;
+        }
+        if (top?.kind === "subst") {
+          if (ch === "(") {
+            top.parenDepth++;
+            out += ch;
+            i++;
+            continue;
+          }
+          if (ch === ")") {
+            top.parenDepth--;
+            if (top.parenDepth === 0) stack.pop();
+            out += ch;
+            i++;
+            continue;
+          }
+        }
+        if (ch === "'") {
+          const leftOk = i === 0 || /[\s;|&()=<>]/.test(input[i - 1]!);
+          let cursor = i;
+          let closed = false;
+          while (cursor < input.length && input[cursor] === "'") {
+            const close = input.indexOf("'", cursor + 1);
+            if (close === -1) {
+              closed = false;
+              break;
+            }
+            closed = true;
+            cursor = close + 1;
+            if (cursor + 1 < input.length && input[cursor] === "\\" && input[cursor + 1] === "'") {
+              cursor += 2;
+              continue;
+            }
+            break;
+          }
+          if (!closed) {
+            // Unterminated single quote: fail closed.
+            out += input.slice(i);
+            break;
+          }
+          const rightOk = cursor === input.length || /[\s;|&()<>]/.test(input[cursor]!);
+          out += leftOk && rightOk ? "''" : input.slice(i, cursor);
+          i = cursor;
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+      return out;
+    };
+
+    const hasActiveDynamicPiAgentAccess = (text: string): boolean => {
+      const active = stripStandaloneSingleQuotes(text);
+      return dynamicPiAgentAccessRe.test(active) || dynamicPiAgentAccessRe.test(collapseFragments(active));
+    };
+
+    const resolveEffectiveCmd = (tokens: string[], startIdx: number): { idx: number; word: string } => {
+      let i = startIdx;
+      while (i < tokens.length) {
+        const raw = tokens[i]!;
+        const bare = basename(raw.replace(/^[()]+/, "")).toLowerCase();
+        if (WRAPPER_WORDS.has(bare) || bare === "env" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(raw)) {
+          i++;
+          while (i < tokens.length && tokens[i]!.startsWith("-") && tokens[i] !== "--") {
+            const flag = tokens[i]!;
+            if (!flag.includes("=") && (ENV_VALUE_OPTIONS.has(flag) || WRAPPER_VALUE_OPTIONS.has(flag))) {
+              i += 2;
+            } else {
+              i++;
+            }
+          }
+          if (tokens[i] === "--") i++;
+          if (bare === "timeout" && i < tokens.length && /^\d/.test(tokens[i]!)) i++;
+          continue;
+        }
+        if (bare === "uv" && tokens[i + 1] === "run") {
+          i += 2;
+          while (i < tokens.length && tokens[i]!.startsWith("-") && tokens[i] !== "--") {
+            const flag = tokens[i]!;
+            if (
+              !flag.includes("=") &&
+              (flag === "--with" ||
+                flag === "--group" ||
+                flag === "--python" ||
+                flag === "-p" ||
+                flag === "--directory" ||
+                flag === "--project")
+            ) {
+              i += 2;
+            } else {
+              i++;
+            }
+          }
+          if (tokens[i] === "--") i++;
+          continue;
+        }
+        return { idx: i, word: bare };
+      }
+      return { idx: startIdx, word: basename(tokens[startIdx] ?? "").toLowerCase() };
+    };
+
+    const inlineRuntimeTargetsStateDb = (code: string): boolean => {
+      const defrag = collapseFragments(code);
+      const isWriteScript = scriptWriteRe.test(defrag) || /\bw\b|['"]w['"]|['"]w\+['"]|['"]a['"]/.test(defrag);
+      const mentionsStateDbLocal =
+        stateDbUncondRe.test(defrag) ||
+        /\b(?:restricted_folder_approvals|tool_host_approvals)\b/i.test(defrag);
+      return (
+        (isWriteScript || sqliteEngineRe.test(defrag) || /\bsqlite\b/i.test(defrag)) &&
+        (mentionsStateDbLocal ||
+          (/\.pi\b/i.test(defrag) && /(?:state\.db|restricted_folder_approvals)/i.test(defrag)) ||
+          (/join\s*\([^)]*\.pi/i.test(defrag) && /\bdata\b/i.test(defrag)))
+      );
+    };
+
     const checkProtectedSecurityStorage = (
       rawScript: string,
       parentVars: Map<string, string>,
@@ -6592,13 +6904,18 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
       if (depth > 3) return null;
       const script = preprocessAnsiCQuotes(rawScript);
       const defragFull = collapseFragments(script);
-      if (hmacKeyRe.test(defragFull) || dynamicPiAgentAccessRe.test(script)) return "hmac";
+      // Literal `.approval-hmac-key` stays unconditionally blocked everywhere (even in quotes/heredocs).
+      if (hmacKeyRe.test(defragFull)) return "hmac";
+
+      const { stripped: withoutQuotedHeredocs, quotedBodies: quotedHeredocBodies } =
+        extractQuotedHeredocs(script);
+      if (hasActiveDynamicPiAgentAccess(withoutQuotedHeredocs)) return "hmac";
 
       const vars = new Map(parentVars);
       let sawPiFragmentVar = false;
       let sawStateDbFragmentVar = false;
 
-      for (const seg of unquotedSegments(script)) {
+      for (const seg of unquotedSegments(withoutQuotedHeredocs)) {
         const rawTokens = tokenize(seg.text);
         if (rawTokens.length === 0) continue;
 
@@ -6643,11 +6960,21 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         const defragSeg = collapseFragments(expandedSeg);
         const maskedSeg = maskQuotedRegions(defragSeg);
 
-        if (hmacKeyRe.test(defragSeg) || dynamicPiAgentAccessRe.test(expandedSeg)) return "hmac";
+        if (
+          hmacKeyRe.test(defragSeg) ||
+          hasActiveDynamicPiAgentAccess(expandShellVars(stripStandaloneSingleQuotes(seg.text), vars))
+        ) {
+          return "hmac";
+        }
 
         const expandedTokens = tokenize(expandedSeg);
         const cmdIdx = expandedTokens.length > 0 ? skipToCommandWord(expandedTokens) : 0;
-        const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
+        const { idx: effectiveCmdIdx, word: cmdWord } = resolveEffectiveCmd(expandedTokens, cmdIdx);
+        const prefixBeforeSeg = seg.start > 0 ? withoutQuotedHeredocs.slice(0, seg.start) : "";
+        const segReceivesStdin =
+          prefixBeforeSeg.trimEnd().endsWith("|") ||
+          /(?:^|[\s;|&()])(?:<<<?|<(?!\())/.test(maskedSeg);
+        const priorSegmentWroteFile = /[>]|\b(?:tee|sponge)\b/.test(prefixBeforeSeg);
 
         // 1. State DB & approval tables tamper check (unconditional)
         const mentionsStateDb =
@@ -6702,33 +7029,50 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           }
         }
 
-        // Inline scripts (`python3 -c`, `node -e`, etc.) constructing `.pi/data/state.db` / `restricted_folder_approvals`
+        // Inline scripts (`python3 -c`, `node -e`, etc.) constructing `.pi/agent/` or `.pi/data/state.db`
         if (inlineRuntimeOps.has(cmdWord)) {
-          const isWriteScript = scriptWriteRe.test(defragSeg) || /\bw\b|['"]w['"]|['"]w\+['"]|['"]a['"]/.test(defragSeg);
-          if (
-            (isWriteScript || sqliteEngineRe.test(defragSeg) || /\bsqlite\b/i.test(defragSeg)) &&
-            (mentionsStateDb ||
-              (/\.pi\b/i.test(defragSeg) &&
-                /(?:state\.db|restricted_folder_approvals)/i.test(defragSeg)) ||
-              (/join\s*\([^)]*\.pi/i.test(defragSeg) && /\bdata\b/i.test(defragSeg)))
-          ) {
-            return "state_db";
+          const checkInlineCode = (code: string): "hmac" | "state_db" | null => {
+            if (dynamicPiAgentAccessRe.test(code) || inlineRuntimeDynamicPiAgentRe.test(code)) {
+              enfLog.debug("inline_runtime_dynamic_pi_agent_blocked", "cmd", cmdWord);
+              return "hmac";
+            }
+            if (inlineRuntimeTargetsStateDb(code)) return "state_db";
+            return null;
+          };
+          const segHit = checkInlineCode(expandedSeg);
+          if (segHit) return segHit;
+          for (const body of quotedHeredocBodies) {
+            const bodyHit = checkInlineCode(body);
+            if (bodyHit) return bodyHit;
+          }
+          if (segReceivesStdin || priorSegmentWroteFile) {
+            const rawHit = checkInlineCode(script);
+            if (rawHit) return rawHit;
           }
         }
 
-        // Recurse into nested shells (`bash -c`, `sh -c`, `eval`)
-        if (cmdWord === "eval" || runsNestedShell(expandedTokens)) {
+        // Recurse into nested shells (`bash -c`, `sh -c`, `eval`, `source`/`.`, `xargs <shell>`, or stdin/file-fed shells)
+        const isSourceOrDot = cmdWord === "source" || cmdWord === ".";
+        const isXargsExec =
+          cmdWord === "xargs" &&
+          expandedTokens
+            .slice(effectiveCmdIdx + 1)
+            .some((t) => {
+              const b = basename(t).toLowerCase();
+              return SHELL_WORDS.has(b) || inlineRuntimeOps.has(b);
+            });
+        if (cmdWord === "eval" || isSourceOrDot || isXargsExec || runsNestedShell(expandedTokens)) {
           const nested: string[] = [];
           if (cmdWord === "eval") {
             const evalArgs: string[] = [];
-            for (let i = cmdIdx + 1; i < expandedTokens.length; i++) {
+            for (let i = effectiveCmdIdx + 1; i < expandedTokens.length; i++) {
               const t = expandedTokens[i]!;
               if (evalArgs.length === 0 && t === "--") continue;
               evalArgs.push(stripOuterQuotesSimple(t));
             }
             if (evalArgs.length > 0) nested.push(evalArgs.join(" "));
-          } else {
-            for (let i = cmdIdx + 1; i < expandedTokens.length; i++) {
+          } else if (!isSourceOrDot && !isXargsExec) {
+            for (let i = effectiveCmdIdx + 1; i < expandedTokens.length; i++) {
               const tok = expandedTokens[i]!;
               if (tok === "--") break;
               if (/^-[a-zA-Z]*c$/.test(tok) && i + 1 < expandedTokens.length) {
@@ -6747,6 +7091,20 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           for (const inner of nested) {
             const innerHit = checkProtectedSecurityStorage(inner, vars, depth + 1);
             if (innerHit) return innerHit;
+          }
+          if (nested.length === 0) {
+            for (const body of quotedHeredocBodies) {
+              const bodyHit = checkProtectedSecurityStorage(body, vars, depth + 1);
+              if (bodyHit) return bodyHit;
+            }
+            if (
+              (isSourceOrDot || isXargsExec || segReceivesStdin || priorSegmentWroteFile) &&
+              (dynamicPiAgentAccessRe.test(script) ||
+                (isXargsExec && inlineRuntimeDynamicPiAgentRe.test(script)))
+            ) {
+              enfLog.debug("indirect_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
+              return "hmac";
+            }
           }
         }
       }

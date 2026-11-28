@@ -617,3 +617,286 @@ describe("model id resolvers", () => {
     assert.equal(resolveCommentSignatureModelId(""), "unknown");
   });
 });
+
+describe("approval-hmac-key protected storage guard (#1495)", () => {
+  it("allows single-quoted gh issue create body with Markdown backticked ~/.pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "gh issue create --title 'bug' --body 'see `~/.pi/agent/install/releases/<new>/`'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("allows single-quoted gh pr comment body with Markdown backticked absolute .pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "gh pr comment 1495 --body 'Real `/home/user/.pi/agent/bin/pi` works'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("allows single-quoted body with escaped apostrophe near Markdown backticked ~/.pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "gh issue create --body 'doesn'\\''t break `~/.pi/agent/bin/pi`'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("allows quoted heredoc body containing Markdown backticked ~/.pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "cat <<'EOF'\nSee `~/.pi/agent/bin/pi`\nEOF",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("allows command-substituted quoted heredoc body passed to gh issue create", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command:
+        'gh issue create --title "bug" --body "$(cat <<\'EOF\'\nSee `~/.pi/agent/install/releases/<new>/`\nEOF\n)"',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("allows echo with static single-quoted ~/.pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "echo '~/.pi/agent/bin/pi'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("allows printf with single-quoted Markdown backticked ~/.pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "printf '%s\\n' 'see `~/.pi/agent/bin/pi`'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("blocks literal .approval-hmac-key inside single-quoted prose", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "gh issue create --body 'see ~/.pi/agent/.approval-hmac-key'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks literal .approval-hmac-key inside quoted heredoc", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "cat <<'EOF'\n~/.pi/agent/.approval-hmac-key\nEOF",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks unquoted glob access under ~/.pi/agent", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "cat ~/.pi/agent/.*",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks double-quoted command substitution under ~/.pi/agent", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'cat "~/.pi/agent/$(echo x)"',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks unquoted backtick substitution under ~/.pi/agent", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "cat ~/.pi/agent/`echo x`",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks unquoted heredoc expanding dynamic ~/.pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "cat <<EOF\n~/.pi/agent/$(echo x)\nEOF",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks glued glob appended to single-quoted .pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "cat '/home/user/.pi/agent/'*",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks nested bash -c glob access under ~/.pi/agent", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "bash -c 'cat ~/.pi/agent/.*'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks nested sh -c backtick access under ~/.pi/agent", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "sh -c 'cat ~/.pi/agent/`echo x`'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks eval dynamic access under ~/.pi/agent", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "eval 'cat ~/.pi/agent/.*'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks stdin-fed bash quoted heredoc targeting ~/.pi/agent dynamically", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "bash <<'EOF'\ncat ~/.pi/agent/.*\nEOF",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks piped single-quoted dynamic ~/.pi/agent command into bash", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "echo 'cat ~/.pi/agent/.*' | bash",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks node -e dynamic concatenation under ~/.pi/agent", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'node -e \'fs.readFileSync("~/.pi/agent/" + x)\'',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks python3 -c dynamic path join under .pi/agent", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command:
+        'python3 -c \'import os; print(open(os.path.join(os.path.expanduser("~"), ".pi", "agent", x)).read())\'',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks unterminated single-quoted command containing backticked ~/.pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "gh issue create --body 'unterminated `~/.pi/agent/bin/pi`",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks safe single-quoted prose chained with dynamic ~/.pi/agent access", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "gh issue create --body 'see `~/.pi/agent/bin/pi`' && cat ~/.pi/agent/.*",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks quoted heredoc written to file then executed with bash", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "cat <<'EOF' > /tmp/p.sh\ncat ~/.pi/agent/.*\nEOF\nbash /tmp/p.sh",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks source process substitution targeting ~/.pi/agent dynamically", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "source <(echo 'cat ~/.pi/agent/.*')",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks fake heredoc marker inside double quotes hiding command substitution", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'echo "prefix <<\'EOF\'\n$(cat ~/.pi/agent/.*)\nEOF"',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+});
