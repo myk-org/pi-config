@@ -1199,4 +1199,27 @@ describe("approval-hmac-key protected storage guard (#1495)", () => {
     assert.equal(res.action, "block");
     assert.match(res.reason ?? "", /\.approval-hmac-key/);
   });
+
+  it("blocks node -e computed property access executing heredoc state.db write", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command:
+        'node -e \'global["pro"+"cess"]["stdin"]["on"]("data",d=>global["pro"+"cess"]["constructor"]["constructor"](d.toString())())\' <<\'EOF\'\nprocess.getBuiltinModule("fs").writeFileSync(".pi/data/state.db","tampered")\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /state\.db/);
+  });
+
+  it("blocks bash -c implicit for-loop positional iteration executing process substitution", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "bash -c 'for a; do bash \"$a\"; done' _ <(printf '%s\\n' 'cat ~/.pi/agent/.*')",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
 });

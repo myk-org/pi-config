@@ -6997,29 +6997,32 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
       return { hasInlineFlag, hasScriptFile, readsStdinExplicitly, inlineCodes };
     };
 
-    const PURE_STDIN_PRINT_INLINE_RE =
-      /^(?:import\s+sys\s*;\s*)?print\s*\(\s*(?:input\s*\(\s*\)|sys\.stdin\.read\s*\(\s*\))\s*\)\s*;?$/;
-    const INLINE_MAY_READ_OR_EXEC_STDIN_RE =
-      /\b(?:stdin|input|raw_input|fileinput|readline|gets|STDIN|ARGF|process|sys|fs|open|fdopen|readFileSync|readSync|read|exec|eval|compile|Function|constructor|subprocess|spawn|execSync|execFile|child_process|vm|globals|locals|getattr|vars|__builtins__|builtins|__import__|importlib|Reflect|globalThis|require|system|popen|dofile|loadstring|load|instance_eval|module_eval|class_eval|public_send|send)\b|<>/;
-
     /**
-     * Decide whether an inline runtime `-c`/`-e` program can consume and execute stdin.
-     * Uses an allowlist for provably data-only scripts (programs that never touch stdin/reflection
-     * outside string literals, or pure `print(input())` / `print(sys.stdin.read())`) and fails
-     * closed for everything else (including `this.constructor.constructor`, `globals()`, etc.).
+     * Strict positive allowlist of provably data-only inline runtime snippets that CANNOT
+     * execute stdin (no computed property access `[...]`, no reflection, no arbitrary calls
+     * or callbacks). Everything else fails closed so attached heredocs and piped input are
+     * inspected by `checkInlineCode`.
      */
+    const SAFE_DATA_ONLY_INLINE_CODE_RE =
+      /^(?:(?:import\s+sys\s*;\s*)?print\s*\(\s*(?:input\s*\(\s*\)|sys\.stdin\.read\s*\(\s*\)|-?\d+(?:\.\d+)?|True|False|None|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\)|console\.(?:log|error|info)\s*\(\s*(?:-?\d+(?:\.\d+)?|true|false|null|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\)|-?\d+(?:\.\d+)?|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*;?$/;
+
     const inlineCodeMayExecuteStdin = (inlineCodes: string[]): boolean => {
       if (inlineCodes.length === 0) return true;
       for (const rawCode of inlineCodes) {
         const trimmed = rawCode.trim();
         if (!trimmed) continue;
-        if (PURE_STDIN_PRINT_INLINE_RE.test(trimmed)) continue;
-        if (/\/dev\/(?:stdin|fd\/0)\b/.test(trimmed)) return true;
-        const masked = maskQuotedRegions(trimmed);
-        if (INLINE_MAY_READ_OR_EXEC_STDIN_RE.test(masked)) return true;
+        if (!SAFE_DATA_ONLY_INLINE_CODE_RE.test(trimmed)) return true;
       }
       return false;
     };
+
+    /**
+     * Strict positive allowlist of nested `-c` shell commands that are demonstrably
+     * independent of positional arguments and `/dev/fd` (only literal `echo`/`printf`/
+     * `true`/`false`/`:`, with zero `$`, backticks, loops, redirections, or subshells).
+     */
+    const NESTED_SCRIPT_IGNORES_ARGS_RE =
+      /^\s*(?:(?:echo|printf)(?:\s+(?:-[A-Za-z]+|[A-Za-z0-9_.,:!?@#%+=/-]+|'(?:[^']*)'|"(?:[^"$`\\]*)"))*|true|false|:)\s*$/;
 
     const hasActiveDynamicPiAgentAccess = (text: string): boolean => {
       const active = stripStandaloneSingleQuotes(text);
@@ -7386,7 +7389,7 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
               nested.length === 0 ||
               cmdWord === "eval" ||
               /(?:^|[\s;|&()])<(?!\()/.test(maskedSeg) ||
-              nested.some((inner) => /\$(?:[0-9@*]|\{[0-9@*][^}]*\})|\/dev\/fd\b|\/proc\/self\/fd\b|\bshift\b/.test(inner));
+              nested.some((inner) => !NESTED_SCRIPT_IGNORES_ARGS_RE.test(inner));
             if (nestedConsumesProcSubst && hasRawDynamicPiAgentAccess(expandedSeg)) {
               enfLog.debug("nested_shell_proc_subst_dynamic_pi_agent_blocked", "cmd", cmdWord);
               return "hmac";
