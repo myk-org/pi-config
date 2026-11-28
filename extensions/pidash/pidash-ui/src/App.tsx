@@ -19,8 +19,11 @@ import { createLogger } from "@/lib/create-logger";
 import {
   flattenSidebarSessions,
   formatDocumentTitle,
+  matchDeepLinkSession,
+  parsePidashDeepLink,
   partitionSidebarSessions,
   shouldPausePromptHotkeys,
+  type PidashDeepLinkTarget,
 } from "@/lib/pidash-ux-helpers";
 import type { SessionInfo } from "@/types";
 
@@ -40,6 +43,16 @@ function saveState(state: { sidebarWidth: number; sidebarCollapsed: boolean; wat
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
 }
 
+function getBrowserLocationSearch(): string {
+  try {
+    return typeof window !== "undefined" && typeof window.location?.search === "string"
+      ? window.location.search
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 export function App() {
   const { connected, send, onMessage } = useWebSocket("/ws/browser");
   const sessions = useSessions(connected, onMessage);
@@ -54,6 +67,13 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
   const saved = useRef(loadState());
+  const pendingDeepLinkRef = useRef<PidashDeepLinkTarget | null | undefined>(undefined);
+  if (pendingDeepLinkRef.current === undefined) {
+    pendingDeepLinkRef.current = parsePidashDeepLink(getBrowserLocationSearch());
+    if (pendingDeepLinkRef.current) {
+      log.debug("parsed URL deep-link target", pendingDeepLinkRef.current);
+    }
+  }
   // Restore the open panel across refreshes — the user's view survives a
   // reload (not on phones, where the drawer is a full-screen overlay).
   const [activePanel, setActivePanel] = useState<PanelTab | null>(() => {
@@ -109,6 +129,14 @@ export function App() {
   }, []);
 
   const watchSession = useCallback((s: SessionInfo) => {
+    if (pendingDeepLinkRef.current) {
+      log.debug("clearing pending deep-link on session selection", {
+        selectedSessionId: s.sessionId,
+        cancelledTarget: pendingDeepLinkRef.current,
+      });
+      pendingDeepLinkRef.current = null;
+    }
+    restoredRef.current = true;
     if (s.sessionId === session?.sessionId) return;
     // Save current session messages to cache before switching
     if (session?.sessionId && messages.length > 0) {
@@ -198,7 +226,24 @@ export function App() {
   }, [connected, send]);
 
   useEffect(() => {
-    if (!connected || !sessions.length || restoredRef.current) return;
+    if (!connected || !sessions.length) return;
+    const pendingDeepLink = pendingDeepLinkRef.current;
+    if (pendingDeepLink) {
+      const matched = matchDeepLinkSession(sessions, pendingDeepLink);
+      if (matched) {
+        log.info("deep-link matched session", {
+          sessionId: matched.sessionId,
+          comsName: matched.comsName ?? null,
+          comsProject: matched.comsProject ?? null,
+          target: pendingDeepLink,
+        });
+        pendingDeepLinkRef.current = null;
+        restoredRef.current = true;
+        watchSession(matched);
+      }
+      return;
+    }
+    if (restoredRef.current || watchedSessionIdRef.current) return;
     // Restore from localStorage
     const sid = saved.current.watchSessionId;
     const pid = saved.current.watchPid;
