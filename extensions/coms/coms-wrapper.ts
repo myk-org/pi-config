@@ -93,7 +93,11 @@ function hasExplicitCliProjectFlag(argv: string[] = process.argv): boolean {
     return false;
 }
 
-async function acquireAutoStartProjectLock(registry: ComsRegistry, project: string): Promise<(() => void) | null> {
+async function acquireAutoStartProjectLock(
+    registry: ComsRegistry,
+    project: string,
+    timeoutMs: number = AUTO_START_LOCK_TIMEOUT_MS,
+): Promise<(() => void) | null> {
     if (!project || project.includes("/") || project.includes("\\") || project.includes("..")) return null;
     try {
         registry.ensureProjectDirs(project);
@@ -101,7 +105,7 @@ async function acquireAutoStartProjectLock(registry: ComsRegistry, project: stri
         return null;
     }
     const lockPath = path.join(registry.projectsDir(), project, ".autostart.lock");
-    const deadline = Date.now() + AUTO_START_LOCK_TIMEOUT_MS;
+    const deadline = Date.now() + Math.max(0, timeoutMs);
     while (true) {
         const release = acquireTokenFileLock(lockPath, { attempts: 1, uniqueClaim: true });
         if (release) return release;
@@ -328,6 +332,8 @@ export interface RegisterComsOptions {
     registerSignalHandlers?: boolean;
     /** Override reload-handoff queue TTL in ms (primarily for isolated tests). */
     reloadQueueTtlMs?: number;
+    /** Override per-project auto-start lock acquisition timeout in ms (primarily for isolated tests). */
+    autoStartLockTimeoutMs?: number;
 }
 
 export interface RegisteredComs {
@@ -870,59 +876,64 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 return;
             }
             const optionalCliFlags = collectCliFlagParts({ includeCname: false, includeProject: false });
-            const explicitCname = pi.getFlag("cname");
-            if (typeof explicitCname === "string" && explicitCname.trim()) {
-                const cname = explicitCname.trim();
-                const flagParts = ["--cname", cname, "--project", project, ...optionalCliFlags];
-                const result = await activateComs(flagParts, ctx, "auto");
-                if (result.ok) {
-                    log.info("coms_auto_started", { name: cname, project, reason: evt?.reason });
-                } else {
-                    persistCurrentState();
-                    log.warn("coms_auto_start_failed", { name: cname, project, message: result.message });
-                }
+            const registry = getRegistry(cwd);
+            const releaseLock = await acquireAutoStartProjectLock(registry, project, options.autoStartLockTimeoutMs);
+            if (!releaseLock) {
+                log.warn("coms_auto_start_lock_unavailable", { project, cwd });
+                persistCurrentState();
                 return;
             }
-            const baseName = deriveAutoStartBaseName(cwd);
-            const registry = getRegistry(cwd);
-            const triedNames = new Set<string>();
-            const selfSessionId = options.sessionId ?? (globalThis as any).__piConfigSessionId;
             let started = false;
-            const releaseLock = await acquireAutoStartProjectLock(registry, project);
+            const triedNames = new Set<string>();
+            const baseName = deriveAutoStartBaseName(cwd);
             try {
-                for (let attempt = 0; attempt < MAX_AUTO_START_COLLISION_RETRIES; attempt++) {
-                    const candidate = await resolveAutoStartName(
-                        registry,
-                        project,
-                        baseName,
-                        typeof selfSessionId === "string" && selfSessionId ? selfSessionId : undefined,
-                        triedNames,
-                    );
-                    if (!candidate) {
-                        log.warn("coms_auto_start_capacity_reached", {
-                            baseName,
-                            project,
-                            maxAttempts: MAX_AUTO_START_NAME_ATTEMPTS,
-                        });
-                        break;
-                    }
-                    const flagParts = ["--cname", candidate, "--project", project, ...optionalCliFlags];
+                const explicitCname = pi.getFlag("cname");
+                if (typeof explicitCname === "string" && explicitCname.trim()) {
+                    const cname = explicitCname.trim();
+                    const flagParts = ["--cname", cname, "--project", project, ...optionalCliFlags];
                     const result = await activateComs(flagParts, ctx, "auto");
                     if (result.ok) {
                         started = true;
-                        log.info("coms_auto_started", { name: candidate, project, reason: evt?.reason });
+                        log.info("coms_auto_started", { name: cname, project, reason: evt?.reason });
+                    } else {
+                        log.warn("coms_auto_start_failed", { name: cname, project, message: result.message });
+                    }
+                } else {
+                    const selfSessionId = options.sessionId ?? (globalThis as any).__piConfigSessionId;
+                    for (let attempt = 0; attempt < MAX_AUTO_START_COLLISION_RETRIES; attempt++) {
+                        const candidate = await resolveAutoStartName(
+                            registry,
+                            project,
+                            baseName,
+                            typeof selfSessionId === "string" && selfSessionId ? selfSessionId : undefined,
+                            triedNames,
+                        );
+                        if (!candidate) {
+                            log.warn("coms_auto_start_capacity_reached", {
+                                baseName,
+                                project,
+                                maxAttempts: MAX_AUTO_START_NAME_ATTEMPTS,
+                            });
+                            break;
+                        }
+                        const flagParts = ["--cname", candidate, "--project", project, ...optionalCliFlags];
+                        const result = await activateComs(flagParts, ctx, "auto");
+                        if (result.ok) {
+                            started = true;
+                            log.info("coms_auto_started", { name: candidate, project, reason: evt?.reason });
+                            break;
+                        }
+                        if (result.message.includes("already taken by a live peer")) {
+                            triedNames.add(candidate);
+                            log.debug("coms_auto_start_name_collision_retry", { candidate, project, attempt: attempt + 1 });
+                            continue;
+                        }
+                        log.warn("coms_auto_start_failed", { name: candidate, project, message: result.message });
                         break;
                     }
-                    if (result.message.includes("already taken by a live peer")) {
-                        triedNames.add(candidate);
-                        log.debug("coms_auto_start_name_collision_retry", { candidate, project, attempt: attempt + 1 });
-                        continue;
-                    }
-                    log.warn("coms_auto_start_failed", { name: candidate, project, message: result.message });
-                    break;
                 }
             } finally {
-                releaseLock?.();
+                releaseLock();
             }
             if (!started) {
                 if (triedNames.size >= MAX_AUTO_START_COLLISION_RETRIES) {

@@ -21,6 +21,7 @@ import {
 	type RegisteredComs,
 } from "../../../extensions/coms/coms-wrapper.js";
 import { clearSettingsCache, getSetting } from "../../../extensions/orchestrator/project-settings.js";
+import { acquireTokenFileLock } from "../../../extensions/shared/file-lock.js";
 import { isComsActive, resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
@@ -351,6 +352,68 @@ describe("resolveAutoStartName capacity (#1503)", { concurrency: false }, () => 
 	});
 });
 
+describe("ComsRegistry.pruneStaleStartup main-socket fallback (#1503)", { concurrency: false }, () => {
+	it("keeps registry entry when .ping socket is absent while main socket listens", async () => {
+		const { workspace, comsDir } = makeNamedWorkspace("prune-live-main");
+		const project = expectedCwdProject(workspace);
+		const registry = new ComsRegistry(comsDir);
+		registry.ensureProjectDirs(project);
+		const mainSock = join(comsDir, "sockets", "booting-peer.sock");
+		await startDummyListeningSocket(mainSock);
+		const entryFile = registry.writeEntryAtomic(
+			{
+				coms_session_id: "booting-peer",
+				name: "prune-live-main",
+				purpose: "",
+				model: "test",
+				color: "#72F1B8",
+				pid: process.pid,
+				endpoint: mainSock,
+				cwd: workspace,
+				started_at: new Date().toISOString(),
+				explicit: false,
+				version: 1,
+			},
+			project,
+		);
+
+		assert.equal(existsSync(`${mainSock}.ping`), false, ".ping socket is not yet bound");
+		await registry.pruneStaleStartup();
+
+		assert.equal(existsSync(entryFile), true, "live main socket must keep registry entry intact");
+	});
+
+	it("unlinks registry entry when neither .ping nor main socket listens", async () => {
+		const { workspace, comsDir } = makeNamedWorkspace("prune-dead-both");
+		const project = expectedCwdProject(workspace);
+		const registry = new ComsRegistry(comsDir);
+		registry.ensureProjectDirs(project);
+		const deadSock = join(comsDir, "sockets", "dead-both-peer.sock");
+		// Create a stale non-listening file at the socket path so fs.existsSync passes and probes run.
+		writeFileSync(deadSock, "");
+		const entryFile = registry.writeEntryAtomic(
+			{
+				coms_session_id: "dead-both-peer",
+				name: "prune-dead-both",
+				purpose: "",
+				model: "test",
+				color: "#72F1B8",
+				pid: process.pid,
+				endpoint: deadSock,
+				cwd: workspace,
+				started_at: new Date().toISOString(),
+				explicit: false,
+				version: 1,
+			},
+			project,
+		);
+
+		await registry.pruneStaleStartup();
+
+		assert.equal(existsSync(entryFile), false, "dead entry with dead sockets must be unlinked");
+	});
+});
+
 describe("coms_auto_start interactive lifecycle (#1503)", { concurrency: false }, () => {
 	it("auto-starts on interactive TUI startup in cwd-derived project despite default project flag", async () => {
 		resetAmbientComsEnv();
@@ -423,6 +486,33 @@ describe("coms_auto_start interactive lifecycle (#1503)", { concurrency: false }
 
 		const names = [reg1.runtime.getSelf()?.name, reg2.runtime.getSelf()?.name].sort();
 		assert.deepEqual(names, ["concurrent-repo", "concurrent-repo-2"]);
+	});
+
+	it("skips auto-start without racing when project lock stays contended", async () => {
+		resetAmbientComsEnv();
+		const { workspace, comsDir } = makeNamedWorkspace("locked-repo");
+		const project = expectedCwdProject(workspace);
+		const registry = new ComsRegistry(comsDir);
+		registry.ensureProjectDirs(project);
+		const lockPath = join(registry.projectsDir(), project, ".autostart.lock");
+		const releaseExternal = acquireTokenFileLock(lockPath, { attempts: 1, uniqueClaim: true });
+		assert.ok(releaseExternal, "external test lock acquired");
+		cleanupFns.push(() => releaseExternal());
+
+		const fake = createFakePi();
+		const reg = registerComs(fake.pi, {
+			comsDir,
+			sessionId: "sess-locked",
+			registerSignalHandlers: false,
+			autoStartLockTimeoutMs: 60,
+		});
+		cleanupFns.push(() => reg.runtime.stop({ reason: "test_cleanup" }));
+		const ctx = makeSessionCtx(workspace, "sess-locked", { entries: fake.customEntries });
+
+		await fake.handlers.get("session_start")!({ reason: "startup" }, ctx);
+
+		assert.equal(reg.runtime.isActive(), false);
+		assert.equal(isComsActive("sess-locked"), false);
 	});
 
 	it("reclaims repo basename when existing registry entry is stale", async () => {
