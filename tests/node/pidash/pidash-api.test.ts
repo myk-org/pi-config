@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { builtinModules } from "node:module";
+import { builtinModules, isBuiltin } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -19,6 +19,10 @@ import {
   clearSettingsCache,
   setGlobalSettingsPath,
 } from "../../../extensions/orchestrator/project-settings.ts";
+import { entryHash } from "../../../extensions/orchestrator/memory-scoring.ts";
+import { addPersistentApproval } from "../../../extensions/orchestrator/restricted-folders.ts";
+import { addPersistentHostApproval } from "../../../extensions/orchestrator/tool-permissions.ts";
+import { openStateDb } from "../../../extensions/orchestrator/state-db.ts";
 import { MIN_PI_VERSION } from "../../../extensions/shared/pi-version.ts";
 import { getLspBrokerSocketPath } from "../../../extensions/orchestrator/lsp.ts";
 
@@ -1039,6 +1043,43 @@ describe("pidash loopback /api/* surface", () => {
     assert.equal(fs.readFileSync(legacyScoresPath, "utf8"), legacyContent);
   });
 
+  it("sums canonical memory-scoring hotness across multiple scored entries on /api/memory", async () => {
+    const projDir = path.join(tmpRoot, "proj-mem-scores");
+    const topicsDir = path.join(projDir, ".pi", "memory", "topics");
+    const dataDir = path.join(projDir, ".pi", "data");
+    fs.mkdirSync(topicsDir, { recursive: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+    const line1 = "- [lesson] always open SQLite read-only in GET handlers";
+    const line2 = "- [lesson] verify HMAC prefixes against writer helpers";
+    fs.writeFileSync(path.join(topicsDir, "lessons.md"), `${line1}\n${line2}\n`, "utf8");
+
+    const dbPath = path.join(dataDir, "state.db");
+    const db = openStateDb(dbPath);
+    const payload = JSON.stringify({
+      hashAlgo: "sha256",
+      lastRebuild: "2026-11-28T05:00:00.000Z",
+      entries: {
+        [entryHash(line1)]: { class: "lesson", score: 1.5, evidenceCount: 2, lastReinforced: "2026-11-28T05:00:00.000Z" },
+        [entryHash(line2)]: { class: "lesson", score: 2.25, evidenceCount: 3, lastReinforced: "2026-11-28T05:00:00.000Z" },
+      },
+    });
+    db.prepare(
+      "INSERT OR REPLACE INTO kv_state (store_key, payload, revision, updated_at) VALUES (?, ?, 1, ?)",
+    ).run("memory-scoring", payload, "2026-11-28T05:00:00.000Z");
+    db.close();
+
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot));
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/memory?cwd=${encodeURIComponent(projDir)}`,
+    });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.topics.length, 1);
+    assert.equal(data.topics[0].name, "lessons");
+    assert.equal(data.topics[0].entries, 2);
+    assert.equal(data.topics[0].hotness, 3.75);
+  });
+
   // ── 9. GET /api/review ────────────────────────────────────────────
 
   it("returns normalized review loop status on /api/review", async () => {
@@ -1071,6 +1112,64 @@ describe("pidash loopback /api/* surface", () => {
     // Strictly read-only: must not create state.db or review-tracked marker
     assert.equal(fs.existsSync(path.join(dataDir, "state.db")), false);
     assert.equal(fs.existsSync(path.join(dataDir, "review-tracked")), false);
+  });
+
+  it("parses pretty-printed multi-line legacy review state JSONL on /api/review", async () => {
+    const projDir = path.join(tmpRoot, "proj-review-pretty");
+    const dataDir = path.join(projDir, ".pi", "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dataDir, "pi-config-review-state.jsonl"),
+      JSON.stringify(
+        {
+          status: "clean",
+          cycle: 3,
+          subject: { kind: "local", head_sha: "abc1234" },
+          findings_count: 0,
+          reviewers_pending: [],
+          tests_passed: true,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot));
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/review?cwd=${encodeURIComponent(projDir)}`,
+    });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.status, "clean");
+    assert.equal(data.lastReviewedSha, "abc1234");
+    assert.equal(data.cycle, 3);
+  });
+
+  it("reports unavailable on /api/review when SQLite row is corrupt despite stale legacy file", async () => {
+    const projDir = path.join(tmpRoot, "proj-review-corrupt");
+    const dataDir = path.join(projDir, ".pi", "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dataDir, "pi-config-review-state.json"),
+      JSON.stringify({ status: "clean", cycle: 1, subject: { kind: "local", head_sha: "stale000" } }),
+      "utf8",
+    );
+    const db = openStateDb(path.join(dataDir, "state.db"));
+    db.prepare(
+      "INSERT OR REPLACE INTO kv_state (store_key, payload, revision, updated_at) VALUES (?, ?, 1, ?)",
+    ).run("pi-config-review-state", "{corrupt json", "2026-11-28T05:00:00.000Z");
+    db.close();
+
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot));
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/review?cwd=${encodeURIComponent(projDir)}`,
+    });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.status, "unavailable");
+    assert.equal(data.lastReviewedSha, null);
+    assert.ok(typeof data.error === "string" && data.error.length > 0);
   });
 
   it("does not create .pi/data directory on read-only /api/review requests", async () => {
@@ -1258,6 +1357,26 @@ describe("pidash loopback /api/* surface", () => {
     assert.deepEqual(fs.readFileSync(dbPath), beforeBytes);
   });
 
+  it("counts real writer-signed folder plus host approvals on /api/security", async () => {
+    const projDir = path.join(tmpRoot, "proj-sec-signed");
+    const dataDir = path.join(projDir, ".pi", "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const deps = makeBaseDeps(tmpRoot);
+    const dbPath = path.join(dataDir, "state.db");
+
+    addPersistentApproval(projDir, "directory", "/tmp/approved-dir", "/tmp/restricted-root", dbPath, undefined, deps.homeDir!);
+    addPersistentHostApproval(projDir, "fetch_content", "docs.example.com", dbPath, undefined, deps.homeDir!);
+
+    const router = createPidashApiRouter(deps);
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/security?cwd=${encodeURIComponent(projDir)}`,
+    });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.restricted_folders.persistentApprovalCount, 1);
+    assert.equal(data.tool_permissions.hostGrantCount, 1);
+  });
+
   it("returns policy counts without exposing restricted folder paths or secrets on /api/security", async () => {
     const projDir = path.join(tmpRoot, "proj-sec");
     fs.mkdirSync(path.join(projDir, ".pi"), { recursive: true });
@@ -1427,7 +1546,7 @@ describe("pidash loopback /api/* surface", () => {
         } else if (spec.startsWith(".")) {
           const next = resolveLocal(abs, spec);
           if (next) walk(next, [...chain, path.relative(repoRoot, next)]);
-        } else if (!builtins.has(spec)) {
+        } else if (!isBuiltin(spec) && !spec.startsWith("node:") && !builtins.has(spec)) {
           // Verify external runtime dependencies exist in package.json dependencies (not peer/dev only)
           const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
           const pkgName = spec.startsWith("@") ? spec.split("/").slice(0, 2).join("/") : spec.split("/")[0];

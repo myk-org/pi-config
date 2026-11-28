@@ -163,7 +163,7 @@ export function loadOrCreateApprovalHmacKey(keyPath: string): Buffer {
 
 const APPROVAL_SIG_VERSION = "v2";
 
-function resolveProjectDbIdentity(targetDb: string, cwd: string, homeDir = homedir()): string {
+export function resolveProjectDbIdentity(targetDb: string, cwd: string, homeDir = homedir()): string {
   return resolveCanonicalPath(targetDb, cwd, homeDir);
 }
 
@@ -179,7 +179,7 @@ function computeApprovalSignature(
     .digest("hex");
 }
 
-function verifyApprovalSignature(
+export function verifyApprovalSignature(
   key: Buffer,
   projectDbId: string,
   scope: ApprovalScope,

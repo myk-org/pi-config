@@ -2393,6 +2393,12 @@ export function registerAsyncAgents(
     if (typeof target === "string") killAsyncAgent(target, "user");
   });
 
+  // Replay live async + sync subagent snapshot whenever pidash reconnects so running sync
+  // children remain visible on /api/agents and /api/status without waiting for a new event.
+  pi.events.on("pidash:request-async-status", () => {
+    updateAsyncWidget();
+  });
+
   // ── pi-subagents RPC compatibility bridge ──────────────────────────────
   // Implements the subagents:rpc:* protocol so pitasks' TaskExecute
   // can spawn our agents. Protocol version 2 matches @tintinweb/pi-subagents.

@@ -256,7 +256,7 @@ function computeHostApprovalSignature(
     .digest("hex");
 }
 
-function verifyHostApprovalSignature(
+export function verifyHostApprovalSignature(
   key: Buffer,
   projectDbId: string,
   toolName: string,

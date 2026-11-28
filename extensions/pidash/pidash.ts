@@ -1153,6 +1153,14 @@ export function registerPidash(
         }
       }
 
+      // Replay live async + sync subagent status after reconnect so running sync children
+      // stay visible on pidash /api/agents even when no new status event fires.
+      const prevAsyncStatus = lastAsyncStatus;
+      try { pi.events.emit("pidash:request-async-status", {}); } catch {}
+      if (lastAsyncStatus && lastAsyncStatus === prevAsyncStatus) {
+        try { wsClient.send(JSON.stringify({ type: "async-status", ...lastAsyncStatus })); } catch {}
+      }
+
       if (ctx.hasUI) {
         const link = hyperlink("pi-dash", `http://localhost:${pidashPort}`);
         ctx.ui.setStatus("9-pidash", ctx.ui.theme.fg("accent", link));

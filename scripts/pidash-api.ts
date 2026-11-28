@@ -32,7 +32,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -72,13 +72,21 @@ import {
   type SettingBreakdown,
 } from "../extensions/orchestrator/settings-tui-helpers.ts";
 import { getMemoryTokenBudget } from "../extensions/orchestrator/situation-report.ts";
+import { canonicalTopicLine, parseTopicLine } from "../extensions/orchestrator/memory-line.ts";
+import { entryHash } from "../extensions/orchestrator/memory-scoring.ts";
 import { parsePromotionsMarkdown } from "../extensions/orchestrator/promotion-queue.ts";
 import type { ReviewState, ReviewSubject } from "../extensions/orchestrator/pi-config-review-state.ts";
 import {
   getApprovalHmacKeyPath,
   readApprovalHmacKey,
+  resolveProjectDbIdentity,
+  verifyApprovalSignature,
 } from "../extensions/orchestrator/restricted-folders.ts";
-import { isValidExactHostname, loadToolPermissionLayers } from "../extensions/orchestrator/tool-permissions.ts";
+import {
+  isValidExactHostname,
+  loadToolPermissionLayers,
+  verifyHostApprovalSignature,
+} from "../extensions/orchestrator/tool-permissions.ts";
 import { MAX_SNAPSHOT_STACK } from "../extensions/orchestrator/snapshots.ts";
 import { resolveWorktreeRoot } from "../extensions/orchestrator/utils.ts";
 import {
@@ -98,8 +106,7 @@ const BROKER_PING_TIMEOUT_MS = 150;
 const VERSION_CACHE_TTL_MS = 60_000;
 const VERSION_CMD_TIMEOUT_MS = 1_500;
 const DEFAULT_SIDECAR_PORT = 9100;
-const APPROVAL_HMAC_DOMAIN = "pi-config:restricted-folder-approval:v1";
-const HOST_APPROVAL_HMAC_DOMAIN = "pi-config:tool-host-approval:v1";
+const MEMORY_SCORING_STORE_KEY = "memory-scoring";
 
 export const PIDASH_API_ROUTES: ReadonlySet<string> = new Set([
   "/api/peers",
@@ -718,29 +725,24 @@ function readMemoryTopicsReadOnly(mainRoot: string): Array<{ name: string; entri
     return [];
   }
 
-  // Strictly read-only score lookup (never triggers legacy FNV->SHA migration or DB creation)
-  const scoreMap = new Map<string, number>();
+  // Strictly read-only score lookup against canonical `memory-scoring` store key
+  // (never triggers legacy FNV->SHA migration or DB creation).
+  let scoreEntries: Record<string, { score?: number }> = {};
   const dbPath = path.join(mainRoot, ".pi", "data", "state.db");
   try {
     const rawScores = withReadOnlySqlite(dbPath, (db) => {
       try {
         const row = db
           .prepare("SELECT payload FROM kv_state WHERE store_key = ?")
-          .get("memory-scores") as { payload?: string } | undefined;
+          .get(MEMORY_SCORING_STORE_KEY) as { payload?: string } | undefined;
         return row?.payload ? JSON.parse(row.payload) : null;
       } catch (err) {
         if (isMissingSqliteTableError(err)) return null;
         throw err;
       }
     });
-    const entries = rawScores?.entries && typeof rawScores.entries === "object" ? rawScores.entries : null;
-    if (entries) {
-      for (const val of Object.values(entries) as any[]) {
-        if (!val || typeof val !== "object") continue;
-        const topic = typeof val.topic === "string" ? val.topic : null;
-        const score = typeof val.stability === "number" ? val.stability : typeof val.score === "number" ? val.score : 0;
-        if (topic) scoreMap.set(topic, Math.max(scoreMap.get(topic) ?? 0, score));
-      }
+    if (rawScores?.entries && typeof rawScores.entries === "object") {
+      scoreEntries = rawScores.entries as Record<string, { score?: number }>;
     }
   } catch (err: any) {
     log.warn("memory_scores_read_failed", { dbPath, error: String(err?.message ?? err) });
@@ -754,18 +756,29 @@ function readMemoryTopicsReadOnly(mainRoot: string): Array<{ name: string; entri
       const content = fs.readFileSync(path.join(topicsDir, d.name), "utf8");
       const lines = content.split(/\r?\n/);
       let entries = 0;
+      let hotnessSum = 0;
       for (const line of lines) {
-        if (/^\s*-\s+\S/.test(line)) entries++;
+        const parsed = parseTopicLine(line);
+        if (parsed) {
+          entries++;
+          const hash = entryHash(canonicalTopicLine(parsed));
+          const scored = scoreEntries[hash];
+          if (scored && typeof scored.score === "number" && Number.isFinite(scored.score)) {
+            hotnessSum += scored.score;
+          }
+        } else if (/^\s*-\s+\S/.test(line)) {
+          entries++;
+        }
       }
       const tokens = Math.ceil(content.length / 4);
-      const hotness = Number((scoreMap.get(name) ?? 0).toFixed(3));
+      const hotness = Number(hotnessSum.toFixed(3));
       topics.push({ name, entries, tokens, hotness });
     } catch (err: any) {
       log.warn("memory_topic_read_failed", { file: d.name, error: String(err?.message ?? err) });
     }
   }
 
-  return topics.sort((a, b) => a.name.localeCompare(b.name));
+  return topics.sort((a, b) => b.hotness - a.hotness || a.name.localeCompare(b.name));
 }
 
 export function collectMemory(cwd: string) {
@@ -854,45 +867,88 @@ function normalizeReviewSubjectReadOnly(raw: any): ReviewSubject | null {
   }
 }
 
+function parseLastValidJsonObject(rawText: string): Record<string, unknown> | null {
+  const trimmed = rawText.trim();
+  if (!trimmed) return null;
+  // Support pretty-printed single JSON objects (matching state-jsonl.ts canonical reader)
+  try {
+    const whole = JSON.parse(trimmed);
+    if (whole && typeof whole === "object" && !Array.isArray(whole)) {
+      return whole as Record<string, unknown>;
+    }
+  } catch {
+    /* fall through to line-by-line JSONL scan */
+  }
+  const lines = trimmed.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]?.trim();
+    if (!line) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* skip malformed line */
+    }
+  }
+  return null;
+}
+
+type ReviewStateReadResult =
+  | { ok: true; state: Partial<ReviewState> | null }
+  | { ok: false; error: string };
+
 /** Strictly read-only review-state reader — never creates dirs/DBs, migrates, or writes markers. */
-function readReviewStateReadOnly(cwd: string): Partial<ReviewState> | null {
+function readReviewStateReadOnly(cwd: string): ReviewStateReadResult {
   const wtRoot = resolveWorktreeRoot(cwd);
   const dataDir = path.join(wtRoot, ".pi", "data");
   const dbPath = path.join(dataDir, "state.db");
 
-  let raw: any = null;
-  try {
-    raw = withReadOnlySqlite(dbPath, (db) => {
-      try {
-        const row = db
-          .prepare("SELECT payload FROM kv_state WHERE store_key = ?")
-          .get("pi-config-review-state") as { payload?: string } | undefined;
-        return row?.payload ? JSON.parse(row.payload) : null;
-      } catch (err) {
-        if (isMissingSqliteTableError(err)) return null;
-        throw err;
-      }
-    });
-  } catch (err: any) {
-    log.warn("review_state_sqlite_read_failed", { dbPath, error: String(err?.message ?? err) });
+  let sqliteOutcome: { kind: "found"; raw: Record<string, unknown> } | { kind: "absent" } | { kind: "error"; error: string } = {
+    kind: "absent",
+  };
+
+  if (fs.existsSync(dbPath)) {
+    try {
+      const result = withReadOnlySqlite(dbPath, (db) => {
+        try {
+          const row = db
+            .prepare("SELECT payload FROM kv_state WHERE store_key = ?")
+            .get("pi-config-review-state") as { payload?: unknown } | undefined;
+          if (!row) return { kind: "absent" as const };
+          if (typeof row.payload !== "string") {
+            return { kind: "error" as const, error: "review state SQLite payload is not a string" };
+          }
+          const parsed = JSON.parse(row.payload);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            return { kind: "error" as const, error: "review state SQLite payload is not a JSON object" };
+          }
+          return { kind: "found" as const, raw: parsed as Record<string, unknown> };
+        } catch (err: any) {
+          if (isMissingSqliteTableError(err)) return { kind: "absent" as const };
+          return { kind: "error" as const, error: String(err?.message ?? err) };
+        }
+      });
+      if (result) sqliteOutcome = result;
+    } catch (err: any) {
+      sqliteOutcome = { kind: "error", error: String(err?.message ?? err) };
+    }
   }
+
+  if (sqliteOutcome.kind === "error") {
+    // Authoritative DB row/file is corrupt or unreadable — NEVER silently fall back to stale legacy files.
+    log.warn("review_state_sqlite_read_failed", { dbPath, error: sqliteOutcome.error });
+    return { ok: false, error: sqliteOutcome.error };
+  }
+
+  let raw: Record<string, unknown> | null = sqliteOutcome.kind === "found" ? sqliteOutcome.raw : null;
 
   if (!raw) {
     const jsonlPath = path.join(dataDir, "pi-config-review-state.jsonl");
     if (fs.existsSync(jsonlPath)) {
       try {
-        const lines = fs.readFileSync(jsonlPath, "utf8").split(/\r?\n/).filter((l) => l.trim());
-        for (let i = lines.length - 1; i >= 0; i--) {
-          try {
-            const parsed = JSON.parse(lines[i]!);
-            if (parsed && typeof parsed === "object") {
-              raw = parsed;
-              break;
-            }
-          } catch {
-            /* skip malformed line */
-          }
-        }
+        raw = parseLastValidJsonObject(fs.readFileSync(jsonlPath, "utf8"));
       } catch (err: any) {
         log.warn("review_state_jsonl_read_failed", { jsonlPath, error: String(err?.message ?? err) });
       }
@@ -904,33 +960,57 @@ function readReviewStateReadOnly(cwd: string): Partial<ReviewState> | null {
     if (fs.existsSync(legacyJsonPath)) {
       try {
         const parsed = JSON.parse(fs.readFileSync(legacyJsonPath, "utf8"));
-        if (parsed && typeof parsed === "object") raw = parsed;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          raw = parsed as Record<string, unknown>;
+        }
       } catch (err: any) {
         log.warn("review_state_json_read_failed", { legacyJsonPath, error: String(err?.message ?? err) });
       }
     }
   }
 
-  if (!raw || typeof raw !== "object") return null;
+  if (!raw) return { ok: true, state: null };
 
   const validStatuses = new Set<ReviewState["status"]>(["none", "needs_review", "in_progress", "has_findings", "clean"]);
-  const status: ReviewState["status"] = validStatuses.has(raw.status) ? raw.status : "none";
+  const status: ReviewState["status"] = validStatuses.has(raw.status as ReviewState["status"])
+    ? (raw.status as ReviewState["status"])
+    : "none";
   return {
-    status,
-    cycle: Number.isInteger(raw.cycle) && raw.cycle >= 0 ? raw.cycle : 0,
-    subject: normalizeReviewSubjectReadOnly(raw.subject),
-    findings_count: Number.isInteger(raw.findings_count) && raw.findings_count >= 0 ? raw.findings_count : 0,
-    reviewers_pending: Array.isArray(raw.reviewers_pending)
-      ? raw.reviewers_pending.filter((r: unknown): r is string => typeof r === "string")
-      : [],
-    tests_passed: raw.tests_passed === true,
-    last_clean_at: typeof raw.last_clean_at === "string" ? raw.last_clean_at : null,
+    ok: true,
+    state: {
+      status,
+      cycle: Number.isInteger(raw.cycle) && (raw.cycle as number) >= 0 ? (raw.cycle as number) : 0,
+      subject: normalizeReviewSubjectReadOnly(raw.subject),
+      findings_count:
+        Number.isInteger(raw.findings_count) && (raw.findings_count as number) >= 0 ? (raw.findings_count as number) : 0,
+      reviewers_pending: Array.isArray(raw.reviewers_pending)
+        ? raw.reviewers_pending.filter((r: unknown): r is string => typeof r === "string")
+        : [],
+      tests_passed: raw.tests_passed === true,
+      last_clean_at: typeof raw.last_clean_at === "string" ? raw.last_clean_at : null,
+    },
   };
 }
 
 export function collectReview(cwd: string) {
   const enabled = Boolean(getSetting(cwd, "review_loop_enforcement"));
-  const state = readReviewStateReadOnly(cwd);
+  const readResult = readReviewStateReadOnly(cwd);
+  if (!readResult.ok) {
+    return {
+      cwd,
+      enabled,
+      status: "unavailable" as const,
+      rawStatus: "unavailable" as const,
+      error: readResult.error,
+      lastReviewedSha: null,
+      cycle: 0,
+      findingsCount: 0,
+      reviewersPending: [] as string[],
+      testsPassed: false,
+      lastCleanAt: null,
+    };
+  }
+  const state = readResult.state;
   const rawStatus: ReviewState["status"] = state?.status ?? "none";
   const lastReviewedSha =
     state?.subject && "head_sha" in state.subject && typeof state.subject.head_sha === "string"
@@ -1251,25 +1331,16 @@ export async function collectDaemons(deps: PidashApiDeps, cwd: string) {
   };
 }
 
-function verifyHexHmac(key: Buffer, payload: string, signature: string): boolean {
-  if (!signature || !/^[0-9a-f]{64}$/i.test(signature)) return false;
-  const expected = createHmac("sha256", key).update(payload).digest("hex");
-  try {
-    return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
-  } catch {
-    return false;
-  }
-}
-
 /** Count HMAC-verified persistent folder and host approvals using a strictly read-only SQLite handle. */
 function countApprovalsReadOnly(
+  cwd: string,
   projectDbPath: string,
   homeDir: string,
 ): { folderApprovals: number; hostGrants: number } {
   if (!fs.existsSync(projectDbPath)) return { folderApprovals: 0, hostGrants: 0 };
 
   const key = readApprovalHmacKey(getApprovalHmacKeyPath(homeDir));
-  const projectDbId = tryRealPath(projectDbPath);
+  const projectDbId = resolveProjectDbIdentity(projectDbPath, cwd, homeDir);
   let folderApprovals = 0;
   let hostGrants = 0;
 
@@ -1287,10 +1358,10 @@ function countApprovalsReadOnly(
             (row.scope === "file" || row.scope === "directory") &&
             typeof row.target_path === "string" &&
             typeof row.restricted_root === "string" &&
-            typeof row.signature === "string"
+            typeof row.signature === "string" &&
+            verifyApprovalSignature(key, projectDbId, row.scope, row.target_path, row.restricted_root, row.signature)
           ) {
-            const payload = `${APPROVAL_HMAC_DOMAIN}\0${projectDbId}\0${row.scope}\0${row.target_path}\0${row.restricted_root}`;
-            if (verifyHexHmac(key, payload, row.signature)) folderApprovals++;
+            folderApprovals++;
           }
         }
       }
@@ -1310,10 +1381,10 @@ function countApprovalsReadOnly(
             typeof row.tool_name === "string" &&
             typeof row.hostname === "string" &&
             typeof row.signature === "string" &&
-            isValidExactHostname(row.hostname)
+            isValidExactHostname(row.hostname) &&
+            verifyHostApprovalSignature(key, projectDbId, row.tool_name, row.hostname, row.signature)
           ) {
-            const payload = `${HOST_APPROVAL_HMAC_DOMAIN}\0${projectDbId}\0${row.tool_name}\0${row.hostname}`;
-            if (verifyHexHmac(key, payload, row.signature)) hostGrants++;
+            hostGrants++;
           }
         }
       }
@@ -1350,7 +1421,7 @@ export function collectSecurity(deps: PidashApiDeps, cwd: string) {
       if (typeof entry === "string" && entry.trim()) restrictedFolderSet.add(entry.trim());
     }
   }
-  const { folderApprovals, hostGrants } = countApprovalsReadOnly(projectDbPath, homeDir);
+  const { folderApprovals, hostGrants } = countApprovalsReadOnly(cwd, projectDbPath, homeDir);
 
   const layers = loadToolPermissionLayers(cwd);
   let toolRuleCount = 0;
