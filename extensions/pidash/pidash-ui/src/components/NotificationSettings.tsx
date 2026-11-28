@@ -30,7 +30,7 @@ export function NotificationSettings({ permission, supported, preferences, setPr
       <Popover>
         <PopoverTrigger className={cn(
           "cursor-pointer flex items-center gap-1 text-xs transition-colors",
-          active ? "text-primary hover:text-primary/80" : "text-muted-foreground/50 hover:text-muted-foreground"
+          active ? "text-primary hover:text-primary/80" : "text-muted-foreground/75 hover:text-muted-foreground"
         )}>
           {active ? <Bell className="h-3.5 w-3.5" /> : <BellOff className="h-3.5 w-3.5" />}
         </PopoverTrigger>

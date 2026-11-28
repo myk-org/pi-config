@@ -35,24 +35,24 @@
 
 /* Match pidash dark theme exactly */
 :root {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
+    --background: #010409;
+    --foreground: #ffffff;
+    --card: #0d1117;
+    --card-foreground: #ffffff;
+    --popover: #161b22;
+    --popover-foreground: #ffffff;
+    --primary: #ffffff;
+    --primary-foreground: #0d1117;
+    --secondary: #161b22;
+    --secondary-foreground: #e8ecf1;
+    --muted: #161b22;
+    --muted-foreground: #c3cbd4;
+    --accent: #1c2128;
+    --accent-foreground: #ffffff;
     --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
+    --border: #30363d;
+    --input: #30363d;
+    --ring: #388bfd;
     --radius: 0.625rem;
 }
 
@@ -71,9 +71,9 @@
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: oklch(0.4 0 0); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: oklch(0.5 0 0); }
-* { scrollbar-width: thin; scrollbar-color: oklch(0.4 0 0) transparent; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #656d76; }
+* { scrollbar-width: thin; scrollbar-color: #30363d transparent; }
 
 html, body, #root { height: 100dvh; height: 100vh; }
 @supports (height: 100dvh) { html, body, #root { height: 100dvh; } }
