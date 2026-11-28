@@ -1,7 +1,7 @@
 /** #968 C/G pure projections — coms peers payload + settings editor parsing. */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildComsPeersPayload } from "../../../extensions/coms/coms-shared.ts";
+import { buildComsPeersPayload, buildPidashComsPeersPayload } from "../../../extensions/coms/coms-shared.ts";
 import { parseTypedSetting, displaySettingValue } from "../../../extensions/pidash/pidash-ui/src/lib/settings-edit.ts";
 
 describe("buildComsPeersPayload", () => {
@@ -26,6 +26,74 @@ describe("buildComsPeersPayload", () => {
     const payload = buildComsPeersPayload([], null);
     assert.equal(payload.self, null);
     assert.equal(payload.peers.length, 0);
+  });
+});
+
+describe("buildPidashComsPeersPayload", () => {
+  const sampleFixture = () => ({
+    rows: [
+      {
+        project: "pi-config",
+        name: "feature-manager",
+        cwd: "/repo",
+        purpose: "coord",
+        model: "gemini-4-neon",
+        endpoint: "/tmp/self.sock",
+        busy: false,
+        queueDepth: 0,
+        contextUsedPct: 10,
+      },
+      {
+        project: "pi-config",
+        name: "peer-1481",
+        cwd: "/repo/.worktrees/1481",
+        purpose: "parity",
+        model: "gemini-4-neon",
+        endpoint: "/tmp/p1.sock",
+        busy: true,
+        queueDepth: 2,
+        contextUsedPct: 45,
+      },
+      {
+        project: "other-proj",
+        name: "observer",
+        cwd: "/other",
+        purpose: "watch",
+        model: "claude",
+        endpoint: "/tmp/p2.sock",
+        busy: false,
+        queueDepth: 0,
+        contextUsedPct: 5,
+      },
+    ],
+    cards: [],
+    supervisedKeys: new Set(["pi-config::peer-1481"]),
+    self: { name: "feature-manager", project: "pi-config", endpoint: "/tmp/self.sock" },
+    scope: "all" as const,
+    ownProject: "pi-config",
+  });
+
+  it("marks only supervised peers as supervised", () => {
+    const payload = buildPidashComsPeersPayload(sampleFixture());
+    const other = payload.peers.find((p) => p.name === "observer");
+    const sup = payload.peers.find((p) => p.name === "peer-1481");
+    assert.equal(other?.supervised, false);
+    assert.equal(sup?.supervised, true);
+  });
+
+  it("excludes self from projected peer rows", () => {
+    const payload = buildPidashComsPeersPayload(sampleFixture());
+    assert.equal(payload.peers.length, 2);
+    assert.equal(payload.peers.some((p) => p.name === "feature-manager"), false);
+  });
+
+  it("preserves project metadata on projected peer rows", () => {
+    const payload = buildPidashComsPeersPayload(sampleFixture());
+    const other = payload.peers.find((p) => p.name === "observer");
+    const sup = payload.peers.find((p) => p.name === "peer-1481");
+    assert.equal(payload.scope, "all");
+    assert.equal(other?.project, "other-proj");
+    assert.equal(sup?.cwd, "/repo/.worktrees/1481");
   });
 });
 

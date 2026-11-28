@@ -158,7 +158,7 @@ export function SidePanel({ session, activeTab, onTabChange, onClose, send, onMe
           />
         )}
         {activeTab === "coms" && <ComsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} sessions={sessions} onWatch={onWatch} />}
-        {activeTab === "memory" && <MemoryPanel sendCmd={sendCmd} onMessage={onMessage} />}
+        {activeTab === "memory" && <MemoryPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
         {activeTab === "mcp" && <McpPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} />}
         {activeTab === "settings" && <SettingsPanel sendCmd={sendCmd} onMessage={onMessage} notify={notify} cwd={session.cwd} />}
       </div>
