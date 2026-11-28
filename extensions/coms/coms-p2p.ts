@@ -174,6 +174,8 @@ export interface LocalQueueItem {
 export interface ComsPeerRuntime {
 	start(ctx: ExtensionContext, options?: ComsPeerStartOptions): Promise<ComsPeerSelf | null>;
 	stop(options?: ComsPeerStopOptions): Promise<void>;
+	/** #1488: run `cleanShutdown()` + Pi 1.7.0 `ctx.shutdown()` on a supervised RPC peer (idempotent). */
+	requestGracefulRpcShutdown(reason?: string): Promise<boolean>;
 	getSelf(): ComsPeerSelf | null;
 	isActive(): boolean;
 	sendAsUser(params: ComsUserSendParams): Promise<ComsUserSendResult>;
@@ -187,7 +189,7 @@ export interface ComsPeerRuntime {
 
 // ━━ Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-type EnvelopeType = "prompt" | "response" | "ping" | "task_update" | "queue_manage" | "task_manage" | "presence" | "progress" | "describe";
+type EnvelopeType = "prompt" | "response" | "ping" | "task_update" | "queue_manage" | "task_manage" | "presence" | "progress" | "describe" | "shutdown";
 
 interface Envelope {
 	type: EnvelopeType;
@@ -303,6 +305,12 @@ interface Pong {
 /** #1083: `/coms list` drilldown request. The reply is `{ type: "describe_reply", detail }`. */
 interface DescribeEnvelope extends Envelope {
 	type: "describe";
+}
+
+/** #1488: graceful in-process RPC peer shutdown request (`cleanShutdown()` + Pi 1.7.0 `ctx.shutdown()`). */
+interface ShutdownEnvelope extends Envelope {
+	type: "shutdown";
+	reason?: string;
 }
 
 interface PendingReply {
@@ -942,6 +950,20 @@ function isHeadlessOrSupervisedPeer(peerCtx?: ExtensionContext | null): boolean 
 	return false;
 }
 
+/** True only for supervised headless COMS RPC peers eligible for in-process `ctx.shutdown()` (#1488). */
+export function isSupervisedRpcShutdownCtx(
+	ctx: unknown,
+	env: NodeJS.ProcessEnv = process.env,
+): ctx is { mode: "rpc"; shutdown: () => void; isIdle?: () => boolean } {
+	return (
+		env.PI_COMS_SUPERVISED_PEER === "1" &&
+		Boolean(ctx) &&
+		typeof ctx === "object" &&
+		(ctx as { mode?: unknown }).mode === "rpc" &&
+		typeof (ctx as { shutdown?: unknown }).shutdown === "function"
+	);
+}
+
 // ━━ Compact TUI Message Renderers (#1454) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export function renderComsPeerJoinedMessage(
@@ -1128,6 +1150,7 @@ export function createComsPeerRuntime(
 		return {
 			start: async () => null,
 			stop: async () => {},
+			requestGracefulRpcShutdown: async () => false,
 			getSelf: () => null,
 			isActive: () => false,
 			sendAsUser: async () => ({ ok: false, message: "coms is disabled in subagent child sessions." }),
@@ -2343,6 +2366,8 @@ export function createComsPeerRuntime(
 					void handlePing(socket, parsed as PingEnvelope).catch(() => nack(socket, parsed.msg_id, "internal error"));
 				} else if (parsed.type === "describe") {
 					handleDescribe(socket, parsed as DescribeEnvelope);
+				} else if (parsed.type === "shutdown") {
+					handleShutdown(socket, parsed as ShutdownEnvelope);
 				} else if (parsed.type === "task_update") {
 					handleTaskUpdate(socket, parsed as TaskUpdateEnvelope);
 				} else if (parsed.type === "queue_manage") {
@@ -2750,6 +2775,7 @@ export function createComsPeerRuntime(
 		sessionGeneration++;
 		const startGen = sessionGeneration;
 		shuttingDown = false;
+		rpcShutdownPromise = null;
 		finalizingInbound = false;
 		agentRunning = false;
 		beforeAgentStartPending = false;
@@ -5636,7 +5662,135 @@ Do not respond to this message.`;
 	// ━━ Clean shutdown ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let shuttingDown = false;
 	let shutdownPromise: Promise<void> | null = null;
+	let rpcShutdownPromise: Promise<boolean> | null = null;
 	let nonReloadStopReason: string | null = null;
+
+	/** Best-effort persist own piSessionId to our native supervisor record so `/coms` `r` revive can resume after graceful self-exit. */
+	function persistOwnSessionForRevive(ident: typeof identity): void {
+		if (process.env.PI_COMS_SUPERVISED_PEER !== "1" || !ident?.pi_session_id) return;
+		const statePath = path.join(registry.peersDir(), `${ident.name}@${ident.project}.json`);
+		if (!fs.existsSync(statePath)) return;
+		try {
+			const parsed = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.childPid === process.pid) {
+				parsed.piSessionId = ident.pi_session_id;
+				fs.writeFileSync(statePath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
+				log.debug("rpc_shutdown_session_persisted", { name: ident.name, project: ident.project });
+			}
+		} catch (err) {
+			log.debug("rpc_shutdown_session_persist_failed", {
+				statePath,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	/** Flush a shutdown ack line before `cleanShutdown()` closes the listening server. */
+	function flushShutdownAck(socket: net.Socket, payload: Record<string, unknown>): Promise<void> {
+		// Detach from `connections` so `cleanShutdown()` will not `destroy()` this socket
+		// before the client drains the ack bytes from the Unix socket buffer.
+		connections.delete(socket);
+		return new Promise((resolve) => {
+			let done = false;
+			const finish = () => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				socket.unref?.();
+				resolve();
+			};
+			const timer = setTimeout(finish, 150);
+			timer.unref?.();
+			try {
+				socket.end(`${JSON.stringify(payload)}\n`, finish);
+			} catch {
+				finish();
+			}
+		});
+	}
+
+	async function runGracefulRpcShutdown(
+		shutdownCtx: { mode: "rpc"; shutdown: () => void; isIdle?: () => boolean },
+		reason: string,
+		beforeCleanup?: () => Promise<void>,
+	): Promise<boolean> {
+		const busy = isAgentBusy();
+		const identSnapshot = identity;
+		log.info("rpc_shutdown_requested", {
+			name: identSnapshot?.name ?? null,
+			project: identSnapshot?.project ?? null,
+			reason,
+			busy,
+		});
+		if (beforeCleanup) {
+			try { await beforeCleanup(); } catch { /* best-effort */ }
+		}
+		persistOwnSessionForRevive(identSnapshot);
+		try {
+			await cleanShutdown({ reason });
+		} catch (err) {
+			log.warn("rpc_shutdown_cleanup_failed", {
+				reason,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		} finally {
+			try {
+				shutdownCtx.shutdown();
+				log.info("rpc_shutdown_invoked", { reason, busy });
+			} catch (err) {
+				log.warn("rpc_shutdown_ctx_failed", {
+					reason,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+		return true;
+	}
+
+	function requestGracefulRpcShutdown(reason = "rpc_shutdown"): Promise<boolean> {
+		if (rpcShutdownPromise) {
+			log.debug("rpc_shutdown_deduped", { reason });
+			return rpcShutdownPromise;
+		}
+		const shutdownCtx = currentCtx;
+		if (!isSupervisedRpcShutdownCtx(shutdownCtx)) {
+			log.warn("rpc_shutdown_unsupported", {
+				reason,
+				supervised: process.env.PI_COMS_SUPERVISED_PEER === "1",
+				mode: shutdownCtx?.mode ?? null,
+				hasShutdown: typeof shutdownCtx?.shutdown === "function",
+			});
+			return Promise.resolve(false);
+		}
+		rpcShutdownPromise = runGracefulRpcShutdown(shutdownCtx, reason);
+		return rpcShutdownPromise;
+	}
+
+	function handleShutdown(socket: net.Socket, env: ShutdownEnvelope): void {
+		const shutdownCtx = currentCtx;
+		if (!isSupervisedRpcShutdownCtx(shutdownCtx)) {
+			log.warn("shutdown_envelope_rejected", {
+				msgId: env.msg_id,
+				supervised: process.env.PI_COMS_SUPERVISED_PEER === "1",
+				mode: shutdownCtx?.mode ?? null,
+			});
+			nack(socket, env.msg_id, "shutdown only supported on supervised rpc peers");
+			return;
+		}
+		const busy = isAgentBusy();
+		if (rpcShutdownPromise !== null || shuttingDown) {
+			log.debug("shutdown_envelope_duplicate", { msgId: env.msg_id, busy });
+			try {
+				socket.end(`${JSON.stringify({ type: "ack", msg_id: env.msg_id, busy, already_shutting_down: true })}\n`);
+			} catch { /* ignore */ }
+			return;
+		}
+		const reason = typeof env.reason === "string" && env.reason.trim() ? env.reason.trim() : "rpc_shutdown";
+		// Claim synchronously before awaiting socket flush so concurrent requests deduplicate cleanly.
+		rpcShutdownPromise = runGracefulRpcShutdown(shutdownCtx, reason, () =>
+			flushShutdownAck(socket, { type: "ack", msg_id: env.msg_id, busy }),
+		);
+	}
 	async function stopPingWorker(worker: Worker): Promise<void> {
 		let timeout: NodeJS.Timeout | undefined;
 		const exited = new Promise<boolean>((resolve) => worker.once("exit", () => resolve(true)));
@@ -5955,6 +6109,7 @@ Do not respond to this message.`;
 	return {
 		start: startPeer,
 		stop: cleanShutdown,
+		requestGracefulRpcShutdown,
 		getSelf,
 		isActive: () => identity !== null,
 		sendAsUser,
