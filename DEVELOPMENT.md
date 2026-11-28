@@ -59,17 +59,15 @@ npm run typecheck:tests
 Additional workspace test suites, `withSubagentChildEnv` hygiene, `npm pack` packaging rules, published-install
 invariants, and local `pi-docsite` preview instructions live in `contributing/testing-and-packaging.md`.
 
-## Debugging a Running Container
+## Debugging a Sandboxed COMS Peer Container
 
-Container names include the project directory: `pi-config-<project>-<timestamp>`.
-
-Requires [`fzf`](https://github.com/junegunn/fzf) on the host. Add to your `~/.bashrc` or `~/.zshrc`:
+When supervised COMS peers run with `coms_peer_sandbox: "podman"` (`sandbox: "podman"`), container names follow
+`pi-peer-<project>-<cname>-<hash8>` (shown by `coms_peers` and `/coms`). Open an interactive shell inside a running peer
+container with:
 
 ```bash
-alias pi-docker-exec='docker exec -it $(docker ps --filter name=pi-config --format "{{.Names}}" | fzf --height 40% --reverse --prompt "Select container: ") bash'
+podman exec -it <container> bash
 ```
-
-This lists all running pi-config containers via `fzf` — select one and it drops you into a bash shell.
 
 Useful debug commands inside the container:
 
