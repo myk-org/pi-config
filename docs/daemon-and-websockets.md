@@ -59,7 +59,7 @@ In addition to `GET /api/health` and `GET /api/sessions`, `pidash` exposes 15 re
 
 | Endpoint | Query parameters | Summary |
 |----------|------------------|---------|
-| `GET /api/peers` | `project=<slug\|*>` | Live COMS peer counts (`total`, `busy`, `idle`) and per-peer metadata (`name`, `project`, `busy`, `contextUsedPct`, `queueDepth`, `workload`, `cwd`, `model`, `purpose`, `pid`, `container`, `alive`, `startedAt`, `heartbeatAt`) |
+| `GET /api/peers` | `project=<slug\|*>`, `format=array` | Live COMS peer counts (`total`, `busy`, `idle`) and per-peer metadata (`name`, `project`, `busy`, `contextUsedPct`, `queueDepth`, `workload`, `cwd`, `model`, `purpose`, `pid`, `hostPid`, `container`, `alive`, `startedAt`, `heartbeatAt`). Pass `format=array` for the legacy bare-array shape. |
 | `GET /api/worktrees` | `cwd=<repo>` | Git worktree count, `ghostDirCount`, and per-worktree branch/head/dirty/changedFiles/main/active COMS peers |
 | `GET /api/tasks` | `cwd=<repo>`, `session=<id>`, `assignee=<user\|llm\|all>` | Open/pending/in-progress/completed/`userPending` (`[you]`) task counts and summary rows |
 | `GET /api/agents` | `session=<id>` | Live running async/sync subagents tracked on `/ws/async` (`id`, `name`, `agent`, `mode`, `status`, `elapsedMs`, `currentTool`, `cwd`, `taskId`) |
@@ -78,10 +78,10 @@ In addition to `GET /api/health` and `GET /api/sessions`, `pidash` exposes 15 re
 
 **Security guarantees:**
 
-- Requests from non-loopback addresses receive HTTP `403` (the daemon binds to `0.0.0.0` for browser UI access, but the `/api/*` state surface is strictly `127.0.0.1` / `::1` only).
-- Non-`GET` methods receive HTTP `405` (`Allow: GET`).
+- Requests from non-loopback addresses, non-loopback `Host` headers (DNS rebinding), or non-loopback `Origin` headers receive HTTP `403` (the daemon binds to `0.0.0.0` for browser UI access, but the `/api/*` state surface is strictly `127.0.0.1` / `localhost` / `::1` only).
+- Non-`GET` methods (including `OPTIONS`) receive HTTP `405` (`Allow: GET`).
 - Responses set `Cache-Control: no-store` and restrict CORS `Access-Control-Allow-Origin` to loopback origins only.
-- Raw `auth.json`, HMAC keys, `secrets.jsonc`, private transcripts/tool outputs, raw cron prompts, and any LSP/LLM/MCP/network side effects are excluded.
+- Strictly read-only: SQLite databases are opened with `{ readOnly: true }`, missing `.pi/` state directories are never created, legacy files are never migrated, and raw `auth.json`, HMAC keys, `secrets.jsonc`, private transcripts/tool outputs, raw cron prompts, and any LSP/LLM/MCP/network side effects are excluded.
 
 Side-panel parity commands (`tasks-list`, `worktrees-list`, `worktrees-detail`, `worktrees-prune`, `worktrees-remove`, `coms-peers`, `memory-status`, `mcp-list`, `settings-get`/`settings-set`) route through `pidash-command` frames to the watched session. Worktree operations in `extensions/pidash/browser-ops.ts` reuse `extensions/orchestrator/worktree.ts` and `worktree-helpers.ts` directly (single source of truth for dirty counts, active COMS peer detection, open GitHub PR links, `git status --short` details, `git worktree prune -v`, and server-side guarded removal). The daemon verifies watched-session targeting for worktree commands, restricts destructive worktree mutations (`worktrees-prune`, `worktrees-remove`) to loopback clients, and fans out minimal repository-scoped `worktrees-changed` invalidation notices (including from TUI `orchestrator:worktrees-changed`) so browsers watching the same repository refetch their own view without broadcasting paths or metadata across projects.
 

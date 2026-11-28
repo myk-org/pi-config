@@ -1,9 +1,10 @@
 /**
  * Loopback-only read-only HTTP JSON API surface for PiDash (`/api/*`).
  *
- * Exposes 15 authoritative read-only endpoints for external scripts, status bars,
- * and dashboards without requiring them to scrape internal `.pi/` files:
- *   1.  GET /api/peers?project=<slug|*>
+ * Exposes 15 authoritative read-only endpoints (plus preserved `/api/podman-build-status`)
+ * for external scripts, status bars, and dashboards without requiring them to scrape
+ * internal `.pi/` files:
+ *   1.  GET /api/peers?project=<slug|*>&format=array
  *   2.  GET /api/worktrees?cwd=<repo>
  *   3.  GET /api/tasks?cwd=<repo>&session=<id>&assignee=<user|llm|all>
  *   4.  GET /api/agents?session=<id>
@@ -12,29 +13,32 @@
  *   7.  GET /api/settings?cwd=<repo>&category=<cat>&only_overrides=true
  *   8.  GET /api/memory?cwd=<repo>
  *   9.  GET /api/review?cwd=<repo>
- *   10. GET /api/trail?cwd=<repo>
+ *   10. GET /api/trail?cwd=<repo>&session=<id>
  *   11. GET /api/skills?cwd=<repo>
  *   12. GET /api/daemons?cwd=<repo>
  *   13. GET /api/security?cwd=<repo>
  *   14. GET /api/version
  *   15. GET /api/status?cwd=<repo>&project=<slug|*>
+ *   +   GET /api/podman-build-status
  *
  * Security & runtime invariants:
- * - Strictly loopback-only (`isLoopbackAddress`, HTTP 403 for LAN/remote callers).
- * - Strictly GET-only (HTTP 405 with `Allow: GET` for non-GET methods).
- * - Strictly read-only: zero LSP spawning, zero LLM/MCP/external network calls,
- *   zero directory/DB creation on missing `.pi/` state, zero secrets or private
- *   tool/prompt outputs leaked.
+ * - Strictly loopback-only (`isLoopbackAddress`, valid loopback `Host` header to prevent
+ *   DNS rebinding, and loopback-only `Origin` header when present — HTTP 403 otherwise).
+ * - Strictly GET-only (HTTP 405 with `Allow: GET` for non-GET methods, including OPTIONS).
+ * - Strictly read-only: SQLite databases opened with `{ readOnly: true }`, zero LSP
+ *   spawning, zero LLM/MCP/external network calls, zero directory/DB/marker creation or
+ *   legacy migration on missing `.pi/` state, zero secrets or private tool/prompt outputs.
  * - Standalone daemon safe: zero runtime imports from `@earendil-works/*` or `typebox`.
  */
 
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 import { createLogger } from "../extensions/shared/logger.ts";
@@ -67,12 +71,14 @@ import {
   sanitizeSettingValueForModel,
   type SettingBreakdown,
 } from "../extensions/orchestrator/settings-tui-helpers.ts";
-import { listTopics } from "../extensions/orchestrator/memory-tree.ts";
 import { getMemoryTokenBudget } from "../extensions/orchestrator/situation-report.ts";
-import { listProposedPromotions } from "../extensions/orchestrator/promotion-queue.ts";
-import { readReviewState, type ReviewState } from "../extensions/orchestrator/pi-config-review-state.ts";
-import { listPersistentApprovals, loadRestrictedFolders } from "../extensions/orchestrator/restricted-folders.ts";
-import { listPersistentHostApprovals, loadToolPermissionLayers } from "../extensions/orchestrator/tool-permissions.ts";
+import { parsePromotionsMarkdown } from "../extensions/orchestrator/promotion-queue.ts";
+import type { ReviewState, ReviewSubject } from "../extensions/orchestrator/pi-config-review-state.ts";
+import {
+  getApprovalHmacKeyPath,
+  readApprovalHmacKey,
+} from "../extensions/orchestrator/restricted-folders.ts";
+import { isValidExactHostname, loadToolPermissionLayers } from "../extensions/orchestrator/tool-permissions.ts";
 import { MAX_SNAPSHOT_STACK } from "../extensions/orchestrator/snapshots.ts";
 import { resolveWorktreeRoot } from "../extensions/orchestrator/utils.ts";
 import {
@@ -83,7 +89,8 @@ import {
 
 const log = createLogger("pidash-api");
 
-const LOOPBACK_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+const LOOPBACK_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+const LOOPBACK_HOST_RE = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i;
 const SKILL_MAINTENANCE_MARKER_RE = /^\s*skill-maintenance\s*:\s*auto(?:\s+#.*|\s*)$/;
 const TRAIL_STALE_SKEW_MS = 5_000;
 const HEALTH_PROBE_TIMEOUT_MS = 300;
@@ -91,6 +98,8 @@ const BROKER_PING_TIMEOUT_MS = 150;
 const VERSION_CACHE_TTL_MS = 60_000;
 const VERSION_CMD_TIMEOUT_MS = 1_500;
 const DEFAULT_SIDECAR_PORT = 9100;
+const APPROVAL_HMAC_DOMAIN = "pi-config:restricted-folder-approval:v1";
+const HOST_APPROVAL_HMAC_DOMAIN = "pi-config:tool-host-approval:v1";
 
 export const PIDASH_API_ROUTES: ReadonlySet<string> = new Set([
   "/api/peers",
@@ -116,6 +125,7 @@ export interface PidashApiDeps {
   getPiClients: () => Map<string, PiClient>;
   getBrowserCount: () => number;
   getAsyncAgents: () => Iterable<ActiveAsyncAgentInfo>;
+  getSyncAgents?: () => Iterable<ActiveAsyncAgentInfo>;
   getStartupError?: () => string | null;
   defaultCwd?: string;
   comsDir?: string;
@@ -123,6 +133,7 @@ export interface PidashApiDeps {
   homeDir?: string;
   packageRoot?: string;
   sidecarPort?: number;
+  env?: NodeJS.ProcessEnv;
   now?: () => number;
   probeLocalHttp?: (port: number, urlPath: string, timeoutMs: number) => Promise<{ ok: boolean; status: number; body: any } | null>;
   pingLspBroker?: (socketPath: string, timeoutMs: number) => Promise<any | null>;
@@ -142,6 +153,13 @@ function tryRealPath(target: string): string {
   } catch {
     return path.resolve(target);
   }
+}
+
+export function isLoopbackHostHeader(host: string | undefined): boolean {
+  if (typeof host !== "string") return false;
+  const trimmed = host.trim();
+  if (!trimmed) return false;
+  return LOOPBACK_HOST_RE.test(trimmed);
 }
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown, extraHeaders?: Record<string, string>): void {
@@ -186,7 +204,6 @@ function resolveRequestedCwd(
     }
   }
 
-  // Fallback when `cwd` is omitted: prefer first active connected Pi session's cwd, then defaultCwd / process.cwd().
   for (const client of deps.getPiClients().values()) {
     const candidate = client?.session?.active ? client.session.cwd : "";
     if (candidate && path.isAbsolute(candidate)) {
@@ -281,6 +298,27 @@ function parsePositiveInt(raw: string | null): number | null {
   if (!raw || !/^\d+$/.test(raw)) return null;
   const n = Number.parseInt(raw, 10);
   return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** Open an existing SQLite DB strictly read-only, run `fn`, and always close the handle. */
+function withReadOnlySqlite<T>(dbPath: string, fn: (db: DatabaseSync) => T): T | null {
+  if (!fs.existsSync(dbPath)) return null;
+  let db: DatabaseSync | null = null;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    return fn(db);
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* ignore close errors */
+    }
+  }
+}
+
+function isMissingSqliteTableError(err: unknown): boolean {
+  const msg = String((err as any)?.message ?? err ?? "");
+  return /no such table/i.test(msg);
 }
 
 // ── Domain collectors ───────────────────────────────────────────────
@@ -411,6 +449,7 @@ export function collectTasks(
   cwd: string,
   sessionParam: string | null,
   assigneeParam: string | null,
+  env: NodeJS.ProcessEnv = process.env,
 ): { ok: true; data: any } | { ok: false; error: string } {
   const assigneeFilter = (assigneeParam || "all").trim().toLowerCase();
   if (assigneeFilter !== "all" && assigneeFilter !== "user" && assigneeFilter !== "llm") {
@@ -422,9 +461,24 @@ export function collectTasks(
     return { ok: false, error: "Invalid session: must not contain path separators" };
   }
 
+  const piTasks = env.PI_TASKS;
+  const taskScope: "session" | "project" = env.PI_TASK_SCOPE === "project" ? "project" : "session";
+
   const files: Array<{ filePath: string; sessionId: string | null }> = [];
-  if (session) {
-    const resolved = resolveStorePath(session, { cwd, taskScope: "session", piTasks: undefined });
+  if (piTasks === "off") {
+    // Tasks persistence explicitly disabled — return empty without scanning stale files.
+  } else if (piTasks) {
+    const resolved = resolveStorePath(session ?? undefined, { cwd, piTasks, taskScope });
+    if (resolved && fs.existsSync(resolved)) {
+      files.push({ filePath: resolved, sessionId: null });
+    }
+  } else if (taskScope === "project") {
+    const resolved = resolveStorePath(session ?? undefined, { cwd, piTasks: undefined, taskScope: "project" });
+    if (resolved && fs.existsSync(resolved)) {
+      files.push({ filePath: resolved, sessionId: null });
+    }
+  } else if (session) {
+    const resolved = resolveStorePath(session, { cwd, piTasks: undefined, taskScope: "session" });
     if (resolved && fs.existsSync(resolved)) {
       files.push({ filePath: resolved, sessionId: session });
     }
@@ -472,7 +526,7 @@ export function collectTasks(
         });
       }
     } catch (err: any) {
-      log.debug("task_store_read_failed", { filePath, error: String(err?.message ?? err) });
+      log.warn("task_store_read_failed", { filePath, error: String(err?.message ?? err) });
     }
   }
 
@@ -509,23 +563,33 @@ export function collectTasks(
 export function collectAgents(deps: PidashApiDeps, sessionParam: string | null) {
   const now = (deps.now ?? Date.now)();
   const sessionFilter = sessionParam ? sessionParam.trim() : null;
+  const seen = new Set<string>();
   const agents = [];
 
-  for (const info of deps.getAsyncAgents()) {
-    if (sessionFilter && info.sessionId !== sessionFilter) continue;
-    const startedAt = typeof info.startedAt === "number" ? info.startedAt : now;
-    agents.push({
-      id: info.id,
-      name: info.name || info.agent,
-      agent: info.agent,
-      mode: info.mode === "sync" ? "sync" : "async",
-      status: "running" as const,
-      elapsedMs: Math.max(0, now - startedAt),
-      currentTool: info.currentTool ?? null,
-      cwd: info.cwd,
-      taskId: info.taskId ?? null,
-      sessionId: info.sessionId ?? null,
-    });
+  const sources: Array<Iterable<ActiveAsyncAgentInfo>> = [
+    deps.getAsyncAgents(),
+    ...(deps.getSyncAgents ? [deps.getSyncAgents()] : []),
+  ];
+
+  for (const source of sources) {
+    for (const info of source) {
+      if (!info?.id || seen.has(info.id)) continue;
+      if (sessionFilter && info.sessionId !== sessionFilter) continue;
+      seen.add(info.id);
+      const startedAt = typeof info.startedAt === "number" ? info.startedAt : now;
+      agents.push({
+        id: info.id,
+        name: info.name || info.agent,
+        agent: info.agent,
+        mode: info.mode === "sync" ? "sync" : "async",
+        status: "running" as const,
+        elapsedMs: Math.max(0, now - startedAt),
+        currentTool: info.currentTool ?? null,
+        cwd: info.cwd,
+        taskId: info.taskId ?? null,
+        sessionId: info.sessionId ?? null,
+      });
+    }
   }
 
   return {
@@ -645,15 +709,73 @@ export function collectSettings(cwd: string, categoryParam: string | null, onlyO
   };
 }
 
+function readMemoryTopicsReadOnly(mainRoot: string): Array<{ name: string; entries: number; tokens: number; hotness: number }> {
+  const topicsDir = path.join(mainRoot, ".pi", "memory", "topics");
+  let dirents: fs.Dirent[];
+  try {
+    dirents = fs.readdirSync(topicsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  // Strictly read-only score lookup (never triggers legacy FNV->SHA migration or DB creation)
+  const scoreMap = new Map<string, number>();
+  const dbPath = path.join(mainRoot, ".pi", "data", "state.db");
+  try {
+    const rawScores = withReadOnlySqlite(dbPath, (db) => {
+      try {
+        const row = db
+          .prepare("SELECT payload FROM kv_state WHERE store_key = ?")
+          .get("memory-scores") as { payload?: string } | undefined;
+        return row?.payload ? JSON.parse(row.payload) : null;
+      } catch (err) {
+        if (isMissingSqliteTableError(err)) return null;
+        throw err;
+      }
+    });
+    const entries = rawScores?.entries && typeof rawScores.entries === "object" ? rawScores.entries : null;
+    if (entries) {
+      for (const val of Object.values(entries) as any[]) {
+        if (!val || typeof val !== "object") continue;
+        const topic = typeof val.topic === "string" ? val.topic : null;
+        const score = typeof val.stability === "number" ? val.stability : typeof val.score === "number" ? val.score : 0;
+        if (topic) scoreMap.set(topic, Math.max(scoreMap.get(topic) ?? 0, score));
+      }
+    }
+  } catch (err: any) {
+    log.warn("memory_scores_read_failed", { dbPath, error: String(err?.message ?? err) });
+  }
+
+  const topics: Array<{ name: string; entries: number; tokens: number; hotness: number }> = [];
+  for (const d of dirents) {
+    if (!d.isFile() || !d.name.endsWith(".md")) continue;
+    const name = d.name.slice(0, -".md".length);
+    try {
+      const content = fs.readFileSync(path.join(topicsDir, d.name), "utf8");
+      const lines = content.split(/\r?\n/);
+      let entries = 0;
+      for (const line of lines) {
+        if (/^\s*-\s+\S/.test(line)) entries++;
+      }
+      const tokens = Math.ceil(content.length / 4);
+      const hotness = Number((scoreMap.get(name) ?? 0).toFixed(3));
+      topics.push({ name, entries, tokens, hotness });
+    } catch (err: any) {
+      log.warn("memory_topic_read_failed", { file: d.name, error: String(err?.message ?? err) });
+    }
+  }
+
+  return topics.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export function collectMemory(cwd: string) {
   const mainRoot = resolveMainRootReadOnly(cwd);
   const memoryDir = path.join(mainRoot, ".pi", "memory");
   const memoryExists = fs.existsSync(memoryDir);
 
-  const topics = memoryExists ? listTopics(cwd) : [];
-  const totalEntries = topics.reduce((sum, t) => sum + t.entryCount, 0);
-  const totalChars = topics.reduce((sum, t) => sum + t.chars, 0);
-  const totalTokens = Math.ceil(totalChars / 4);
+  const topics = memoryExists ? readMemoryTopicsReadOnly(mainRoot) : [];
+  const totalEntries = topics.reduce((sum, t) => sum + t.entries, 0);
+  const totalTokens = topics.reduce((sum, t) => sum + t.tokens, 0);
   const tokenBudget = getMemoryTokenBudget(cwd);
   const tokenBudgetPct = tokenBudget > 0 ? Math.round((totalTokens / tokenBudget) * 100) : 0;
 
@@ -661,9 +783,15 @@ export function collectMemory(cwd: string) {
   const lastDreamAt = memoryExists ? readRegularSmallTextFile(watermarkPath, 128) : null;
 
   const promotionsPath = path.join(memoryDir, "promotions.md");
-  const pendingPromotionsCount = memoryExists && fs.existsSync(promotionsPath)
-    ? listProposedPromotions(cwd).length
-    : 0;
+  let pendingPromotionsCount = 0;
+  if (memoryExists && fs.existsSync(promotionsPath)) {
+    try {
+      const content = fs.readFileSync(promotionsPath, "utf8");
+      pendingPromotionsCount = parsePromotionsMarkdown(content).filter((c) => c.status === "proposed").length;
+    } catch (err: any) {
+      log.warn("memory_promotions_read_failed", { promotionsPath, error: String(err?.message ?? err) });
+    }
+  }
 
   return {
     cwd,
@@ -678,12 +806,7 @@ export function collectMemory(cwd: string) {
       intervalHours: Number(getSetting(cwd, "dream_interval_hours")),
     },
     pendingPromotionsCount,
-    topics: topics.map((t) => ({
-      name: t.name,
-      entries: t.entryCount,
-      tokens: Math.ceil(t.chars / 4),
-      hotness: Number(t.hotness.toFixed(3)),
-    })),
+    topics,
   };
 }
 
@@ -697,16 +820,117 @@ function normalizeReviewStatus(raw: ReviewState["status"]): "clean" | "findings"
   }
 }
 
-export function collectReview(cwd: string) {
-  const enabled = Boolean(getSetting(cwd, "review_loop_enforcement"));
+function normalizeReviewSubjectReadOnly(raw: any): ReviewSubject | null {
+  if (!raw || typeof raw !== "object") return null;
+  const str = (v: any) => (typeof v === "string" && v ? v : null);
+  switch (raw.kind) {
+    case "pr": {
+      const repo = str(raw.repo);
+      const head_sha = str(raw.head_sha);
+      const number = Number(raw.number);
+      return repo && head_sha && Number.isInteger(number) && number > 0
+        ? { kind: "pr", repo, number, head_sha }
+        : null;
+    }
+    case "issue": {
+      const repo = str(raw.repo);
+      const number = Number(raw.number);
+      return repo && Number.isInteger(number) && number > 0 ? { kind: "issue", repo, number } : null;
+    }
+    case "local": {
+      const head_sha = str(raw.head_sha);
+      return head_sha ? { kind: "local", head_sha } : null;
+    }
+    case "plan": {
+      const p = str(raw.path);
+      return p ? { kind: "plan", path: p } : null;
+    }
+    case "other": {
+      const id = str(raw.id);
+      return id ? { kind: "other", id } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** Strictly read-only review-state reader — never creates dirs/DBs, migrates, or writes markers. */
+function readReviewStateReadOnly(cwd: string): Partial<ReviewState> | null {
   const wtRoot = resolveWorktreeRoot(cwd);
   const dataDir = path.join(wtRoot, ".pi", "data");
-  const hasStateFiles =
-    fs.existsSync(path.join(dataDir, "state.db")) ||
-    fs.existsSync(path.join(dataDir, "pi-config-review-state.jsonl")) ||
-    fs.existsSync(path.join(dataDir, "pi-config-review-state.json"));
+  const dbPath = path.join(dataDir, "state.db");
 
-  const state: ReviewState | null = hasStateFiles ? readReviewState(cwd) : null;
+  let raw: any = null;
+  try {
+    raw = withReadOnlySqlite(dbPath, (db) => {
+      try {
+        const row = db
+          .prepare("SELECT payload FROM kv_state WHERE store_key = ?")
+          .get("pi-config-review-state") as { payload?: string } | undefined;
+        return row?.payload ? JSON.parse(row.payload) : null;
+      } catch (err) {
+        if (isMissingSqliteTableError(err)) return null;
+        throw err;
+      }
+    });
+  } catch (err: any) {
+    log.warn("review_state_sqlite_read_failed", { dbPath, error: String(err?.message ?? err) });
+  }
+
+  if (!raw) {
+    const jsonlPath = path.join(dataDir, "pi-config-review-state.jsonl");
+    if (fs.existsSync(jsonlPath)) {
+      try {
+        const lines = fs.readFileSync(jsonlPath, "utf8").split(/\r?\n/).filter((l) => l.trim());
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const parsed = JSON.parse(lines[i]!);
+            if (parsed && typeof parsed === "object") {
+              raw = parsed;
+              break;
+            }
+          } catch {
+            /* skip malformed line */
+          }
+        }
+      } catch (err: any) {
+        log.warn("review_state_jsonl_read_failed", { jsonlPath, error: String(err?.message ?? err) });
+      }
+    }
+  }
+
+  if (!raw) {
+    const legacyJsonPath = path.join(dataDir, "pi-config-review-state.json");
+    if (fs.existsSync(legacyJsonPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(legacyJsonPath, "utf8"));
+        if (parsed && typeof parsed === "object") raw = parsed;
+      } catch (err: any) {
+        log.warn("review_state_json_read_failed", { legacyJsonPath, error: String(err?.message ?? err) });
+      }
+    }
+  }
+
+  if (!raw || typeof raw !== "object") return null;
+
+  const validStatuses = new Set<ReviewState["status"]>(["none", "needs_review", "in_progress", "has_findings", "clean"]);
+  const status: ReviewState["status"] = validStatuses.has(raw.status) ? raw.status : "none";
+  return {
+    status,
+    cycle: Number.isInteger(raw.cycle) && raw.cycle >= 0 ? raw.cycle : 0,
+    subject: normalizeReviewSubjectReadOnly(raw.subject),
+    findings_count: Number.isInteger(raw.findings_count) && raw.findings_count >= 0 ? raw.findings_count : 0,
+    reviewers_pending: Array.isArray(raw.reviewers_pending)
+      ? raw.reviewers_pending.filter((r: unknown): r is string => typeof r === "string")
+      : [],
+    tests_passed: raw.tests_passed === true,
+    last_clean_at: typeof raw.last_clean_at === "string" ? raw.last_clean_at : null,
+  };
+}
+
+export function collectReview(cwd: string) {
+  const enabled = Boolean(getSetting(cwd, "review_loop_enforcement"));
+  const state = readReviewStateReadOnly(cwd);
   const rawStatus: ReviewState["status"] = state?.status ?? "none";
   const lastReviewedSha =
     state?.subject && "head_sha" in state.subject && typeof state.subject.head_sha === "string"
@@ -845,7 +1069,7 @@ export function collectTrail(cwd: string, sessionParam: string | null = null) {
       sessionTokenSavings,
     };
   } catch (err: any) {
-    log.debug("trail_wiring_read_failed", { wiringPath, error: String(err?.message ?? err) });
+    log.warn("trail_wiring_read_failed", { wiringPath, error: String(err?.message ?? err) });
     return {
       cwd,
       enabled,
@@ -953,6 +1177,7 @@ export function collectSkills(deps: PidashApiDeps, cwd: string) {
 
 export async function collectDaemons(deps: PidashApiDeps, cwd: string) {
   const probe = deps.probeLocalHttp ?? defaultProbeLocalHttp;
+  const env = deps.env ?? process.env;
   const pidashPort = deps.getPort();
   const startupError = deps.getStartupError?.() ?? null;
   const piClients = deps.getPiClients();
@@ -961,13 +1186,13 @@ export async function collectDaemons(deps: PidashApiDeps, cwd: string) {
     running: true,
     healthy: !startupError,
     status: startupError ? "degraded" : "ok",
+    ...(startupError ? { startupError } : {}),
     port: pidashPort,
     sessions: piClients.size,
     browsers: deps.getBrowserCount(),
     uptime: process.uptime(),
   };
 
-  // pidiff: read per-project `.pi/run/pidiff.{port,pid}` (legacy fallback `.pi/tmp/`) strictly read-only
   const mainRoot = resolveMainRootReadOnly(cwd);
   const candidateDirs = [
     path.join(cwd, ".pi", "run"),
@@ -990,7 +1215,7 @@ export async function collectDaemons(deps: PidashApiDeps, cwd: string) {
 
   const sidecarPort =
     deps.sidecarPort ??
-    (parsePositiveInt(process.env.SIDECAR_PORT ?? null) ?? DEFAULT_SIDECAR_PORT);
+    (parsePositiveInt(env.SIDECAR_PORT ?? null) ?? DEFAULT_SIDECAR_PORT);
 
   const [pidiffProbe, sidecarProbe] = await Promise.all([
     pidiffPort !== null ? probe(pidiffPort, "/api/health", HEALTH_PROBE_TIMEOUT_MS) : Promise.resolve(null),
@@ -1026,28 +1251,106 @@ export async function collectDaemons(deps: PidashApiDeps, cwd: string) {
   };
 }
 
+function verifyHexHmac(key: Buffer, payload: string, signature: string): boolean {
+  if (!signature || !/^[0-9a-f]{64}$/i.test(signature)) return false;
+  const expected = createHmac("sha256", key).update(payload).digest("hex");
+  try {
+    return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
+  } catch {
+    return false;
+  }
+}
+
+/** Count HMAC-verified persistent folder and host approvals using a strictly read-only SQLite handle. */
+function countApprovalsReadOnly(
+  projectDbPath: string,
+  homeDir: string,
+): { folderApprovals: number; hostGrants: number } {
+  if (!fs.existsSync(projectDbPath)) return { folderApprovals: 0, hostGrants: 0 };
+
+  const key = readApprovalHmacKey(getApprovalHmacKeyPath(homeDir));
+  const projectDbId = tryRealPath(projectDbPath);
+  let folderApprovals = 0;
+  let hostGrants = 0;
+
+  let db: DatabaseSync | null = null;
+  try {
+    db = new DatabaseSync(projectDbPath, { readOnly: true });
+
+    try {
+      const rows = db
+        .prepare("SELECT scope, target_path, restricted_root, signature FROM restricted_folder_approvals")
+        .all() as Array<{ scope?: string; target_path?: string; restricted_root?: string; signature?: string }>;
+      if (key) {
+        for (const row of rows) {
+          if (
+            (row.scope === "file" || row.scope === "directory") &&
+            typeof row.target_path === "string" &&
+            typeof row.restricted_root === "string" &&
+            typeof row.signature === "string"
+          ) {
+            const payload = `${APPROVAL_HMAC_DOMAIN}\0${projectDbId}\0${row.scope}\0${row.target_path}\0${row.restricted_root}`;
+            if (verifyHexHmac(key, payload, row.signature)) folderApprovals++;
+          }
+        }
+      }
+    } catch (err: any) {
+      if (!isMissingSqliteTableError(err)) {
+        log.warn("restricted_folder_approvals_count_failed", { error: String(err?.message ?? err) });
+      }
+    }
+
+    try {
+      const rows = db
+        .prepare("SELECT tool_name, hostname, signature FROM tool_host_approvals")
+        .all() as Array<{ tool_name?: string; hostname?: string; signature?: string }>;
+      if (key) {
+        for (const row of rows) {
+          if (
+            typeof row.tool_name === "string" &&
+            typeof row.hostname === "string" &&
+            typeof row.signature === "string" &&
+            isValidExactHostname(row.hostname)
+          ) {
+            const payload = `${HOST_APPROVAL_HMAC_DOMAIN}\0${projectDbId}\0${row.tool_name}\0${row.hostname}`;
+            if (verifyHexHmac(key, payload, row.signature)) hostGrants++;
+          }
+        }
+      }
+    } catch (err: any) {
+      if (!isMissingSqliteTableError(err)) {
+        log.warn("tool_host_approvals_count_failed", { error: String(err?.message ?? err) });
+      }
+    }
+  } catch (err: any) {
+    log.warn("security_state_db_read_failed", { projectDbPath, error: String(err?.message ?? err) });
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* ignore close errors */
+    }
+  }
+
+  return { folderApprovals, hostGrants };
+}
+
 export function collectSecurity(deps: PidashApiDeps, cwd: string) {
   const homeDir = deps.homeDir ?? os.homedir();
   const mainRoot = resolveMainRootReadOnly(cwd);
   const projectDbPath = path.join(mainRoot, ".pi", "data", "state.db");
-  const hasProjectDb = fs.existsSync(projectDbPath);
 
-  const restrictedFolders = loadRestrictedFolders(cwd);
-  let persistentFolderApprovalCount = 0;
-  let hostGrantCount = 0;
-
-  if (hasProjectDb) {
-    try {
-      persistentFolderApprovalCount = listPersistentApprovals(cwd, projectDbPath, undefined, homeDir).length;
-    } catch (err: any) {
-      log.debug("restricted_folder_approvals_count_failed", { error: String(err?.message ?? err) });
-    }
-    try {
-      hostGrantCount = listPersistentHostApprovals(cwd, projectDbPath, undefined, homeDir).length;
-    } catch (err: any) {
-      log.debug("tool_host_approvals_count_failed", { error: String(err?.message ?? err) });
+  // Read restricted_folders purely from settings layers so GET /api/security never
+  // opens a writable SQLite handle for floor attestation reconciliation.
+  const settingsLayers = getCachedSettingsLayers(cwd, { verifyFresh: true });
+  const restrictedFolderSet = new Set<string>();
+  for (const list of [settingsLayers.global.restricted_folders, settingsLayers.project.restricted_folders]) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (typeof entry === "string" && entry.trim()) restrictedFolderSet.add(entry.trim());
     }
   }
+  const { folderApprovals, hostGrants } = countApprovalsReadOnly(projectDbPath, homeDir);
 
   const layers = loadToolPermissionLayers(cwd);
   let toolRuleCount = 0;
@@ -1071,12 +1374,12 @@ export function collectSecurity(deps: PidashApiDeps, cwd: string) {
     cwd,
     secret_obfuscation: Boolean(getSetting(cwd, "secret_obfuscation")),
     restricted_folders: {
-      count: restrictedFolders.length,
-      persistentApprovalCount: persistentFolderApprovalCount,
+      count: restrictedFolderSet.size,
+      persistentApprovalCount: folderApprovals,
     },
     tool_permissions: {
       ruleCount: toolRuleCount,
-      hostGrantCount,
+      hostGrantCount: hostGrants,
     },
     turn_snapshots: {
       enabled: Boolean(getSetting(cwd, "turn_snapshots")),
@@ -1144,6 +1447,28 @@ export function createPidashApiRouter(deps: PidashApiDeps) {
       return true;
     }
 
+    // DNS-rebinding defense: reject any non-loopback Host header
+    const hostHeader = req.headers.host;
+    if (hostHeader !== undefined && !isLoopbackHostHeader(hostHeader)) {
+      log.warn("rejected non-loopback Host header on /api request", {
+        path: url.pathname,
+        host: hostHeader,
+      });
+      sendJson(res, 403, { error: "Forbidden: non-loopback Host header rejected" });
+      return true;
+    }
+
+    // Cross-origin defense: reject any non-loopback Origin header
+    const originHeader = req.headers.origin;
+    if (typeof originHeader === "string" && originHeader.length > 0 && !LOOPBACK_ORIGIN_RE.test(originHeader)) {
+      log.warn("rejected non-loopback Origin header on /api request", {
+        path: url.pathname,
+        origin: originHeader,
+      });
+      sendJson(res, 403, { error: "Forbidden: non-loopback Origin header rejected" });
+      return true;
+    }
+
     applyLoopbackCorsHeaders(req, res, deps.getPort());
 
     if (req.method !== "GET") {
@@ -1155,6 +1480,7 @@ export function createPidashApiRouter(deps: PidashApiDeps) {
     const handleAsync = async () => {
       const pathname = url.pathname;
       const now = (deps.now ?? Date.now)();
+      const env = deps.env ?? process.env;
 
       if (pathname === "/api/version") {
         sendJson(res, 200, await collectVersion());
@@ -1178,7 +1504,9 @@ export function createPidashApiRouter(deps: PidashApiDeps) {
           sendJson(res, 400, { error: cwdCheck.error });
           return;
         }
-        sendJson(res, 200, collectPeers(deps, url.searchParams.get("project"), cwdCheck.cwd));
+        const summary = collectPeers(deps, url.searchParams.get("project"), cwdCheck.cwd);
+        const format = url.searchParams.get("format");
+        sendJson(res, 200, format === "array" ? summary.peers : summary);
         return;
       }
 
@@ -1195,7 +1523,7 @@ export function createPidashApiRouter(deps: PidashApiDeps) {
           return;
         }
         case "/api/tasks": {
-          const result = collectTasks(cwd, url.searchParams.get("session"), url.searchParams.get("assignee"));
+          const result = collectTasks(cwd, url.searchParams.get("session"), url.searchParams.get("assignee"), env);
           if (!result.ok) {
             sendJson(res, 400, { error: result.error });
             return;
@@ -1257,7 +1585,7 @@ export function createPidashApiRouter(deps: PidashApiDeps) {
           ]);
 
           const peers = collectPeers(deps, projectParam, cwd);
-          const tasksRes = collectTasks(cwd, sessionParam, "all");
+          const tasksRes = collectTasks(cwd, sessionParam, "all", env);
           const agents = collectAgents(deps, sessionParam);
           const crons = collectCrons(cwd);
           const settingsAll = collectSettings(cwd, null, null);

@@ -17,9 +17,13 @@ const log = createLogger("async_agents");
 
 interface RunConfig {
   id: string;
+  name?: string;
   agent: string;
+  mode?: "async" | "sync";
   task: string;
   cwd: string;
+  taskId?: string | null;
+  startedAt?: number;
   model?: string;
   contextWindow?: number;
   tools?: string[];
@@ -63,7 +67,9 @@ function writeJson(filePath: string, data: object): void {
 async function run(config: RunConfig): Promise<void> {
   const statusPath = path.join(config.workerDir, "status.json");
   const outputPath = path.join(config.workerDir, "output.log");
-  const startedAt = Date.now();
+  const startedAt = typeof config.startedAt === "number" && Number.isFinite(config.startedAt)
+    ? config.startedAt
+    : Date.now();
 
   const status: StatusPayload = {
     runId: config.id,
@@ -97,10 +103,14 @@ async function run(config: RunConfig): Promise<void> {
       pidashWs.send(JSON.stringify({
         type: "async_register",
         id: config.id,
+        name: config.name || config.agent,
         agent: config.agent,
+        mode: config.mode === "sync" ? "sync" : "async",
         task: config.task.slice(0, 200),
         cwd: config.cwd,
         sessionId: config.sessionId,
+        taskId: config.taskId ?? null,
+        startedAt,
       }));
     });
     pidashWs.on("error", (e: any) => { fs.appendFileSync(pidashLog, `error: ${e.message}\n`); });

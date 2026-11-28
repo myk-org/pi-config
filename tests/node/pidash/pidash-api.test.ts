@@ -2,14 +2,17 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { builtinModules } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import ts from "typescript";
 
 import { createPidashApiRouter, PIDASH_API_ROUTES, type PidashApiDeps } from "../../../scripts/pidash-api.ts";
+import { createDaemonServer } from "../../../scripts/daemon-shared.ts";
 import { createAsyncAgentRegistry, registerPidashSession, type PiClient } from "../../../scripts/pidash-session-state.ts";
 import { ComsRegistry } from "../../../extensions/coms/coms-registry.ts";
 import {
@@ -35,6 +38,7 @@ function invokeRouter(
     method?: string;
     remoteAddress?: string | undefined;
     origin?: string;
+    host?: string;
   },
 ): Promise<{ handled: boolean; response: MockResponse }> {
   return new Promise((resolve) => {
@@ -43,10 +47,15 @@ function invokeRouter(
     let bodyText = "";
     let ended = false;
 
+    const reqHeaders: Record<string, string> = {
+      host: opts.host ?? "127.0.0.1:19190",
+    };
+    if (opts.origin !== undefined) reqHeaders.origin = opts.origin;
+
     const req = {
       method: opts.method ?? "GET",
       url: opts.urlPath,
-      headers: opts.origin ? { origin: opts.origin } : {},
+      headers: reqHeaders,
       socket: { remoteAddress: "remoteAddress" in opts ? opts.remoteAddress : "127.0.0.1" },
     } as unknown as IncomingMessage;
 
@@ -210,15 +219,79 @@ describe("pidash loopback /api/* surface", () => {
     assert.equal(response.statusCode, 405);
   });
 
-  it("does not reflect LAN Origin headers in Access-Control-Allow-Origin", async () => {
+  it("returns 403 for non-loopback Origin header", async () => {
     const router = createPidashApiRouter(makeBaseDeps(tmpRoot));
     const { response } = await invokeRouter(router, {
       urlPath: "/api/version",
       origin: "http://192.168.1.42:8080",
     });
+    assert.equal(response.statusCode, 403);
+    assert.match(response.json().error, /origin/i);
+  });
+
+  it("returns 403 for DNS-rebinding non-loopback Host header", async () => {
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot));
+    const { response } = await invokeRouter(router, {
+      urlPath: "/api/status",
+      host: "rebind.attacker.example:19190",
+    });
+    assert.equal(response.statusCode, 403);
+    assert.match(response.json().error, /host/i);
+  });
+
+  it("allows loopback Origin header with no-store cache control", async () => {
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot));
+    const { response } = await invokeRouter(router, {
+      urlPath: "/api/version",
+      origin: "http://localhost:19190",
+    });
     assert.equal(response.statusCode, 200);
-    assert.equal(response.headers["access-control-allow-origin"], "http://127.0.0.1:19190");
+    assert.equal(response.headers["access-control-allow-origin"], "http://localhost:19190");
     assert.equal(response.headers["cache-control"], "no-store");
+  });
+
+  it("returns 405 on loopback OPTIONS through createDaemonServer HTTP pipeline", async () => {
+    const deps = makeBaseDeps(tmpRoot);
+    const router = createPidashApiRouter(deps);
+    const { server } = createDaemonServer({
+      port: 0,
+      uiDir: tmpRoot,
+      uiName: "test-ui",
+      log: () => {},
+      extraApiRoutes: router,
+      onPiMessage: () => {},
+      onPiClose: () => {},
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    try {
+      const addr = server.address();
+      assert.ok(addr && typeof addr === "object");
+      const res = await new Promise<{ status: number; allow?: string }>((resolve, reject) => {
+        const req = http.request(
+          { host: "127.0.0.1", port: addr.port, method: "OPTIONS", path: "/api/peers" },
+          (r) => {
+            r.resume();
+            r.on("end", () => resolve({ status: r.statusCode ?? 0, allow: r.headers.allow }));
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+      assert.equal(res.status, 405);
+      assert.equal(res.allow, "GET");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("returns 403 on non-loopback OPTIONS request", async () => {
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot));
+    const { response } = await invokeRouter(router, {
+      urlPath: "/api/peers",
+      method: "OPTIONS",
+      remoteAddress: "192.168.1.50",
+    });
+    assert.equal(response.statusCode, 403);
   });
 
   it("returns false for unknown paths outside the 15 routes", async () => {
@@ -287,8 +360,7 @@ describe("pidash loopback /api/* surface", () => {
 
   // ── 1. GET /api/peers ─────────────────────────────────────────────
 
-  it("returns live COMS peer counts with per-peer metadata on /api/peers", async () => {
-    const now = 1_750_000_000_000;
+  function seedPeersFixture(now = 1_750_000_000_000): PidashApiDeps {
     const deps = makeBaseDeps(tmpRoot, { now: () => now });
     const reg = new ComsRegistry(deps.comsDir!);
 
@@ -341,7 +413,6 @@ describe("pidash loopback /api/* surface", () => {
       },
       "proj-b",
     );
-    // Stale heartbeat — must be excluded by canonical liveness check
     reg.writeEntryAtomic(
       {
         coms_session_id: "sid-dead",
@@ -366,23 +437,55 @@ describe("pidash loopback /api/* surface", () => {
       path.join(reg.peersDir(), "alpha@proj-a.json"),
       JSON.stringify({ cname: "alpha", project: "proj-a", container: "pi-peer-proj-a-alpha" }),
     );
+    return deps;
+  }
 
-    const router = createPidashApiRouter(deps);
+  it("returns total, busy, idle peer counts on /api/peers", async () => {
+    const router = createPidashApiRouter(seedPeersFixture());
     const { response } = await invokeRouter(router, { urlPath: "/api/peers?project=*" });
     assert.equal(response.statusCode, 200);
     const data = response.json();
     assert.equal(data.total, 2);
     assert.equal(data.busy, 1);
     assert.equal(data.idle, 1);
+  });
 
-    const alpha = data.peers.find((p: any) => p.name === "alpha");
+  it("excludes stale-heartbeat peers on /api/peers", async () => {
+    const router = createPidashApiRouter(seedPeersFixture());
+    const { response } = await invokeRouter(router, { urlPath: "/api/peers?project=*" });
+    assert.equal(response.statusCode, 200);
+    const names = response.json().peers.map((p: any) => p.name);
+    assert.equal(names.includes("ghost"), false);
+  });
+
+  it("returns per-peer live metadata fields on /api/peers", async () => {
+    const router = createPidashApiRouter(seedPeersFixture());
+    const { response } = await invokeRouter(router, { urlPath: "/api/peers?project=*" });
+    assert.equal(response.statusCode, 200);
+    const alpha = response.json().peers.find((p: any) => p.name === "alpha");
     assert.equal(alpha.project, "proj-a");
     assert.equal(alpha.busy, true);
     assert.equal(alpha.contextUsedPct, 42);
     assert.equal(alpha.queueDepth, 1);
     assert.deepEqual(alpha.workload, { agents: 1, tasks: 2, crons: 0 });
-    assert.equal(alpha.container, "pi-peer-proj-a-alpha");
     assert.equal(alpha.alive, true);
+  });
+
+  it("maps supervision container name onto peer entries on /api/peers", async () => {
+    const router = createPidashApiRouter(seedPeersFixture());
+    const { response } = await invokeRouter(router, { urlPath: "/api/peers?project=*" });
+    assert.equal(response.statusCode, 200);
+    const alpha = response.json().peers.find((p: any) => p.name === "alpha");
+    assert.equal(alpha.container, "pi-peer-proj-a-alpha");
+  });
+
+  it("returns legacy bare array on /api/peers when format=array is requested", async () => {
+    const router = createPidashApiRouter(seedPeersFixture());
+    const { response } = await invokeRouter(router, { urlPath: "/api/peers?format=array" });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(Array.isArray(data), true);
+    assert.equal(data.length, 2);
   });
 
   it("filters /api/peers by project query parameter", async () => {
@@ -577,7 +680,101 @@ describe("pidash loopback /api/* surface", () => {
     assert.equal(response.statusCode, 400);
   });
 
+  it("reads shared tasks.json with null sessionId when PI_TASK_SCOPE is project", async () => {
+    const projDir = path.join(tmpRoot, "proj-tasks-scope");
+    const tasksDir = path.join(projDir, ".pi", "tasks");
+    fs.mkdirSync(tasksDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tasksDir, "tasks.json"),
+      JSON.stringify({
+        nextId: 2,
+        tasks: [{ id: "1", subject: "Shared project task", status: "pending", assignee: "llm", blockedBy: [] }],
+      }),
+    );
+
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot, { env: { PI_TASK_SCOPE: "project" } }));
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/tasks?cwd=${encodeURIComponent(projDir)}&session=sess1`,
+    });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.total, 1);
+    assert.equal(data.tasks[0].subject, "Shared project task");
+    assert.equal(data.tasks[0].sessionId, null);
+  });
+
+  it("reads custom store path when PI_TASKS is configured", async () => {
+    const projDir = path.join(tmpRoot, "proj-tasks-custom");
+    const customPath = path.join(tmpRoot, "custom-tasks.json");
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(
+      customPath,
+      JSON.stringify({
+        nextId: 2,
+        tasks: [{ id: "1", subject: "Custom store task", status: "in_progress", assignee: "user", blockedBy: [] }],
+      }),
+    );
+
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot, { env: { PI_TASKS: customPath } }));
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/tasks?cwd=${encodeURIComponent(projDir)}`,
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().total, 1);
+    assert.equal(response.json().tasks[0].subject, "Custom store task");
+  });
+
+  it("returns empty tasks when PI_TASKS is off", async () => {
+    const projDir = path.join(tmpRoot, "proj-tasks-off");
+    const tasksDir = path.join(projDir, ".pi", "tasks");
+    fs.mkdirSync(tasksDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tasksDir, "tasks.json"),
+      JSON.stringify({
+        nextId: 2,
+        tasks: [{ id: "1", subject: "Ignored task", status: "pending", assignee: "llm", blockedBy: [] }],
+      }),
+    );
+
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot, { env: { PI_TASKS: "off" } }));
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/tasks?cwd=${encodeURIComponent(projDir)}`,
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().total, 0);
+  });
+
   // ── 4. GET /api/agents ────────────────────────────────────────────
+
+  it("returns running sync subagents alongside async jobs on /api/agents", async () => {
+    const now = 1_750_000_050_000;
+    const deps = makeBaseDeps(tmpRoot, {
+      now: () => now,
+      getSyncAgents: () => [
+        {
+          id: "sync-1",
+          name: "python-expert",
+          agent: "python-expert",
+          mode: "sync",
+          task: "PRIVATE_SYNC_TASK",
+          cwd: tmpRoot,
+          sessionId: "sess-sync",
+          taskId: null,
+          startedAt: now - 4_000,
+          currentTool: "read",
+          text: "",
+        },
+      ],
+    });
+    const router = createPidashApiRouter(deps);
+    const { response } = await invokeRouter(router, { urlPath: "/api/agents?session=sess-sync" });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.count, 1);
+    assert.equal(data.agents[0].mode, "sync");
+    assert.equal(data.agents[0].elapsedMs, 4_000);
+    assert.equal(data.agents[0].currentTool, "read");
+  });
 
   it("returns live running agents with elapsedMs without private output text", async () => {
     const now = 1_750_000_050_000;
@@ -822,6 +1019,26 @@ describe("pidash loopback /api/* surface", () => {
     assert.equal(fs.existsSync(path.join(cleanDir, ".pi")), false);
   });
 
+  it("leaves legacy memory scores unmigrated on /api/memory GET", async () => {
+    const projDir = path.join(tmpRoot, "proj-mem-legacy");
+    const topicsDir = path.join(projDir, ".pi", "memory", "topics");
+    const dataDir = path.join(projDir, ".pi", "data");
+    fs.mkdirSync(topicsDir, { recursive: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(topicsDir, "lessons.md"), "- [lesson] keep GET read-only\n", "utf8");
+    const legacyScoresPath = path.join(dataDir, "memory-scores.json");
+    const legacyContent = JSON.stringify({ entries: { deadbeef: { topic: "lessons", stability: 1 } } });
+    fs.writeFileSync(legacyScoresPath, legacyContent, "utf8");
+
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot));
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/memory?cwd=${encodeURIComponent(projDir)}`,
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(fs.existsSync(path.join(dataDir, "state.db")), false);
+    assert.equal(fs.readFileSync(legacyScoresPath, "utf8"), legacyContent);
+  });
+
   // ── 9. GET /api/review ────────────────────────────────────────────
 
   it("returns normalized review loop status on /api/review", async () => {
@@ -851,6 +1068,9 @@ describe("pidash loopback /api/* surface", () => {
     assert.equal(data.lastReviewedSha, "abc1234");
     assert.equal(data.cycle, 2);
     assert.equal(data.findingsCount, 3);
+    // Strictly read-only: must not create state.db or review-tracked marker
+    assert.equal(fs.existsSync(path.join(dataDir, "state.db")), false);
+    assert.equal(fs.existsSync(path.join(dataDir, "review-tracked")), false);
   });
 
   it("does not create .pi/data directory on read-only /api/review requests", async () => {
@@ -998,7 +1218,45 @@ describe("pidash loopback /api/* surface", () => {
     assert.equal(data.piSidecar.port, 9100);
   });
 
+  it("reports pidash degraded on /api/daemons when startupError is present", async () => {
+    const router = createPidashApiRouter(
+      makeBaseDeps(tmpRoot, {
+        getStartupError: () => "discord login failed",
+      }),
+    );
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/daemons?cwd=${encodeURIComponent(tmpRoot)}`,
+    });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.pidash.healthy, false);
+    assert.equal(data.pidash.status, "degraded");
+    assert.equal(data.pidash.startupError, "discord login failed");
+  });
+
   // ── 13. GET /api/security ─────────────────────────────────────────
+
+  it("reads an unmigrated state.db on /api/security without creating tables or WAL files", async () => {
+    const projDir = path.join(tmpRoot, "proj-sec-ro-db");
+    const dataDir = path.join(projDir, ".pi", "data");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const dbPath = path.join(dataDir, "state.db");
+    const initDb = new DatabaseSync(dbPath);
+    initDb.exec("CREATE TABLE legacy_only (id INTEGER PRIMARY KEY)");
+    initDb.close();
+    const beforeBytes = fs.readFileSync(dbPath);
+
+    const router = createPidashApiRouter(makeBaseDeps(tmpRoot));
+    const { response } = await invokeRouter(router, {
+      urlPath: `/api/security?cwd=${encodeURIComponent(projDir)}`,
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().restricted_folders.persistentApprovalCount, 0);
+    assert.equal(response.json().tool_permissions.hostGrantCount, 0);
+    assert.equal(fs.existsSync(`${dbPath}-wal`), false);
+    assert.equal(fs.existsSync(`${dbPath}-shm`), false);
+    assert.deepEqual(fs.readFileSync(dbPath), beforeBytes);
+  });
 
   it("returns policy counts without exposing restricted folder paths or secrets on /api/security", async () => {
     const projDir = path.join(tmpRoot, "proj-sec");
