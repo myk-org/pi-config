@@ -6,10 +6,84 @@ const log = createLogger("pidash-ux");
 export const PINNED_SESSIONS_STORAGE_KEY = "pidash-pinned-sessions";
 export const ARCHIVED_SESSIONS_STORAGE_KEY = "pidash-archived-sessions";
 export const MAX_PERSISTED_SESSION_IDS = 200;
+/** Bounded settling window (ms) during which a provisional inactive `?peer=` match upgrades if an active match arrives. */
+export const DEEP_LINK_INACTIVE_PEER_SETTLE_MS = 5_000;
 
 export interface SidebarFlags {
   pinned: Set<string>;
   archived: Set<string>;
+}
+
+export interface PidashDeepLinkTarget {
+  session?: string;
+  peer?: string;
+  project?: string;
+}
+
+/**
+ * Parse `?session=<sessionId>` and/or `?peer=<comsName>&project=<comsProject>`
+ * URL deep-link parameters. Returns `null` when neither `session` nor `peer`
+ * is non-empty after trimming.
+ */
+export function parsePidashDeepLink(search?: string | null): PidashDeepLinkTarget | null {
+  if (!search) return null;
+  try {
+    const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+    const session = params.get("session")?.trim() || undefined;
+    const peer = params.get("peer")?.trim() || undefined;
+    const project = params.get("project")?.trim() || undefined;
+    if (!session && !peer) return null;
+    const target: PidashDeepLinkTarget = {};
+    if (session) target.session = session;
+    if (peer) target.peer = peer;
+    if (project) target.project = project;
+    return target;
+  } catch (err) {
+    log.warn("failed to parse pidash deep-link query params", { error: String(err) });
+    return null;
+  }
+}
+
+/**
+ * Resolve a parsed URL deep-link target against the current PiDash sessions list.
+ * Priority:
+ * 1. Exact `sessionId === target.session`
+ * 2. `comsName === target.peer` (when `target.project` is provided, requires exact
+ *    `comsProject === target.project`), preferring `active: true` over inactive
+ * 3. `null` when no match exists
+ */
+export function matchDeepLinkSession(
+  sessions: readonly SessionInfo[],
+  target: PidashDeepLinkTarget | null | undefined,
+): SessionInfo | null {
+  if (!target || sessions.length === 0) return null;
+  if (target.session) {
+    const exact = sessions.find((s) => s.sessionId === target.session);
+    if (exact) return exact;
+  }
+  if (target.peer) {
+    const peerMatches = sessions.filter((s) => s.comsName?.trim() === target.peer);
+    if (peerMatches.length === 0) return null;
+    const candidates = target.project
+      ? peerMatches.filter((s) => s.comsProject?.trim() === target.project)
+      : peerMatches;
+    if (candidates.length === 0) return null;
+    return candidates.find((s) => s.active) ?? candidates[0];
+  }
+  return null;
+}
+
+/**
+ * True when a deep-link match is definitive (exact `sessionId` match, or an `active` peer match).
+ * Inactive `?peer=` matches stay provisional for a bounded settling window so a late-arriving
+ * active peer with the same name/project can still take precedence.
+ */
+export function isDefinitiveDeepLinkMatch(
+  matched: Pick<SessionInfo, "sessionId" | "active">,
+  target: PidashDeepLinkTarget,
+): boolean {
+  if (target.session && matched.sessionId === target.session) return true;
+  return matched.active === true;
 }
 
 function normalizeProjectPath(cwd: string | undefined | null): string {

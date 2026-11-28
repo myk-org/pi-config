@@ -17,10 +17,15 @@ import { SidePanel, type PanelTab } from "@/components/SidePanel";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { createLogger } from "@/lib/create-logger";
 import {
+  DEEP_LINK_INACTIVE_PEER_SETTLE_MS,
   flattenSidebarSessions,
   formatDocumentTitle,
+  isDefinitiveDeepLinkMatch,
+  matchDeepLinkSession,
+  parsePidashDeepLink,
   partitionSidebarSessions,
   shouldPausePromptHotkeys,
+  type PidashDeepLinkTarget,
 } from "@/lib/pidash-ux-helpers";
 import type { SessionInfo } from "@/types";
 
@@ -40,6 +45,16 @@ function saveState(state: { sidebarWidth: number; sidebarCollapsed: boolean; wat
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
 }
 
+function getBrowserLocationSearch(): string {
+  try {
+    return typeof window !== "undefined" && typeof window.location?.search === "string"
+      ? window.location.search
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 export function App() {
   const { connected, send, onMessage } = useWebSocket("/ws/browser");
   const sessions = useSessions(connected, onMessage);
@@ -54,6 +69,23 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
   const saved = useRef(loadState());
+  const pendingDeepLinkRef = useRef<PidashDeepLinkTarget | null | undefined>(undefined);
+  if (pendingDeepLinkRef.current === undefined) {
+    pendingDeepLinkRef.current = parsePidashDeepLink(getBrowserLocationSearch());
+    if (pendingDeepLinkRef.current) {
+      log.debug("parsed URL deep-link target", pendingDeepLinkRef.current);
+    }
+  }
+  const provisionalDeepLinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearProvisionalDeepLinkTimer = useCallback(() => {
+    if (provisionalDeepLinkTimerRef.current !== null) {
+      clearTimeout(provisionalDeepLinkTimerRef.current);
+      provisionalDeepLinkTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => () => {
+    clearProvisionalDeepLinkTimer();
+  }, [clearProvisionalDeepLinkTimer]);
   // Restore the open panel across refreshes — the user's view survives a
   // reload (not on phones, where the drawer is a full-screen overlay).
   const [activePanel, setActivePanel] = useState<PanelTab | null>(() => {
@@ -147,6 +179,19 @@ export function App() {
     if (typeof window !== 'undefined' && window.innerWidth <= 768) setSidebarCollapsed(true);
   }, [send, session, messages, model, tokens, setMessages, setModel, setTokens, setStreaming, setQueuedCount, resetHandlerState]);
 
+  const selectSession = useCallback((s: SessionInfo) => {
+    if (pendingDeepLinkRef.current) {
+      log.debug("clearing pending deep-link on manual session selection", {
+        selectedSessionId: s.sessionId,
+        cancelledTarget: pendingDeepLinkRef.current,
+      });
+      pendingDeepLinkRef.current = null;
+    }
+    clearProvisionalDeepLinkTimer();
+    restoredRef.current = true;
+    watchSession(s);
+  }, [clearProvisionalDeepLinkTimer, watchSession]);
+
   const renameSession = useCallback((sessionId: string, name: string) => {
     send({ type: "pidash-command", command: "rename-session", sessionId, name });
   }, [send]);
@@ -198,13 +243,56 @@ export function App() {
   }, [connected, send]);
 
   useEffect(() => {
-    if (!connected || !sessions.length || restoredRef.current) return;
+    if (!connected || !sessions.length) return;
+    const pendingDeepLink = pendingDeepLinkRef.current;
+    if (pendingDeepLink) {
+      const matched = matchDeepLinkSession(sessions, pendingDeepLink);
+      if (matched) {
+        if (isDefinitiveDeepLinkMatch(matched, pendingDeepLink)) {
+          log.info("deep-link matched session", {
+            sessionId: matched.sessionId,
+            comsName: matched.comsName ?? null,
+            comsProject: matched.comsProject ?? null,
+            target: pendingDeepLink,
+          });
+          clearProvisionalDeepLinkTimer();
+          pendingDeepLinkRef.current = null;
+          restoredRef.current = true;
+          watchSession(matched);
+          return;
+        }
+        if (provisionalDeepLinkTimerRef.current === null) {
+          log.debug("deep-link provisionally matched inactive peer", {
+            sessionId: matched.sessionId,
+            comsName: matched.comsName ?? null,
+            comsProject: matched.comsProject ?? null,
+            settleMs: DEEP_LINK_INACTIVE_PEER_SETTLE_MS,
+          });
+          provisionalDeepLinkTimerRef.current = setTimeout(() => {
+            provisionalDeepLinkTimerRef.current = null;
+            if (pendingDeepLinkRef.current) {
+              log.info("deep-link settled on inactive peer after timeout", {
+                sessionId: watchedSessionIdRef.current,
+                target: pendingDeepLinkRef.current,
+              });
+              pendingDeepLinkRef.current = null;
+            }
+          }, DEEP_LINK_INACTIVE_PEER_SETTLE_MS);
+        }
+        restoredRef.current = true;
+        watchSession(matched);
+        return;
+      }
+      // Unmatched pending deep-link: fall through to localStorage restore while
+      // keeping pendingDeepLinkRef alive for late-arriving session_added/session_updated.
+    }
+    if (restoredRef.current || watchedSessionIdRef.current) return;
     // Restore from localStorage
     const sid = saved.current.watchSessionId;
     const pid = saved.current.watchPid;
     const s = sid ? sessions.find((x) => x.sessionId === sid) : pid ? sessions.find((x) => x.pid === pid) : null;
     if (s) { restoredRef.current = true; watchSession(s); }
-  }, [connected, sessions, watchSession]);
+  }, [connected, sessions, watchSession, clearProvisionalDeepLinkTimer]);
 
   const handleAbort = useCallback(() => {
     if (session) send({ type: "pidash-command", sessionId: session.sessionId, command: "abort" });
@@ -262,7 +350,7 @@ export function App() {
   );
 
   useKeyboardNavigation({
-    streaming, session, flatSessions, handleAbort, watchSession,
+    streaming, session, flatSessions, handleAbort, watchSession: selectSession,
     getKey: keybindings.getKey,
     showSwitcher, setShowSwitcher,
     showSettings, setShowSettings,
@@ -294,7 +382,7 @@ export function App() {
             sessions={sessions}
             activeSessionId={session?.sessionId ?? null}
             connected={connected}
-            onSelect={watchSession}
+            onSelect={selectSession}
             onRename={renameSession}
             onNewSession={() => setShowNewSession(true)}
             collapsed={false}
@@ -389,7 +477,7 @@ export function App() {
           send={send}
           onMessage={onMessage}
           sessions={flatSessions}
-          onWatch={watchSession}
+          onWatch={selectSession}
         />
       )}
 
@@ -410,7 +498,7 @@ export function App() {
         <SessionSwitcher
           sessions={flatSessions}
           activeSessionId={session?.sessionId ?? null}
-          onSelect={watchSession}
+          onSelect={selectSession}
           onClose={() => setShowSwitcher(false)}
         />
       )}
