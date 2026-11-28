@@ -165,10 +165,13 @@ export function resolvePidashHost(env: Record<string, string | undefined> = proc
   return configured || "127.0.0.1";
 }
 
-/** True when `host` refers to the local machine loopback (safe for auto-spawning a local daemon). */
+/** True when `host` refers to a valid local loopback address (`127.0.0.0/8`, `localhost`, `::1`). */
 export function isLocalDaemonHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
-  return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1" || normalized === "[::1]";
+  if (normalized === "localhost" || normalized === "::1" || normalized === "[::1]") return true;
+  const parts = normalized.split(".");
+  if (parts.length !== 4 || parts[0] !== "127") return false;
+  return parts.every((octet) => /^(?:0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
 }
 
 function buildCustomEntryReplayEvent(entry: any): string | null {

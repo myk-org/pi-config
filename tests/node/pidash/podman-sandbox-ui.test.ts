@@ -65,6 +65,13 @@ describe("Native daemon host resolution", () => {
     assert.equal(isLocalDaemonHost("::1"), true);
   });
 
+  it("treats alternate 127.0.0.0/8 IPv4 loopback addresses as local for PiDash auto-spawn", () => {
+    assert.equal(isLocalDaemonHost("127.0.0.2"), true);
+    assert.equal(isLocalDaemonHost("127.255.255.254"), true);
+    assert.equal(isLocalDaemonHost("127.256.0.1"), false);
+    assert.equal(isLocalDaemonHost("192.168.1.10"), false);
+  });
+
   it("disables PiDash auto-spawn for host.containers.internal", () => {
     assert.equal(isLocalDaemonHost("host.containers.internal"), false);
   });
