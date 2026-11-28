@@ -10,11 +10,13 @@ import { useMessageHandler } from "../../../extensions/pidash/pidash-ui/src/hook
 import type { ChatMessage, SessionInfo, TokenUsage } from "../../../extensions/pidash/pidash-ui/src/types.ts";
 import {
   applyEventToViewState,
+  applyPiAsyncStatusFrame,
   buildSessionSnapshot,
   createAsyncAgentRegistry,
   createPidashSessionState,
   finalizeAsyncAgentDisconnect,
   isLoopbackAddress,
+  MAX_SYNC_AGENTS_PER_SESSION,
   processPiPendingUiEvent,
   reconcileActiveAsyncAgents,
   recordPendingUiRequest,
@@ -556,6 +558,80 @@ describe("SessionViewState server snapshot (#1398)", () => {
     assert.equal(registry.complete(sock, { id: "a1", success: true }), true);
     assert.equal(client.session.runningAsyncAgents, 0);
     assert.equal(broadcasted.some((ev) => ev.type === "session_updated" && ev.session?.runningAsyncAgents === 0), true);
+  });
+
+  it("counts running async jobs past MAX_SYNC_AGENTS_PER_SESSION in applyPiAsyncStatusFrame", () => {
+    const { state, client } = makeClient();
+    const broadcasted: any[] = [];
+    const registry = createAsyncAgentRegistry(state.sessions, (ev) => broadcasted.push(ev));
+    const syncJobs = Array.from({ length: MAX_SYNC_AGENTS_PER_SESSION + 5 }, (_, i) => ({
+      id: `sync-${i}`,
+      agent: "worker",
+      mode: "sync",
+      status: "running",
+      task: "sync task",
+    }));
+    const jobs = [
+      ...syncJobs,
+      { id: "async-1", agent: "ts-expert", mode: "async", status: "running", task: "fix 1" },
+      { id: "async-2", agent: "git-expert", mode: "async", status: "running", task: "fix 2" },
+      { id: "async-done", agent: "worker", mode: "async", status: "complete", task: "done" },
+    ];
+
+    const liveSync = applyPiAsyncStatusFrame(client, jobs, registry.agents.values(), (ev) => broadcasted.push(ev));
+    assert.equal(liveSync.length, MAX_SYNC_AGENTS_PER_SESSION);
+    assert.equal(client.session.runningAsyncAgents, 2);
+  });
+
+  it("broadcasts session_updated only when applyPiAsyncStatusFrame changes runningAsyncAgents", () => {
+    const { state, client } = makeClient();
+    const broadcasted: any[] = [];
+    const registry = createAsyncAgentRegistry(state.sessions, () => {});
+    const jobs = [{ id: "async-1", agent: "ts-expert", mode: "async", status: "running", task: "fix" }];
+
+    applyPiAsyncStatusFrame(client, jobs, registry.agents.values(), (ev) => broadcasted.push(ev));
+    applyPiAsyncStatusFrame(client, jobs, registry.agents.values(), (ev) => broadcasted.push(ev));
+    const updates = broadcasted.filter((ev) => ev.type === "session_updated");
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].session.runningAsyncAgents, 1);
+  });
+
+  it("preserves async-status runningAsyncAgents count when an unrelated registry worker completes", () => {
+    const { state, client } = makeClient();
+    const broadcasted: any[] = [];
+    const registry = createAsyncAgentRegistry(state.sessions, (ev) => broadcasted.push(ev));
+    const sock = {};
+
+    applyPiAsyncStatusFrame(
+      client,
+      [{ id: "status-only-job", agent: "ts-expert", mode: "async", status: "running", task: "running in pi" }],
+      registry.agents.values(),
+      (ev) => broadcasted.push(ev),
+    );
+    assert.equal(client.session.runningAsyncAgents, 1);
+
+    assert.ok(registry.register(sock, { id: "ws-job", agent: "worker", cwd: "/repo", sessionId: client.session.sessionId }));
+    assert.equal(client.session.runningAsyncAgents, 2);
+
+    assert.equal(registry.complete(sock, { id: "ws-job", success: true }), true);
+    assert.equal(client.session.runningAsyncAgents, 1);
+  });
+
+  it("deduplicates overlapping job IDs between async-status frames plus registry workers", () => {
+    const { state, client } = makeClient();
+    const registry = createAsyncAgentRegistry(state.sessions, () => {});
+    const sock = {};
+
+    assert.ok(registry.register(sock, { id: "shared-job", agent: "worker", cwd: "/repo", sessionId: client.session.sessionId }));
+    applyPiAsyncStatusFrame(
+      client,
+      [{ id: "shared-job", agent: "worker", mode: "async", status: "running", task: "same job" }],
+      registry.agents.values(),
+    );
+    assert.equal(client.session.runningAsyncAgents, 1);
+
+    assert.equal(registry.complete(sock, { id: "shared-job", success: true }), true);
+    assert.equal(client.session.runningAsyncAgents, 1);
   });
 });
 

@@ -24,6 +24,7 @@ const log = createLogger("pidash");
 export const PENDING_UI_REQUESTS_MAX = 50;
 export const VIEW_STATE_MESSAGES_MAX = 1000;
 export const ASYNC_AGENTS_MAX = 100;
+export const MAX_SYNC_AGENTS_PER_SESSION = 50;
 
 export function isLoopbackAddress(addr: string | undefined | null): boolean {
   return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
@@ -438,6 +439,10 @@ export interface PiClient extends PendingUiRequestStore {
   viewState: SessionViewState;
   replaying: boolean;
   connectionGeneration: number;
+  /** Running async job IDs last reported by Pi's `async-status` frames (#1509). */
+  asyncStatusRunningIds?: Set<string>;
+  /** Running non-sync jobs in `async-status` lacking a string `id` (#1509). */
+  asyncStatusAnonymousCount?: number;
 }
 
 export function createSessionViewState(
@@ -683,18 +688,95 @@ export function applyEventToViewState(
  * finishes replaying history on reconnect so subsequent progress and completion
  * events continue updating the same card.
  */
+/**
+ * Recompute `client.session.runningAsyncAgents` as the union of Pi's `async-status`
+ * running async job IDs and live `/ws/async` registry workers for this session (#1509).
+ *
+ * Neither source can overwrite or erase the other: a worker disconnecting before Pi's
+ * next `async-status` frame keeps the Pi-reported count intact, while headless RPC peers
+ * that never emit `async-status` still reflect `/ws/async` workers accurately.
+ */
+export function syncSessionRunningAsyncAgents(
+  client: PiClient,
+  registryAgents: Iterable<ActiveAsyncAgentInfo>,
+  broadcast?: (event: object) => void,
+): boolean {
+  const sid = client.session.sessionId;
+  const ids = new Set<string>();
+  if (client.asyncStatusRunningIds) {
+    for (const id of client.asyncStatusRunningIds) ids.add(id);
+  }
+  for (const agent of registryAgents) {
+    if (agent.sessionId === sid && agent.mode !== "sync" && agent.id) {
+      ids.add(agent.id);
+    }
+  }
+  const nextCount = ids.size + (client.asyncStatusAnonymousCount ?? 0);
+  if ((client.session.runningAsyncAgents ?? 0) === nextCount) return false;
+  client.session.runningAsyncAgents = nextCount;
+  broadcast?.({ type: "session_updated", session: client.session });
+  return true;
+}
+
+/**
+ * Process a Pi `async-status` frame for `client`: extract capped live running sync
+ * subagents, record Pi's running async job IDs on `client`, and sync the merged
+ * `session.runningAsyncAgents` count (broadcasting `session_updated` only on change).
+ */
+export function applyPiAsyncStatusFrame(
+  client: PiClient,
+  jobs: readonly any[],
+  registryAgents: Iterable<ActiveAsyncAgentInfo>,
+  broadcast?: (event: object) => void,
+  maxSync = MAX_SYNC_AGENTS_PER_SESSION,
+): ActiveAsyncAgentInfo[] {
+  const sid = client.session.sessionId;
+  const liveSync: ActiveAsyncAgentInfo[] = [];
+  const statusIds = new Set<string>();
+  let anonymousCount = 0;
+
+  for (const job of jobs) {
+    if (!job) continue;
+    if (job.mode !== "sync" && job.status === "running") {
+      if (typeof job.id === "string" && job.id) statusIds.add(job.id);
+      else anonymousCount++;
+      continue;
+    }
+    if (liveSync.length >= maxSync) continue;
+    if (job.mode !== "sync" || job.status !== "running" || typeof job.id !== "string") continue;
+    const agentName = typeof job.agent === "string" ? job.agent : "agent";
+    liveSync.push({
+      id: job.id,
+      name: typeof job.name === "string" && job.name ? job.name : agentName,
+      agent: agentName,
+      mode: "sync",
+      task: typeof job.task === "string" ? job.task : "",
+      cwd: typeof job.cwd === "string" ? job.cwd : client.session.cwd,
+      sessionId: sid,
+      taskId: typeof job.taskId === "string" && job.taskId ? job.taskId : null,
+      startedAt: typeof job.startedAt === "number" && Number.isFinite(job.startedAt) ? job.startedAt : Date.now(),
+      currentTool: typeof job.currentTool === "string" && job.currentTool ? job.currentTool : null,
+      text: "",
+    });
+  }
+
+  client.asyncStatusRunningIds = statusIds;
+  client.asyncStatusAnonymousCount = anonymousCount;
+  syncSessionRunningAsyncAgents(client, registryAgents, broadcast);
+  return liveSync;
+}
+
 export function reconcileActiveAsyncAgents(
   client: PiClient,
   activeAgents: Iterable<ActiveAsyncAgentInfo>,
 ): number {
   const state = client.viewState;
   const sid = client.session.sessionId;
+  const agentList = Array.isArray(activeAgents) ? activeAgents : Array.from(activeAgents);
   let reconciled = 0;
-  let runningAsync = 0;
 
-  for (const agent of activeAgents) {
+  for (const agent of agentList) {
     if (!agent.id || agent.sessionId !== sid) continue;
-    if (agent.mode !== "sync") runningAsync++;
     if (state.asyncMsgs.has(agent.id)) continue;
 
     applyEventToViewState(client, {
@@ -720,7 +802,7 @@ export function reconcileActiveAsyncAgents(
     reconciled++;
   }
 
-  client.session.runningAsyncAgents = runningAsync;
+  syncSessionRunningAsyncAgents(client, agentList);
   if (reconciled > 0) {
     log.debug("reconciled active async agents into viewState", { sessionId: sid, count: reconciled });
   }
@@ -772,14 +854,7 @@ export function createAsyncAgentRegistry(
   const syncSessionAsyncCount = (sessionId: string): void => {
     const target = piClients.get(sessionId);
     if (!target) return;
-    let count = 0;
-    for (const a of agents.values()) {
-      if (a.sessionId === sessionId && a.mode !== "sync") count++;
-    }
-    if ((target.session.runningAsyncAgents ?? 0) !== count) {
-      target.session.runningAsyncAgents = count;
-      broadcast({ type: "session_updated", session: target.session });
-    }
+    syncSessionRunningAsyncAgents(target, agents.values(), broadcast);
   };
 
   return {
@@ -1121,6 +1196,8 @@ export function registerPidashSession(
     existing.session = session;
     existing.viewState = createSessionViewState(session, preservedCommands);
     existing.pendingUiRequests.clear();
+    existing.asyncStatusRunningIds = undefined;
+    existing.asyncStatusAnonymousCount = 0;
     existing.replaying = true;
     existing.connectionGeneration++;
     client = existing;
@@ -1174,6 +1251,8 @@ export function disconnectPidashSession(
   client.session.streaming = false;
   client.session.working = false;
   client.session.runningAsyncAgents = 0;
+  client.asyncStatusRunningIds = undefined;
+  client.asyncStatusAnonymousCount = 0;
   client.viewState.streaming = false;
   dismissAllViewAsks(client.viewState);
   clearPendingUiRequests(client);
