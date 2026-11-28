@@ -277,6 +277,7 @@ These are also shipped as prompt templates in `prompts/`, and are registered by 
 
 | Command | Purpose |
 | :--- | :--- |
+| `/afk [instructions]` | Signals AFK mode: instructs the agent not to call `ask_user`, not to wait on routine work, to defer approval-gated or destructive/external actions instead of bypassing them, and to list any questions or pending approvals for when you return. |
 | `/scout-and-plan <task>` | Scout pass plus a plan, with no code changes. Use this when you want to review the approach before applying it. |
 | `/qodo-review [--autofix] [--fast\|--deep] [--ticket <url>] [path ...]` | Reviews local changes with Qodo before committing or opening a PR. |
 | `/review-handler [--autorabbit] [--autoqodo]` | Processes every outstanding review source (human, Qodo, CodeRabbit) for the current PR. |
