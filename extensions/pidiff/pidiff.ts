@@ -126,6 +126,11 @@ export function isPidiffConnectableCtx(
 
 export interface PidiffRegisterOptions {
   reconnectPollIntervalMs?: number;
+  /** Test injection seams for spawn/readiness isolation tests. */
+  resolveSpawnPortFn?: (preferred: number | null | undefined) => Promise<number>;
+  spawnServerFn?: (port: number, cwd: string) => void;
+  probeHealthFn?: (port: number) => Promise<boolean>;
+  waitReadyFn?: (port: number, maxWaitSeconds: number, onLog: (msg: string) => void) => Promise<boolean>;
 }
 
 export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {}): void {
@@ -194,7 +199,18 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
 
   const pidiffHost = resolvePidiffHost(registrationEnv);
   const pidiffPortOverride = resolvePidiffPortOverride(registrationEnv);
-  const probePidiffHealth = (port: number) => checkHealth(port, pidiffHost);
+  const probePidiffHealth = opts.probeHealthFn ?? ((port: number) => checkHealth(port, pidiffHost));
+  const resolvePortForSpawn = opts.resolveSpawnPortFn ?? resolveSpawnPort;
+  const spawnPidiffServer = opts.spawnServerFn ?? doSpawn;
+
+  function resolveRepoKeyForCtx(ctx: any): string {
+    const cwd = typeof ctx?.cwd === "string" ? ctx.cwd : "";
+    if (!cwd) return currentRepoKey;
+    if (isSupervisedRpcPeerCtx(ctx, registrationEnv)) {
+      return path.resolve(resolveRepoRoot(cwd));
+    }
+    return path.resolve(cwd);
+  }
 
   const client = createDaemonClient(pi, {
     name: "pidiff",
@@ -203,6 +219,8 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
     host: pidiffHost,
     log,
     reconnectPollIntervalMs: opts.reconnectPollIntervalMs,
+    probeHealth: probePidiffHealth,
+    waitReady: opts.waitReadyFn,
     shouldConnectCtx: canConnectCtx,
     // Only interactive TUI sessions on loopback auto-spawn pidiff-server;
     // supervised COMS RPC peers attach when a daemon is already running.
@@ -228,8 +246,13 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
     },
 
     async acquireSpawnLock(ctx) {
+      const myRepoKey = currentRepoKey;
+      const myLockDir = lockDir;
+      const myLegacyLockDir = legacyLockDir;
+      if (!myLockDir) return { acquired: false, port: null };
+
       // Atomic spawn guard across legacy `.pi/tmp` + `.pi/run` (#1020).
-      const { held, contended } = acquireSpawnLocks([legacyLockDir, lockDir]);
+      const { held, contended } = acquireSpawnLocks([myLegacyLockDir, myLockDir]);
       if (contended === null) {
         return { acquired: true, release: () => releaseSpawnLocks(held) };
       }
@@ -244,8 +267,8 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
       log.debug("another session is spawning pidiff, waiting for lockfile...");
       for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 1000));
-        if (!isLiveExtensionCtx(ctx)) return { acquired: false, port: null };
-        const lock = readLockfile(lockDir, legacyLockDir);
+        if (!isLiveExtensionCtx(ctx) || currentRepoKey !== myRepoKey) return { acquired: false, port: null };
+        const lock = readLockfile(myLockDir, myLegacyLockDir);
         if (lock && await probePidiffHealth(lock.port)) {
           return { acquired: false, port: lock.port };
         }
@@ -257,16 +280,26 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
     },
 
     async spawn(ctx, { mode, preferredPort }) {
+      const myRepoKey = currentRepoKey;
+      const myLockDir = lockDir;
+      const myLegacyLockDir = legacyLockDir;
+      if (!myLockDir) return 0;
       const preferred = mode === "restart"
         ? (preferredPort || null)
-        : (activePort || readLockfile(lockDir, legacyLockDir)?.port || null);
-      const port = await resolveSpawnPort(preferred);
-      doSpawn(port, ctx.cwd);
-      writeLockfile(lockDir, port, null, debugLog);
+        : (getScopedActivePort() || readLockfile(myLockDir, myLegacyLockDir)?.port || null);
+      const port = await resolvePortForSpawn(preferred);
+      if (currentRepoKey !== myRepoKey) {
+        log.info("pidiff_spawn_superseded_on_repo_change", { from: myRepoKey, to: currentRepoKey });
+        return 0;
+      }
+      spawnPidiffServer(port, ctx.cwd);
+      writeLockfile(myLockDir, port, null, debugLog);
       return port;
     },
 
-    onPortResolved(port) {
+    onPortResolved(port, ctx) {
+      const repoKey = ctx ? resolveRepoKeyForCtx(ctx) : currentRepoKey;
+      if (repoKey && repoKey !== currentRepoKey) return;
       activePort = port;
       activePortRepoKey = currentRepoKey;
     },
@@ -276,6 +309,12 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
     },
 
     onOpen(wsClient, ctx, port) {
+      const repoKey = resolveRepoKeyForCtx(ctx);
+      if (repoKey && repoKey !== currentRepoKey) {
+        log.info("pidiff_open_superseded_on_repo_change", { from: repoKey, to: currentRepoKey });
+        try { wsClient.close(); } catch {}
+        return;
+      }
       activePort = port;
       activePortRepoKey = currentRepoKey;
       setStatus(ctx);

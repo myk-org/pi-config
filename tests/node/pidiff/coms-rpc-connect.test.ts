@@ -4,7 +4,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -759,5 +759,163 @@ describe("createRepoCheckoutMatcher (#1501)", () => {
       return cwd.startsWith("/repo/a") ? "/repo/a/.git" : "/repo/b/.git";
     });
     assert.equal(await matcher.matchesAsync("/repo/b"), false);
+  });
+});
+
+describe("repository switch during in-flight pidiff spawn (#1501)", () => {
+  it("isolates pending tui spawn when switching repositories before port resolves", async () => {
+    const dir = makeTempDir("pidiff-switch-prespawn-");
+    const repoA = join(dir, "repo-a");
+    const repoB = join(dir, "repo-b");
+    const serverB = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const socketsB = new WebSocketServer({ server: serverB, path: "/ws/pi" });
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    const { pi, events, emitPi } = createHarness();
+    const ctxA = makeCtx("tui", repoA, { ui: { setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } });
+    const ctxB = makeCtx("tui", repoB, { ui: { setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } });
+
+    let resolvePortA!: (port: number) => void;
+    const portAPending = new Promise<number>((resolve) => { resolvePortA = resolve; });
+    const spawnedCwds: string[] = [];
+    const emittedPorts: number[] = [];
+
+    try {
+      mkdirSync(repoA, { recursive: true });
+      mkdirSync(repoB, { recursive: true });
+      initGitRepo(repoA, "branch-a");
+      initGitRepo(repoB, "branch-b");
+
+      const portB = await listenHttp(serverB);
+      mkdirSync(join(repoB, ".pi", "run"), { recursive: true });
+      writeFileSync(join(repoB, ".pi", "run", "pidiff.port"), String(portB));
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidiff_enable: true }));
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      delete process.env.PI_COMS_SUPERVISED_PEER;
+
+      events.on("diff-viewer:port", (p: unknown) => {
+        if (typeof p === "number") emittedPorts.push(p);
+      });
+
+      const regB = new Promise<Record<string, unknown>>((resolve) => {
+        socketsB.on("connection", (ws) => {
+          ws.once("message", (raw) => resolve(JSON.parse(raw.toString()) as Record<string, unknown>));
+        });
+      });
+
+      registerPidiff(pi, {
+        reconnectPollIntervalMs: 50,
+        resolveSpawnPortFn: () => portAPending,
+        spawnServerFn: (_port, cwd) => { spawnedCwds.push(cwd); },
+        waitReadyFn: async () => true,
+      });
+
+      emitPi("session_start", { reason: "startup" }, ctxA);
+      await new Promise((r) => setTimeout(r, 30));
+
+      // Switch to Repo B while Repo A's spawn port allocation is still pending.
+      emitPi("session_start", { reason: "resume" }, ctxB);
+      const registeredB = await regB;
+      assert.equal(registeredB.cwd, repoB);
+      assert.equal(registeredB.branch, "branch-b");
+
+      // Now let Repo A's stale spawn promise settle — must neither spawn nor clobber Repo B's lockfile.
+      resolvePortA(49991);
+      await new Promise((r) => setTimeout(r, 50));
+
+      assert.deepEqual(spawnedCwds, []);
+      assert.equal(readFileSync(join(repoB, ".pi", "run", "pidiff.port"), "utf-8").trim(), String(portB));
+      assert.deepEqual(emittedPorts, [portB]);
+    } finally {
+      emitPi("session_shutdown", {}, ctxB);
+      await closeServer(serverB, socketsB);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not adopt superseded tui spawn port when switching repositories during waitReady", async () => {
+    const dir = makeTempDir("pidiff-switch-waitready-");
+    const repoA = join(dir, "repo-a");
+    const repoB = join(dir, "repo-b");
+    const serverB = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const socketsB = new WebSocketServer({ server: serverB, path: "/ws/pi" });
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    const { pi, events, emitPi } = createHarness();
+    const ctxA = makeCtx("tui", repoA, { ui: { setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } });
+    const ctxB = makeCtx("tui", repoB, { ui: { setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } });
+
+    let finishWaitA!: (ready: boolean) => void;
+    const waitReadyA = new Promise<boolean>((resolve) => { finishWaitA = resolve; });
+    let resolveWaitEntered!: () => void;
+    const waitStartedA = new Promise<void>((resolve) => {
+      resolveWaitEntered = resolve;
+    });
+    const emittedPorts: number[] = [];
+
+    try {
+      mkdirSync(repoA, { recursive: true });
+      mkdirSync(repoB, { recursive: true });
+      initGitRepo(repoA, "branch-a");
+      initGitRepo(repoB, "branch-b");
+
+      const portB = await listenHttp(serverB);
+      mkdirSync(join(repoB, ".pi", "run"), { recursive: true });
+      writeFileSync(join(repoB, ".pi", "run", "pidiff.port"), String(portB));
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidiff_enable: true }));
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      delete process.env.PI_COMS_SUPERVISED_PEER;
+
+      events.on("diff-viewer:port", (p: unknown) => {
+        if (typeof p === "number") emittedPorts.push(p);
+      });
+
+      const regB = new Promise<Record<string, unknown>>((resolve) => {
+        socketsB.on("connection", (ws) => {
+          ws.once("message", (raw) => resolve(JSON.parse(raw.toString()) as Record<string, unknown>));
+        });
+      });
+
+      registerPidiff(pi, {
+        reconnectPollIntervalMs: 50,
+        resolveSpawnPortFn: async () => 49992,
+        spawnServerFn: () => {},
+        waitReadyFn: async (port) => {
+          if (port === 49992) {
+            resolveWaitEntered();
+            return waitReadyA;
+          }
+          return true;
+        },
+      });
+
+      emitPi("session_start", { reason: "startup" }, ctxA);
+      await waitStartedA;
+
+      // Switch to Repo B while Repo A's daemon is still waiting to become ready.
+      emitPi("session_start", { reason: "resume" }, ctxB);
+      const registeredB = await regB;
+      assert.equal(registeredB.cwd, repoB);
+
+      // Repo A's stale waitReady resolves — must not overwrite Repo B's lockfile or active port.
+      finishWaitA(true);
+      await new Promise((r) => setTimeout(r, 50));
+
+      assert.equal(readFileSync(join(repoA, ".pi", "run", "pidiff.port"), "utf-8").trim(), "49992");
+      assert.equal(readFileSync(join(repoB, ".pi", "run", "pidiff.port"), "utf-8").trim(), String(portB));
+      assert.deepEqual(emittedPorts, [portB]);
+    } finally {
+      emitPi("session_shutdown", {}, ctxB);
+      await closeServer(serverB, socketsB);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -434,7 +434,7 @@ export interface DaemonClientAdapter<TConnectData = void> {
   /** Spawn the daemon process and return the port to wait on. */
   spawn: (ctx: any, opts: SpawnContext) => Promise<number> | number;
   /** Optional hook invoked whenever a live daemon port is resolved (connect/start/restart). */
-  onPortResolved?: (port: number) => void;
+  onPortResolved?: (port: number, ctx?: any) => void;
   /** Startup health-check wait budget in seconds. */
   getStartupTimeoutSeconds: (ctx: any) => number;
 
@@ -563,10 +563,12 @@ export function createDaemonClient<TConnectData = void>(
     if (typeof (reconnectTimer as any).unref === "function") (reconnectTimer as any).unref();
   }
 
-  /** Intentionally drop any active/pending socket and invalidate in-flight connect attempts. */
+  /** Intentionally drop any active/pending socket and invalidate in-flight connect/spawn attempts. */
   function disconnect(): void {
     connectGen++;
     pendingConnectCtx = null;
+    inFlightSpawn = null;
+    spawning = false;
     clearReconnectTimer();
     clearHeartbeat();
     const prev = activeSocket;
@@ -594,16 +596,21 @@ export function createDaemonClient<TConnectData = void>(
    * Ensure the daemon is running: probe health, deduplicate concurrent in-process spawns,
    * acquire any cross-process spawn lock, spawn, and wait for `/api/health`.
    */
-  async function ensureDaemonRunning(ctx: any): Promise<{ port: number | null; retryAfterMs?: number }> {
+  async function ensureDaemonRunning(
+    ctx: any,
+    myGen: number,
+  ): Promise<{ port: number | null; retryAfterMs?: number }> {
+    const isSuperseded = () => shuttingDown || myGen !== connectGen;
     if (adapter.canConnect && !adapter.canConnect(ctx)) {
       adapter.log.debug("connect skipped — adapter precondition not ready");
       return { port: null };
     }
 
     const livePort = await findRunningPort(ctx);
+    if (isSuperseded()) return { port: null };
     adapter.log.debug(`daemon health probe: ${livePort !== null ? `running on ${livePort}` : "not running"}`);
     if (livePort !== null) {
-      adapter.onPortResolved?.(livePort);
+      adapter.onPortResolved?.(livePort, ctx);
       return { port: livePort };
     }
 
@@ -615,36 +622,46 @@ export function createDaemonClient<TConnectData = void>(
     if (inFlightSpawn) {
       adapter.log.debug("daemon already spawning, awaiting in-flight startup...");
       const port = await inFlightSpawn;
+      if (isSuperseded()) return { port: null };
       return { port };
     }
 
     let lock: SpawnLockResult = { acquired: true, release: () => {} };
     if (adapter.acquireSpawnLock) {
       lock = await adapter.acquireSpawnLock(ctx);
+      if (isSuperseded()) {
+        if (lock.acquired) lock.release();
+        return { port: null };
+      }
       if (!lock.acquired) {
-        if (lock.port) adapter.onPortResolved?.(lock.port);
+        if (lock.port) adapter.onPortResolved?.(lock.port, ctx);
         return { port: lock.port ?? null, retryAfterMs: lock.retryAfterMs };
       }
     }
 
-    const spawnPromise = (async (): Promise<number | null> => {
+    let spawnPromise: Promise<number | null> | null = null;
+    spawnPromise = (async (): Promise<number | null> => {
       spawning = true;
       try {
         adapter.log.debug("spawning daemon...");
         const port = await adapter.spawn(ctx, { mode: "connect" });
+        if (!port || isSuperseded()) return null;
         const ready = await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog);
-        if (!ready) return null;
-        adapter.onPortResolved?.(port);
+        if (!ready || isSuperseded()) return null;
+        adapter.onPortResolved?.(port, ctx);
         return port;
       } finally {
-        spawning = false;
-        inFlightSpawn = null;
+        if (inFlightSpawn === spawnPromise) {
+          spawning = false;
+          inFlightSpawn = null;
+        }
         lock.release();
       }
     })();
 
     inFlightSpawn = spawnPromise;
     const port = await spawnPromise;
+    if (isSuperseded()) return { port: null };
     return { port };
   }
 
@@ -698,7 +715,7 @@ export function createDaemonClient<TConnectData = void>(
     try {
       const ensured = knownReadyPort !== undefined
         ? { port: knownReadyPort }
-        : await ensureDaemonRunning(ctx);
+        : await ensureDaemonRunning(ctx, myGen);
       if (shuttingDown || myGen !== connectGen || !isLiveExtensionCtx(ctx)) {
         finishAbortedConnect(ctx, myGen);
         return;
@@ -849,7 +866,7 @@ export function createDaemonClient<TConnectData = void>(
     if (action === "start") {
       const livePort = await findRunningPort(ctx);
       if (livePort !== null) {
-        adapter.onPortResolved?.(livePort);
+        adapter.onPortResolved?.(livePort, ctx);
         if (!connected) void connect(ctx, livePort);
         return {
           ok: true,
@@ -861,8 +878,8 @@ export function createDaemonClient<TConnectData = void>(
       }
       const port = await adapter.spawn(ctx, { mode: "start", preferredPort: null });
       if (notifyProgress && ctx?.hasUI) ctx.ui.notify(`Starting ${adapter.name} server...`, "info");
-      if (await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
-        adapter.onPortResolved?.(port);
+      if (port && await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
+        adapter.onPortResolved?.(port, ctx);
         void connect(ctx, port);
         return {
           ok: true,
@@ -888,8 +905,8 @@ export function createDaemonClient<TConnectData = void>(
       await sleep(restartWaitMs);
       const port = await adapter.spawn(ctx, { mode: "restart", preferredPort });
       if (notifyProgress && ctx?.hasUI) ctx.ui.notify(`Restarting ${adapter.name} server...`, "info");
-      if (await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
-        adapter.onPortResolved?.(port);
+      if (port && await waitReady(port, adapter.getStartupTimeoutSeconds(ctx), debugLog)) {
+        adapter.onPortResolved?.(port, ctx);
         void connect(ctx, port);
         return {
           ok: true,
