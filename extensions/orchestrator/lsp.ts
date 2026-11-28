@@ -543,8 +543,8 @@ export function buildLspStartupSummary(options: {
       pushUnique(available, seenAvailable, formatLspBinaryLabel(matchedCommand) || spec.id);
     } else {
       const fallback =
-        BUILTIN_INSTALL_RECIPES[spec.id]?.label ??
-        formatLspBinaryLabel(spec.candidates[0]?.command ?? "") ??
+        BUILTIN_INSTALL_RECIPES[spec.id]?.label ||
+        formatLspBinaryLabel(spec.candidates[0]?.command ?? "") ||
         spec.id;
       pushUnique(missing, seenMissing, fallback);
     }
