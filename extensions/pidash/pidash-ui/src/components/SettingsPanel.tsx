@@ -371,7 +371,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                   isActive
                     ? "bg-accent text-foreground font-medium border-primary"
                     : dimmed
-                      ? "text-muted-foreground/45 hover:bg-accent/20 border-transparent"
+                      ? "text-muted-foreground/70 hover:bg-accent/20 border-transparent"
                       : "text-muted-foreground hover:text-foreground hover:bg-accent/40 border-transparent",
                 )}
                 onClick={() => {
@@ -441,7 +441,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                     : "border-border bg-background",
                 )}
               >
-                <div className={cn("flex items-start justify-between gap-1.5 min-w-0", globalOnlyBlocked && "opacity-60")}>
+                <div className={cn("flex items-start justify-between gap-1.5 min-w-0", globalOnlyBlocked && "opacity-70")}>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 flex-wrap min-w-0">
                       <span
@@ -473,7 +473,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                       )}
                     </div>
                     <div className="text-[10px] text-muted-foreground break-words mt-0.5">{def.description}</div>
-                    <div className="text-[10px] text-muted-foreground/70 mt-0.5 break-all">
+                    <div className="text-[10px] text-muted-foreground/85 mt-0.5 break-all">
                       default: {displayValue(def.default) || "—"}
                       {def.env && <> · env: <code>{def.env}</code></>}
                       {isSet && <> · <span className="text-primary">set ({scope})</span></>}

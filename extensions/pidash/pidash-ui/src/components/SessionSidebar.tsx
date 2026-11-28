@@ -215,7 +215,7 @@ export function SessionSidebar({
             : isWaiting
               ? "bg-cyan-500/10 border-l-3 border-l-cyan-500 hover:bg-cyan-500/15"
               : "hover:bg-accent/30",
-          !s.active && "opacity-35",
+          !s.active && "opacity-65",
         )}
         onClick={() => onSelect(s)}
       >

@@ -468,7 +468,7 @@ export function App() {
               <FileTree
                 className="dark min-h-0 flex-1 overflow-auto rounded-lg py-3 border border-neutral-200 dark:border-neutral-800"
                 model={model}
-                style={{ ...TREE_THEME as React.CSSProperties, height: "100%", colorScheme: "dark", "--trees-search-bg-override": "oklch(14.5% 0 0)" } as React.CSSProperties}
+                style={{ ...TREE_THEME as React.CSSProperties, height: "100%", colorScheme: "dark", "--trees-search-bg-override": "#010409" } as React.CSSProperties}
               />
             </div>
 

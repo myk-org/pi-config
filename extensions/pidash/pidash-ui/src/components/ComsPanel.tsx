@@ -295,7 +295,7 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
                   {p.queueDepth > 0 && (
                     <span className="text-yellow-600 dark:text-yellow-400"> · queue {p.queueDepth}</span>
                   )}
-                  {!peerSession && <span className="opacity-60"> · no local session</span>}
+                  {!peerSession && <span className="opacity-80"> · no local session</span>}
                 </div>
               </div>
 
