@@ -5,11 +5,16 @@
  * Run with: npx tsx --test tests/node/pidash/settings-panel.test.ts
  */
 
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import * as rootReact from "react";
+import { createServer, type ViteDevServer } from "vite";
+import * as pidashReact from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
+import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
+import { createRoot, type Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
 import { buildSettingsPayload } from "../../../extensions/pidash/browser-ops.ts";
 import {
   buildSettingsCategories,
@@ -18,6 +23,7 @@ import {
 } from "../../../extensions/pidash/pidash-ui/src/lib/settings-edit.ts";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { elements, installReactDomShim } from "./react-dom-shim.mjs";
 
 describe("PiDash settings payload scope isolation (#1473)", () => {
   let projectDir: string;
@@ -129,5 +135,157 @@ describe("PiDash SettingsPanel parity wiring (#1473)", () => {
     );
     assert.match(source, /aria-label=\{`Copy \$\{def\.key\} value`\}/);
     assert.match(source, /copyTextInBrowser/);
+  });
+});
+
+describe("PiDash SettingsPanel global_only parity (#1491)", () => {
+  let vite: ViteDevServer;
+  let SettingsPanel: any;
+  const mounted: Root[] = [];
+
+  before(async () => {
+    const rootInternals = (rootReact as any).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+    const pidashInternals = (pidashReact as any).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+    for (const key of ["H", "A", "T"]) {
+      Object.defineProperty(rootInternals, key, {
+        configurable: true,
+        get: () => pidashInternals[key],
+        set: (value) => { pidashInternals[key] = value; },
+      });
+    }
+    vite = await createServer({
+      root: path.resolve("extensions/pidash/pidash-ui"),
+      server: { middlewareMode: true },
+      appType: "custom",
+    });
+    ({ SettingsPanel } = await vite.ssrLoadModule("/src/components/SettingsPanel.tsx"));
+  });
+
+  after(() => vite.close());
+
+  afterEach(async () => {
+    while (mounted.length) await act(async () => mounted.pop()!.unmount());
+  });
+
+  function samplePayload(scope: "project" | "global") {
+    return {
+      type: "settings-data",
+      scope,
+      settingsPath: scope === "project" ? "/repo/.pi/pi-config-settings.json" : "/home/.pi/pi-config-settings.json",
+      keys: [
+        {
+          key: "lsp_enabled",
+          type: "bool",
+          default: false,
+          effective: false,
+          source: "D",
+          description: "Enable opt-in LSP diagnostics",
+          group: "LSP",
+          globalOnly: true,
+        },
+        {
+          key: "lsp_servers",
+          type: "lsp_servers",
+          default: {},
+          effective: {},
+          source: "D",
+          description: "Per-server LSP overrides",
+          group: "LSP",
+          globalOnly: true,
+        },
+      ],
+    };
+  }
+
+  async function mountSettingsPanel() {
+    const { container } = installReactDomShim();
+    const sent: Array<{ command: string; extra?: Record<string, unknown> }> = [];
+    let listener: ((ev: any) => void) | null = null;
+    const root = createRoot(container);
+    mounted.push(root);
+    await act(async () => {
+      root.render(
+        createElement(SettingsPanel, {
+          cwd: "/repo",
+          sendCmd: (command: string, extra?: Record<string, unknown>) => sent.push({ command, extra }),
+          onMessage: (handler: (ev: any) => void) => {
+            listener = handler;
+            return () => { listener = null; };
+          },
+          notify: () => {},
+        }),
+      );
+    });
+    const emit = async (ev: any) => act(async () => { listener?.(ev); });
+    await emit(samplePayload("project"));
+    return { container, sent, emit };
+  }
+
+  it("marks global_only rows as blocked on the Project tab", async () => {
+    const view = await mountSettingsPanel();
+    const blockedRows = elements(view.container, "div").filter(
+      (el) => el.getAttribute("data-global-only-blocked") === "true",
+    );
+    assert.equal(blockedRows.length, 2);
+    assert.match(blockedRows[0].textContent, /global-only/);
+  });
+
+  it("shows inline warning when clicking a global_only bool control on the Project tab", async () => {
+    const view = await mountSettingsPanel();
+    const toggleBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "disabled");
+    assert.ok(toggleBtn);
+
+    await act(async () => {
+      toggleBtn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const warning = elements(view.container, "div").find(
+      (el) => el.getAttribute("data-testid") === "global-only-warning-lsp_enabled",
+    );
+    assert.ok(warning);
+    assert.match(warning!.textContent, /Global-only setting — switch to Global scope to edit/);
+    assert.equal(view.sent.filter((c) => c.command === "settings-set").length, 0);
+  });
+
+  it("shows inline warning when interacting with a global_only text input on the Project tab", async () => {
+    const view = await mountSettingsPanel();
+    const textInput = elements(view.container, "input").find(
+      (el) => el.getAttribute("aria-disabled") === "true",
+    );
+    assert.ok(textInput);
+
+    await act(async () => {
+      textInput!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const warning = elements(view.container, "div").find(
+      (el) => el.getAttribute("data-testid") === "global-only-warning-lsp_servers",
+    );
+    assert.ok(warning);
+    assert.match(warning!.textContent, /Global-only setting — switch to Global scope to edit/);
+  });
+
+  it("switches to Global scope from the inline global_only warning link", async () => {
+    const view = await mountSettingsPanel();
+    const toggleBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "disabled");
+    assert.ok(toggleBtn);
+    await act(async () => {
+      toggleBtn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const switchBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "Switch to Global");
+    assert.ok(switchBtn);
+    await act(async () => {
+      switchBtn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    assert.equal(view.sent.at(-1)?.command, "settings-get");
+    assert.equal(view.sent.at(-1)?.extra?.scope, "global");
+
+    await view.emit(samplePayload("global"));
+    const blockedRows = elements(view.container, "div").filter(
+      (el) => el.getAttribute("data-global-only-blocked") === "true",
+    );
+    assert.equal(blockedRows.length, 0);
   });
 });

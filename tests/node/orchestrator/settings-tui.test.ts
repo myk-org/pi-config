@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, w
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  SettingsOverlay,
   buildCategoryItems,
   buildSettingItems,
   getSettingsListState,
@@ -176,17 +177,17 @@ describe("formatValue", () => {
   });
 
   it("masks secret-like string keys", () => {
-    const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
+    const tokenDef = { type: "string", default: "", env: "PI_EXAMPLE_AUTH_TOKEN" } as any;
     assert.equal(formatValue("coms_dir", "my-super-secret-token", tokenDef), "••••oken");
   });
 
   it("masks short secret values fully", () => {
-    const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
+    const tokenDef = { type: "string", default: "", env: "PI_EXAMPLE_AUTH_TOKEN" } as any;
     assert.equal(formatValue("coms_dir", "abc", tokenDef), "••••••••");
   });
 
   it("does not mask empty secret values", () => {
-    const tokenDef = { type: "string", default: "", env: "PI_COMS_NET_AUTH_TOKEN" } as any;
+    const tokenDef = { type: "string", default: "", env: "PI_EXAMPLE_AUTH_TOKEN" } as any;
     assert.equal(formatValue("coms_dir", "", tokenDef), EMPTY_VALUE_SENTINEL);
   });
 
@@ -1524,5 +1525,171 @@ describe("settings-tui snapshot & lazy metadata (#1267)", () => {
       if (prevChild === undefined) delete process.env.PI_SUBAGENT_CHILD;
       else process.env.PI_SUBAGENT_CHILD = prevChild;
     }
+  });
+});
+
+// ── global_only UX on Project tab (#1491) ──────────────────────────
+
+describe("global_only settings UX in TUI (#1491)", () => {
+  const ENTER = "\r";
+  const TAB = "\t";
+  const DOWN = "\x1b[B";
+  const DEL = "\x1b[3~";
+  const recordingTheme = {
+    fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+    bold: (text: string) => text,
+  } as any;
+
+  let projectDir: string;
+  let globalDir: string;
+
+  function makeFakeTui(rows = 30) {
+    return {
+      terminal: { rows },
+      requestRender: () => {},
+    } as any;
+  }
+
+  function stripAnsi(s: string): string {
+    return s.replace(/\x1b\[[0-9;]*m/g, "");
+  }
+
+  beforeEach(async () => {
+    const { initTheme } = await import("@earendil-works/pi-coding-agent");
+    initTheme();
+    projectDir = makeTempDir("settings-1491-proj-");
+    mkdirSync(join(projectDir, ".git"), { recursive: true });
+    mkdirSync(join(projectDir, ".pi"), { recursive: true });
+    globalDir = makeTempDir("settings-1491-global-");
+    setGlobalSettingsPath(join(globalDir, "pi-config-settings.json"));
+    clearSettingsCache();
+  });
+
+  afterEach(() => {
+    setGlobalSettingsPath(null);
+    clearSettingsCache();
+    rmSync(projectDir, { recursive: true, force: true });
+    rmSync(globalDir, { recursive: true, force: true });
+  });
+
+  it("dims global_only label with indicator on project scope", () => {
+    const lspIdx = CATEGORIES.findIndex((c) => c.keys.includes("lsp_enabled"));
+    assert.ok(lspIdx >= 0);
+    const items = buildCategoryItems(lspIdx, projectDir, "project", recordingTheme);
+    const row = items.find((i) => i.id === "lsp_enabled")!;
+    assert.equal(row.label, "<dim>D lsp_enabled (global-only)</dim>");
+  });
+
+  it("dims global_only currentValue on project scope", () => {
+    const lspIdx = CATEGORIES.findIndex((c) => c.keys.includes("lsp_enabled"));
+    const items = buildCategoryItems(lspIdx, projectDir, "project", recordingTheme);
+    const row = items.find((i) => i.id === "lsp_enabled")!;
+    assert.equal(row.currentValue, "<dim>false</dim>");
+  });
+
+  it("renders global_only row normally on global scope", () => {
+    const lspIdx = CATEGORIES.findIndex((c) => c.keys.includes("lsp_enabled"));
+    const items = buildCategoryItems(lspIdx, projectDir, "global", recordingTheme);
+    const row = items.find((i) => i.id === "lsp_enabled")!;
+    assert.equal(row.label, "<dim>D</dim> lsp_enabled");
+    assert.equal(row.currentValue, "false");
+  });
+
+  it("surfaces inline warning inside SettingsOverlay when toggling global_only bool on project scope", () => {
+    const notifications: string[] = [];
+    const overlay = new SettingsOverlay(
+      makeFakeTui(30),
+      recordingTheme,
+      projectDir,
+      undefined,
+      "project",
+      () => {},
+      (msg) => notifications.push(msg),
+    );
+    for (const ch of "lsp_enabled") overlay.handleInput(ch);
+    overlay.handleInput(ENTER);
+
+    const rendered = stripAnsi(overlay.render(120).join("\n"));
+    assert.match(rendered, /<warning>⚠ lsp_enabled is global-only — press Tab to switch to Global scope<\/warning>/);
+    assert.equal(notifications.length, 0);
+  });
+
+  it("blocks opening global_only submenu with inline warning on project scope", () => {
+    const notifications: string[] = [];
+    const overlay = new SettingsOverlay(
+      makeFakeTui(30),
+      recordingTheme,
+      projectDir,
+      undefined,
+      "project",
+      () => {},
+      (msg) => notifications.push(msg),
+    );
+    for (const ch of "lsp_servers") overlay.handleInput(ch);
+    overlay.handleInput(ENTER);
+
+    const rendered = stripAnsi(overlay.render(120).join("\n"));
+    assert.match(rendered, /lsp_servers is global-only — press Tab to switch to Global scope/);
+    assert.doesNotMatch(rendered, /Editing \(Project\)/);
+    assert.equal(notifications.length, 0);
+  });
+
+  it("clears inline global_only warning on arrow navigation", () => {
+    const overlay = new SettingsOverlay(
+      makeFakeTui(30),
+      recordingTheme,
+      projectDir,
+      undefined,
+      "project",
+      () => {},
+      () => {},
+    );
+    for (const ch of "lsp") overlay.handleInput(ch);
+    overlay.handleInput(ENTER);
+    assert.match(stripAnsi(overlay.render(120).join("\n")), /is global-only — press Tab to switch to Global scope/);
+
+    overlay.handleInput(DOWN);
+    assert.doesNotMatch(stripAnsi(overlay.render(120).join("\n")), /is global-only — press Tab to switch to Global scope/);
+  });
+
+  it("clears inline global_only warning on Tab scope switch", () => {
+    const overlay = new SettingsOverlay(
+      makeFakeTui(30),
+      recordingTheme,
+      projectDir,
+      undefined,
+      "project",
+      () => {},
+      () => {},
+    );
+    for (const ch of "lsp_enabled") overlay.handleInput(ch);
+    overlay.handleInput(ENTER);
+    assert.match(stripAnsi(overlay.render(120).join("\n")), /is global-only — press Tab to switch to Global scope/);
+
+    overlay.handleInput(TAB);
+    const afterTab = stripAnsi(overlay.render(120).join("\n"));
+    assert.match(afterTab, /\[Global\]/);
+    assert.doesNotMatch(afterTab, /is global-only — press Tab to switch to Global scope/);
+    assert.doesNotMatch(afterTab, /\(global-only\)/);
+  });
+
+  it("surfaces inline warning when pressing Delete on global_only key in project scope", () => {
+    const notifications: string[] = [];
+    const lspCategory = CATEGORIES.find((c) => c.keys.includes("lsp_enabled"))!;
+    const overlay = new SettingsOverlay(
+      makeFakeTui(30),
+      recordingTheme,
+      projectDir,
+      undefined,
+      "project",
+      () => {},
+      (msg) => notifications.push(msg),
+      undefined,
+      { categories: [lspCategory] },
+    );
+    overlay.handleInput(DEL);
+    const rendered = stripAnsi(overlay.render(120).join("\n"));
+    assert.match(rendered, /lsp_enabled is global-only — press Tab to switch to Global scope/);
+    assert.equal(notifications.length, 0);
   });
 });
