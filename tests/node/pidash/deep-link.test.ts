@@ -11,6 +11,8 @@ import * as pidashReact from "../../../extensions/pidash/pidash-ui/node_modules/
 import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import type { Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
 import {
+  DEEP_LINK_INACTIVE_PEER_SETTLE_MS,
+  isDefinitiveDeepLinkMatch,
   matchDeepLinkSession,
   parsePidashDeepLink,
 } from "../../../extensions/pidash/pidash-ui/src/lib/pidash-ux-helpers.ts";
@@ -307,6 +309,23 @@ describe("matchDeepLinkSession (#1537)", () => {
   });
 });
 
+describe("isDefinitiveDeepLinkMatch (#1537)", () => {
+  it("treats exact sessionId match as definitive even when inactive", () => {
+    const inactive = makeSession("s1", { active: false });
+    assert.equal(isDefinitiveDeepLinkMatch(inactive, { session: "s1" }), true);
+  });
+
+  it("treats active peer match as definitive", () => {
+    const active = makeSession("s1", { active: true, comsName: "worker" });
+    assert.equal(isDefinitiveDeepLinkMatch(active, { peer: "worker" }), true);
+  });
+
+  it("treats inactive peer match as provisional", () => {
+    const inactive = makeSession("s1", { active: false, comsName: "worker" });
+    assert.equal(isDefinitiveDeepLinkMatch(inactive, { peer: "worker" }), false);
+  });
+});
+
 describe("App URL deep-link integration (#1537)", () => {
   it("selects the ?session= target over stale localStorage on initial load", async () => {
     const stale = makeSession("stale-session", { pid: 101, name: "Stale" });
@@ -367,7 +386,7 @@ describe("App URL deep-link integration (#1537)", () => {
     assert.deepEqual(watchedSessionIds(ws), ["active-target"]);
   });
 
-  it("resolves a late-arriving session when session_added arrives over WebSocket", async () => {
+  it("switches from localStorage fallback to a late-arriving session on session_added", async () => {
     const stale = makeSession("stale-session", { pid: 101, name: "Stale" });
     const late = makeSession("late-target", { pid: 303, name: "Late Peer" });
 
@@ -385,7 +404,7 @@ describe("App URL deep-link integration (#1537)", () => {
       },
     });
 
-    assert.deepEqual(watchedSessionIds(ws), []);
+    assert.deepEqual(watchedSessionIds(ws), ["stale-session"]);
 
     setSessions([stale, late]);
     await act(async () => {
@@ -396,7 +415,7 @@ describe("App URL deep-link integration (#1537)", () => {
       await Promise.resolve();
     });
 
-    assert.deepEqual(watchedSessionIds(ws), ["late-target"]);
+    assert.deepEqual(watchedSessionIds(ws), ["stale-session", "late-target"]);
   });
 
   it("resolves a late-arriving peer when session_updated populates COMS metadata", async () => {
@@ -449,10 +468,10 @@ describe("App URL deep-link integration (#1537)", () => {
     assert.deepEqual(watchedSessionIds(ws), ["manual-session"]);
   });
 
-  it("leaves no unrelated session selected for an unknown deep-link target", async () => {
+  it("falls back to saved localStorage session for an unmatched deep-link target", async () => {
     const existing = makeSession("existing-session", { pid: 101, name: "Existing" });
 
-    const { container, ws } = await mountApp({
+    const { ws } = await mountApp({
       search: "?session=does-not-exist",
       initialSessions: [existing],
       storage: {
@@ -466,8 +485,151 @@ describe("App URL deep-link integration (#1537)", () => {
       },
     });
 
+    assert.deepEqual(watchedSessionIds(ws), ["existing-session"]);
+  });
+
+  it("leaves no session selected for an unmatched deep-link when localStorage is empty", async () => {
+    const existing = makeSession("existing-session", { pid: 101, name: "Existing" });
+
+    const { container, ws } = await mountApp({
+      search: "?session=does-not-exist",
+      initialSessions: [existing],
+    });
+
     assert.deepEqual(watchedSessionIds(ws), []);
     assert.match(container.textContent, /Select a session/);
+  });
+
+  it("promotes a provisional inactive peer match when an active peer arrives during the settling window", async () => {
+    const inactivePeer = makeSession("peer-old", {
+      pid: 101,
+      comsName: "worker",
+      comsProject: "proj-a",
+      active: false,
+    });
+    const activePeer = makeSession("peer-live", {
+      pid: 202,
+      comsName: "worker",
+      comsProject: "proj-a",
+      active: true,
+    });
+
+    const { ws, setSessions } = await mountApp({
+      search: "?peer=worker&project=proj-a",
+      initialSessions: [inactivePeer],
+    });
+
+    assert.deepEqual(watchedSessionIds(ws), ["peer-old"]);
+
+    setSessions([inactivePeer, activePeer]);
+    await act(async () => {
+      ws.emitMessage({ type: "session_added", session: activePeer });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(watchedSessionIds(ws), ["peer-old", "peer-live"]);
+  });
+
+  it("commits an inactive peer match after the settling timeout expires", async () => {
+    const inactivePeer = makeSession("peer-old", {
+      pid: 101,
+      comsName: "worker",
+      comsProject: "proj-a",
+      active: false,
+    });
+    const lateActivePeer = makeSession("peer-live", {
+      pid: 202,
+      comsName: "worker",
+      comsProject: "proj-a",
+      active: true,
+    });
+
+    const origSetTimeout = globalThis.setTimeout;
+    const origClearTimeout = globalThis.clearTimeout;
+    const settleCallbacks: Array<() => void> = [];
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+      if (ms === DEEP_LINK_INACTIVE_PEER_SETTLE_MS) {
+        settleCallbacks.push(fn);
+        return 777 as unknown as ReturnType<typeof setTimeout>;
+      }
+      return origSetTimeout(fn, ms);
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((id: any) => {
+      if (id === 777) return;
+      origClearTimeout(id);
+    }) as typeof clearTimeout;
+
+    try {
+      const { ws, setSessions } = await mountApp({
+        search: "?peer=worker&project=proj-a",
+        initialSessions: [inactivePeer],
+      });
+
+      assert.deepEqual(watchedSessionIds(ws), ["peer-old"]);
+      assert.equal(settleCallbacks.length, 1);
+
+      await act(async () => {
+        settleCallbacks[0]();
+      });
+
+      setSessions([inactivePeer, lateActivePeer]);
+      await act(async () => {
+        ws.emitMessage({ type: "session_added", session: lateActivePeer });
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      assert.deepEqual(watchedSessionIds(ws), ["peer-old"]);
+    } finally {
+      globalThis.setTimeout = origSetTimeout;
+      globalThis.clearTimeout = origClearTimeout;
+    }
+  });
+
+  it("cancels a provisional inactive peer match upon manual session selection", async () => {
+    const inactivePeer = makeSession("peer-old", {
+      pid: 101,
+      comsName: "worker",
+      comsProject: "proj-a",
+      active: false,
+    });
+    const manualPick = makeSession("manual-session", { pid: 102, name: "Manual Pick" });
+    const activePeer = makeSession("peer-live", {
+      pid: 202,
+      comsName: "worker",
+      comsProject: "proj-a",
+      active: true,
+    });
+
+    const { container, ws, setSessions } = await mountApp({
+      search: "?peer=worker&project=proj-a",
+      initialSessions: [inactivePeer, manualPick],
+    });
+
+    assert.deepEqual(watchedSessionIds(ws), ["peer-old"]);
+
+    const manualRow = elements(container, "div").find((el) => el.getAttribute("data-session-id") === "manual-session");
+    assert.ok(manualRow, "expected manual-session row in sidebar");
+    await act(async () => {
+      manualRow.dispatchEvent(new (globalThis as any).MouseEvent("click", { bubbles: true }));
+    });
+    assert.deepEqual(watchedSessionIds(ws), ["peer-old", "manual-session"]);
+
+    setSessions([inactivePeer, manualPick, activePeer]);
+    await act(async () => {
+      ws.emitMessage({ type: "session_added", session: activePeer });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(watchedSessionIds(ws), ["peer-old", "manual-session"]);
   });
 
   it("restores localStorage normally when only unrelated query parameters exist", async () => {

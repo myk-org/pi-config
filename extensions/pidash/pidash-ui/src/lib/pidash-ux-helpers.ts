@@ -6,6 +6,8 @@ const log = createLogger("pidash-ux");
 export const PINNED_SESSIONS_STORAGE_KEY = "pidash-pinned-sessions";
 export const ARCHIVED_SESSIONS_STORAGE_KEY = "pidash-archived-sessions";
 export const MAX_PERSISTED_SESSION_IDS = 200;
+/** Bounded settling window (ms) during which a provisional inactive `?peer=` match upgrades if an active match arrives. */
+export const DEEP_LINK_INACTIVE_PEER_SETTLE_MS = 5_000;
 
 export interface SidebarFlags {
   pinned: Set<string>;
@@ -69,6 +71,19 @@ export function matchDeepLinkSession(
     return candidates.find((s) => s.active) ?? candidates[0];
   }
   return null;
+}
+
+/**
+ * True when a deep-link match is definitive (exact `sessionId` match, or an `active` peer match).
+ * Inactive `?peer=` matches stay provisional for a bounded settling window so a late-arriving
+ * active peer with the same name/project can still take precedence.
+ */
+export function isDefinitiveDeepLinkMatch(
+  matched: Pick<SessionInfo, "sessionId" | "active">,
+  target: PidashDeepLinkTarget,
+): boolean {
+  if (target.session && matched.sessionId === target.session) return true;
+  return matched.active === true;
 }
 
 function normalizeProjectPath(cwd: string | undefined | null): string {

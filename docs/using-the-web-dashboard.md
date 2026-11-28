@@ -41,7 +41,7 @@ Open a specific session or supervised COMS peer directly via URL query parameter
 - `http://127.0.0.1:19190/?peer=<comsName>` — selects the peer with matching `comsName`, preferring an active session over inactive ones.
 - `http://127.0.0.1:19190/?peer=<comsName>&project=<comsProject>` — disambiguates peers sharing a name across projects by requiring an exact `comsProject` match (preferring active over inactive).
 
-Deep-link targets override `localStorage` on initial load, retry automatically as late-arriving WebSocket sessions (`session_added` / `session_updated`) appear, auto-expand collapsed sidebar groups/parents/Coms/Archived sections, cancel immediately if you manually select another session, and stay cleanly on the session picker without selecting an unrelated session when no target matches.
+Deep-link targets override `localStorage` on initial load, retry automatically as late-arriving WebSocket sessions (`session_added` / `session_updated`) appear (including promoting a provisional inactive `?peer=` match when an active match arrives during the settling window), auto-expand collapsed sidebar groups/parents/Coms/Archived sections, cancel immediately if you manually select another session, and fall back gracefully to normal `localStorage` session restore when no target matches.
 
 ### Dashboard vs. Diff Viewer
 
