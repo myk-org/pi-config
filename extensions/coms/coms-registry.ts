@@ -51,6 +51,10 @@ export interface RegistryEntry {
 	task_store_path?: string | null;
 	/** #1083: active-only workload counted by the peer itself; absent on older entries. */
 	workload?: PeerWorkloadCounts | null;
+	/** #1512: rootless Podman container name when peer runs inside a sandbox container. */
+	container?: string | null;
+	/** #1512: real host PID (`State.Pid`) when known for a containerized peer. */
+	host_pid?: number | null;
 }
 
 /** Resolve the effective COMS root directory for `cwd` via project settings, falling back to `~/.pi/coms`. */
@@ -160,6 +164,17 @@ export function isRegistryRowAlive(
 	if (!fresh) return false;
 	// On Windows the endpoint is a named pipe, which fs.existsSync cannot see.
 	if (platform !== "win32" && row.endpoint && !fs.existsSync(row.endpoint)) return false;
+	// #1512: containerized peers run in a separate PID namespace. Probe real hostPid when
+	// known; otherwise socket existence + fresh heartbeat is authoritative (never kill(containerPid, 0)).
+	if (row.hostPid && row.hostPid > 0) {
+		try {
+			process.kill(row.hostPid, 0);
+			return true;
+		} catch (err: unknown) {
+			return (err as NodeJS.ErrnoException)?.code === "EPERM";
+		}
+	}
+	if (row.container) return true;
 	if (!row.pid) return true; // no pid claim: socket + heartbeat decided
 	try {
 		process.kill(row.pid, 0);
@@ -359,6 +374,8 @@ export class ComsRegistry {
 						piSessionId: typeof entry.pi_session_id === "string" ? entry.pi_session_id : null,
 						// #1083: a peer that reports nothing stays null — never 0.
 						workload: parseRegistryWorkload(entry.workload),
+						container: typeof entry.container === "string" && entry.container.trim() ? entry.container.trim() : null,
+						hostPid: Number.isInteger(entry.host_pid) && entry.host_pid > 0 ? entry.host_pid : null,
 					});
 				} catch (error: unknown) {
 					log.warn("coms_registry_entry_unreadable", {

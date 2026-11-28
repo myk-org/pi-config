@@ -1,0 +1,657 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, it } from "node:test";
+import {
+  DEFAULT_BASE_IMAGE,
+  MIN_PI_VERSION,
+  acquireBuildLock,
+  buildPeerContainerName,
+  buildPeerImageTag,
+  buildPodmanRunArgs,
+  computePeerImageHash,
+  detectHostPiVersion,
+  isBuildLockActive,
+  isSelinuxEnforcing,
+  pruneStalePeerImages,
+  readBuildStatus,
+  resolveImageForSpawn,
+  rewriteRemoteToHttps,
+  validateBaseImage,
+} from "../../../scripts/podman-peer-image.mjs";
+import { ComsRegistry, isRegistryRowAlive } from "../../../extensions/coms/coms-registry.ts";
+import {
+  buildPeerSpawn,
+  formatPeerDetailLines,
+  formatPeerTable,
+  listStoppedSupervisedPeers,
+  planPeerKills,
+  selectKillTargets,
+  supervisedPeerKeys,
+  type RegistryRow,
+} from "../../../extensions/coms/coms-peers.ts";
+import { buildPeerInfoRow } from "../../../extensions/coms/coms-drilldown.ts";
+import { buildComsPeersPayload } from "../../../extensions/coms/coms-shared.ts";
+import { executePeerKillEntry } from "../../../extensions/coms/coms-wrapper.ts";
+
+const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
+const tempDirs: string[] = [];
+
+function makeTempDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop()!;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe("Podman sandbox settings schema", () => {
+  const settingsKeys = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "settings-keys.json"), "utf8"));
+  const exampleSettings = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "pi-config-settings.example.json"), "utf8"));
+
+  it("defaults coms_peer_sandbox to off", () => {
+    assert.equal(settingsKeys.coms_peer_sandbox.default, "off");
+  });
+
+  it("marks coms_peer_sandbox as global_only", () => {
+    assert.equal(settingsKeys.coms_peer_sandbox.global_only, true);
+  });
+
+  it("restricts coms_peer_sandbox enum to off or podman", () => {
+    assert.deepEqual(settingsKeys.coms_peer_sandbox.enum, ["off", "podman"]);
+  });
+
+  it("defaults coms_peer_sandbox_cpus to 4", () => {
+    assert.equal(settingsKeys.coms_peer_sandbox_cpus.default, 4);
+    assert.equal(settingsKeys.coms_peer_sandbox_cpus.global_only, true);
+  });
+
+  it("defaults coms_peer_sandbox_memory to 4g", () => {
+    assert.equal(settingsKeys.coms_peer_sandbox_memory.default, "4g");
+    assert.equal(settingsKeys.coms_peer_sandbox_memory.global_only, true);
+  });
+
+  it("defaults coms_peer_sandbox_base_image to pinned Fedora 45", () => {
+    assert.equal(settingsKeys.coms_peer_sandbox_base_image.default, "registry.fedoraproject.org/fedora:45");
+    assert.equal(settingsKeys.coms_peer_sandbox_base_image.global_only, true);
+  });
+
+  it("declares coms_peer_sandbox as off in pi-config-settings.example.json", () => {
+    assert.equal(exampleSettings.coms_peer_sandbox, "off");
+  });
+});
+
+describe("Containerfile.peer 3-layer structure", () => {
+  const content = fs.readFileSync(path.join(REPO_ROOT, "Containerfile.peer"), "utf8");
+  const instructions = content
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n");
+
+  it("declares pinned Fedora 45 BASE_IMAGE default before FROM", () => {
+    const argIdx = instructions.indexOf("ARG BASE_IMAGE=registry.fedoraproject.org/fedora:45");
+    const fromIdx = instructions.indexOf("FROM ${BASE_IMAGE}");
+    assert.ok(argIdx >= 0, "missing ARG BASE_IMAGE");
+    assert.ok(fromIdx > argIdx, "FROM must follow ARG BASE_IMAGE");
+  });
+
+  it("never references a floating :latest tag", () => {
+    assert.doesNotMatch(instructions, /:latest\b/i);
+  });
+
+  it("never hardcodes a default PI_VERSION value", () => {
+    assert.match(instructions, /^ARG PI_VERSION\s*$/m);
+    assert.doesNotMatch(instructions, /^ARG PI_VERSION=.+/m);
+  });
+
+  it("declares ARG PI_VERSION after scripts/install.py Layer 2", () => {
+    const installIdx = instructions.indexOf("uv run /tmp/install.py --all");
+    const piVersionIdx = instructions.indexOf("ARG PI_VERSION");
+    assert.ok(installIdx > 0, "missing install.py Layer 2");
+    assert.ok(piVersionIdx > installIdx, "ARG PI_VERSION must appear after Layer 2 for 3-layer caching");
+  });
+
+  it("folds /opt/node_modules move into the same RUN instruction as install.py", () => {
+    const layer2Match = instructions.match(/uv run \/tmp\/install\.py --all[\s\S]*?ln -s \/opt\/node_modules/);
+    assert.ok(layer2Match, "missing folded node_modules move");
+    assert.doesNotMatch(layer2Match[0], /\nRUN\s/);
+  });
+
+  it("omits socat from installed packages", () => {
+    assert.doesNotMatch(instructions, /\bsocat\b/);
+  });
+
+  it("omits sshd from installed packages", () => {
+    assert.doesNotMatch(instructions, /\bopenssh-server\b|\bsshd\b/);
+  });
+
+  it("omits Fedora nodejs RPM to avoid libicu Intl.Segmenter SIGSEGV", () => {
+    const dnfBlock = instructions.match(/dnf install[\s\S]*?dnf clean all/);
+    assert.ok(dnfBlock, "missing dnf install block");
+    assert.doesNotMatch(dnfBlock[0], /^\s+nodejs\s*\\?$/m);
+    assert.doesNotMatch(dnfBlock[0], /^\s+npm\s*\\?$/m);
+  });
+
+  it("installs official upstream Node 22 tarball into /usr/local", () => {
+    assert.match(instructions, /https:\/\/nodejs\.org\/dist\/v\$\{NODE_VERSION\}\/\$\{tarball\}/);
+    assert.match(instructions, /tar -xJf "\$\{tarball\}" -C \/usr\/local --strip-components=1/);
+    assert.match(instructions, /Intl\.Segmenter/);
+  });
+
+  it("does not persist UV_TOOL_BIN_DIR in runtime ENV", () => {
+    const envBlocks = instructions.match(/^ENV[\s\S]*?(?=\n\n|\n[A-Z]+ )/gm) ?? [];
+    for (const block of envBlocks) {
+      assert.doesNotMatch(block, /UV_TOOL_BIN_DIR/);
+    }
+  });
+
+  it("scopes UV_TOOL_BIN_DIR to the Layer 2 install.py RUN invocation", () => {
+    assert.match(instructions, /UV_TOOL_BIN_DIR=\/home\/peer\/\.local\/bin uv run \/tmp\/install\.py --all/);
+  });
+});
+
+describe("Peer image validation", () => {
+  it("rejects floating :latest base image", () => {
+    const res = validateBaseImage("registry.fedoraproject.org/fedora:latest");
+    assert.equal(res.ok, false);
+  });
+
+  it("rejects untagged base image", () => {
+    const res = validateBaseImage("registry.fedoraproject.org/fedora");
+    assert.equal(res.ok, false);
+  });
+
+  it("accepts explicit version-tagged base image", () => {
+    const res = validateBaseImage("registry.fedoraproject.org/fedora:45");
+    assert.equal(res.ok, true);
+  });
+
+  it("accepts sha256 digest-pinned base image", () => {
+    const digest = "a".repeat(64);
+    const res = validateBaseImage(`registry.fedoraproject.org/fedora@sha256:${digest}`);
+    assert.equal(res.ok, true);
+  });
+
+  it("detects semver from pi --version output", () => {
+    const ver = detectHostPiVersion({ execFileSync: () => "1.8.2\n" });
+    assert.equal(ver, "1.8.2");
+  });
+
+  it("rejects host Pi version below MIN_PI_VERSION", () => {
+    assert.throws(
+      () => detectHostPiVersion({ execFileSync: () => "1.5.0\n", minVersion: MIN_PI_VERSION }),
+      /below required minimum/,
+    );
+  });
+});
+
+describe("Content-hash peer image tags", () => {
+  const baseInputs = {
+    containerfileContent: "FROM fedora:45",
+    installPyContent: "print('install')",
+    installSourcesContent: "PI_CONFIG_NPM='x'",
+    baseImage: DEFAULT_BASE_IMAGE,
+    piVersion: "1.7.0",
+  };
+
+  it("computes a deterministic 12-char lowercase hex hash", () => {
+    const hash = computePeerImageHash(baseInputs);
+    assert.match(hash, /^[a-f0-9]{12}$/);
+    assert.equal(hash, computePeerImageHash(baseInputs));
+  });
+
+  it("changes hash when piVersion changes", () => {
+    const h1 = computePeerImageHash(baseInputs);
+    const h2 = computePeerImageHash({ ...baseInputs, piVersion: "1.7.1" });
+    assert.notEqual(h1, h2);
+  });
+
+  it("changes hash when installPyContent changes", () => {
+    const h1 = computePeerImageHash(baseInputs);
+    const h2 = computePeerImageHash({ ...baseInputs, installPyContent: "print('v2')" });
+    assert.notEqual(h1, h2);
+  });
+
+  it("changes hash when baseImage changes", () => {
+    const h1 = computePeerImageHash(baseInputs);
+    const h2 = computePeerImageHash({ ...baseInputs, baseImage: "registry.fedoraproject.org/fedora:46" });
+    assert.notEqual(h1, h2);
+  });
+
+  it("formats tags under localhost/pi-peer", () => {
+    assert.equal(buildPeerImageTag("abcdef012345"), "localhost/pi-peer:abcdef012345");
+  });
+});
+
+describe("Host-agnostic Podman run argv builder", () => {
+  const baseRunOpts = {
+    imageTag: "localhost/pi-peer:abcdef012345",
+    uid: 12345,
+    gid: 12345,
+    selinuxEnforcing: false,
+    cpus: 4,
+    memory: "4g",
+    piConfigDir: "/opt/host/pi-orchestrator-config",
+    agentDir: "/tmp/peer-agent-dir",
+    hostAuthJsonPath: "/tmp/host-agent/auth.json",
+    hostModelsJsonPath: "/tmp/host-agent/models.json",
+    entrypointPath: "/opt/host/scripts/podman-peer-entrypoint.sh",
+    gitconfigSeedPath: "/tmp/peer-sandbox/gitconfig.seed",
+    workspacePath: "/tmp/peer-sandbox/workspace",
+    comsDir: "/tmp/host-coms",
+    cname: "worker-1",
+    project: "my-project",
+    purpose: "Run tests",
+    env: { GITHUB_TOKEN: "ghp_secret_value" },
+  };
+
+  it("builds deterministic pi-peer-<project>-<cname> names", () => {
+    assert.equal(buildPeerContainerName("My_Project", "Worker_01"), "pi-peer-my_project-worker_01");
+  });
+
+  it("rewrites SCP-style SSH git remotes to HTTPS", () => {
+    assert.equal(rewriteRemoteToHttps("git@github.com:myk-org/pi-config.git"), "https://github.com/myk-org/pi-config.git");
+  });
+
+  it("rewrites ssh:// git remotes to HTTPS", () => {
+    assert.equal(rewriteRemoteToHttps("ssh://git@github.com/myk-org/pi-config.git"), "https://github.com/myk-org/pi-config.git");
+  });
+
+  it("detects SELinux enforcing state from /sys/fs/selinux/enforce", () => {
+    assert.equal(isSelinuxEnforcing(() => "1\n"), true);
+    assert.equal(isSelinuxEnforcing(() => "0\n"), false);
+  });
+
+  it("includes --init for zombie reaping", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    assert.ok(argv.includes("--init"));
+  });
+
+  it("includes --userns=keep-id:uid=1000,gid=1000 for non-root host UIDs", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    assert.ok(argv.includes("--userns=keep-id:uid=1000,gid=1000"));
+  });
+
+  it("passes --security-opt label=disable when SELinux is enforcing", () => {
+    const argv = buildPodmanRunArgs({ ...baseRunOpts, selinuxEnforcing: true });
+    const idx = argv.indexOf("--security-opt");
+    assert.ok(idx >= 0);
+    assert.equal(argv[idx + 1], "label=disable");
+  });
+
+  it("omits --security-opt label=disable when SELinux is not enforcing", () => {
+    const argv = buildPodmanRunArgs({ ...baseRunOpts, selinuxEnforcing: false });
+    assert.equal(argv.includes("--security-opt"), false);
+  });
+
+  it("never passes :Z or :z mount relabel suffixes", () => {
+    const argv = buildPodmanRunArgs({ ...baseRunOpts, selinuxEnforcing: true });
+    for (const arg of argv) {
+      assert.doesNotMatch(arg, /:[zZ](?:,|$)/);
+    }
+  });
+
+  it("never mounts host ~/.ssh", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    for (const arg of argv) {
+      assert.equal(arg.includes(".ssh"), false);
+    }
+  });
+
+  it("sets PI_PIDASH_HOST to host.containers.internal", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    assert.ok(argv.includes("PI_PIDASH_HOST=host.containers.internal"));
+  });
+
+  it("sets PI_PIDIFF_HOST to host.containers.internal", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    assert.ok(argv.includes("PI_PIDIFF_HOST=host.containers.internal"));
+  });
+
+  it("sets PI_COMS_CONTAINER_NAME to deterministic container name", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    assert.ok(argv.includes("PI_COMS_CONTAINER_NAME=pi-peer-my-project-worker-1")); // pragma: allowlist secret
+  });
+
+  it("mounts host pi-orchestrator-config read-only at /opt/pi-config", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    assert.ok(argv.includes(`${baseRunOpts.piConfigDir}:/opt/pi-config:ro`));
+  });
+
+  it("mounts workspace at identical host path", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    assert.ok(argv.includes(`${baseRunOpts.workspacePath}:${baseRunOpts.workspacePath}:rw`));
+  });
+
+  it("passes secret env vars by key name without exposing values in argv", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    assert.ok(argv.includes("GITHUB_TOKEN"));
+    for (const arg of argv) {
+      assert.equal(arg.includes("ghp_secret_value"), false);
+    }
+  });
+
+  it("omits auth.json mount when host auth.json path is null", () => {
+    const argv = buildPodmanRunArgs({ ...baseRunOpts, hostAuthJsonPath: null });
+    assert.equal(argv.some((a) => a.includes("auth.json")), false);
+  });
+});
+
+describe("File-locked background pre-warm", () => {
+  it("prevents duplicate lock acquisition while owner PID is alive", () => {
+    const dir = makeTempDir("pi-lock-");
+    const lockPath = path.join(dir, "podman-peer-build.lock");
+    const first = acquireBuildLock(lockPath, { pid: 4242, targetTag: "localhost/pi-peer:aaaa11112222" }, (p) => p === 4242);
+    assert.equal(first.acquired, true);
+    const second = acquireBuildLock(lockPath, { pid: 9999, targetTag: "localhost/pi-peer:bbbb11112222" }, (p) => p === 4242);
+    assert.equal(second.acquired, false);
+    assert.equal(second.owner?.pid, 4242);
+    first.release();
+    assert.equal(fs.existsSync(lockPath), false);
+  });
+
+  it("recovers stale lockfile when owner PID is dead", () => {
+    const dir = makeTempDir("pi-lock-stale-");
+    const lockPath = path.join(dir, "podman-peer-build.lock");
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 777777, targetTag: "localhost/pi-peer:old" }));
+    assert.equal(isBuildLockActive(lockPath, () => false).active, false);
+    const acquired = acquireBuildLock(lockPath, { pid: process.pid, targetTag: "localhost/pi-peer:new" }, () => true);
+    assert.equal(acquired.acquired, true);
+    acquired.release();
+  });
+
+  it("boots immediately on prior cached tag while target tag builds in background", () => {
+    const dir = makeTempDir("pi-fallback-");
+    let spawned = 0;
+    const res = resolveImageForSpawn({
+      homeDir: dir,
+      packageRoot: REPO_ROOT,
+      piVersion: "1.7.0",
+      execFileSync: (_cmd: string, args: string[]) => {
+        if (args[0] === "--version") return "podman version 6.2.0";
+        if (args[0] === "image" && args[1] === "exists") throw new Error("not found");
+        if (args[0] === "images") return "localhost/pi-peer:000011112222\n";
+        return "";
+      },
+      spawn: () => {
+        spawned += 1;
+        return { pid: 55555, unref() {} };
+      },
+    });
+    assert.equal(res.action, "run");
+    assert.equal(res.usingFallback, true);
+    assert.equal(res.imageTag, "localhost/pi-peer:000011112222");
+    assert.equal(spawned, 1);
+  });
+
+  it("returns non-blocking building status on cold first build with no cached image", () => {
+    const dir = makeTempDir("pi-cold-");
+    const res = resolveImageForSpawn({
+      homeDir: dir,
+      packageRoot: REPO_ROOT,
+      piVersion: "1.7.0",
+      execFileSync: (_cmd: string, args: string[]) => {
+        if (args[0] === "--version") return "podman version 6.2.0";
+        if (args[0] === "image" && args[1] === "exists") throw new Error("not found");
+        if (args[0] === "images") return "";
+        return "";
+      },
+      spawn: () => ({ pid: 55556, unref() {} }),
+    });
+    assert.equal(res.action, "building");
+    assert.equal(res.imageTag, null);
+    assert.ok(res.logPath.endsWith("podman-build.log"));
+  });
+
+  it("prunes older localhost/pi-peer tags while keeping the newly built tag", () => {
+    const removed: string[] = [];
+    const pruned = pruneStalePeerImages("localhost/pi-peer:newtag123456", {
+      execFileSync: (_cmd: string, args: string[]) => {
+        if (args[0] === "images") return "localhost/pi-peer:newtag123456\nlocalhost/pi-peer:oldtag654321\n";
+        if (args[0] === "rmi") removed.push(args[1]);
+        return "";
+      },
+      logger: { debug() {}, info() {}, warn() {}, error() {}, isDebugEnabled: () => false },
+    });
+    assert.deepEqual(pruned, ["localhost/pi-peer:oldtag654321"]);
+    assert.deepEqual(removed, ["localhost/pi-peer:oldtag654321"]);
+  });
+
+  it("reports building state in readBuildStatus while lock owner PID is alive", () => {
+    const dir = makeTempDir("pi-status-");
+    const lockPath = path.join(dir, "build.lock");
+    const statusPath = path.join(dir, "build.status.json");
+    const logPath = path.join(dir, "podman-build.log");
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 4321, targetTag: "localhost/pi-peer:111122223333", logPath }));
+    const snap = readBuildStatus({ lockPath, statusPath, logPath, pidAliveFn: (p: number) => p === 4321 });
+    assert.equal(snap.state, "building");
+    assert.equal(snap.targetTag, "localhost/pi-peer:111122223333");
+  });
+});
+
+describe("COMS registry container liveness", () => {
+  function makeRow(overrides: Partial<RegistryRow> = {}): RegistryRow {
+    const dir = makeTempDir("pi-sock-");
+    const sock = path.join(dir, "peer.sock");
+    fs.writeFileSync(sock, "");
+    return {
+      project: "proj",
+      name: "ctr-peer",
+      pid: 0,
+      cwd: "/tmp/work",
+      purpose: "test",
+      endpoint: sock,
+      busy: false,
+      queueDepth: 0,
+      contextUsedPct: 10,
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      container: "pi-peer-proj-ctr-peer",
+      hostPid: null,
+      ...overrides,
+    };
+  }
+
+  it("treats containerized row with pid 0 as alive when heartbeat is fresh", () => {
+    const row = makeRow();
+    assert.equal(isRegistryRowAlive(row), true);
+  });
+
+  it("treats containerized row with live hostPid as alive", () => {
+    const row = makeRow({ hostPid: process.pid });
+    assert.equal(isRegistryRowAlive(row), true);
+  });
+
+  it("treats containerized row with dead hostPid as dead", () => {
+    const row = makeRow({ hostPid: 99999999 });
+    assert.equal(isRegistryRowAlive(row), false);
+  });
+
+  it("reads container field from registry JSON via ComsRegistry", () => {
+    const dir = makeTempDir("pi-reg-");
+    const reg = new ComsRegistry(dir);
+    reg.writeEntryAtomic({
+      coms_session_id: "sess-1",
+      name: "box-peer",
+      purpose: "sandbox",
+      model: "test-model",
+      color: "#ffffff",
+      pid: 0,
+      endpoint: path.join(dir, "sockets", "sess-1.sock"),
+      cwd: "/tmp/work",
+      started_at: new Date().toISOString(),
+      explicit: false,
+      version: 1,
+      container: "pi-peer-demo-box-peer",
+      host_pid: process.pid,
+    }, "demo");
+    const rows = reg.readRows();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].container, "pi-peer-demo-box-peer");
+    assert.equal(rows[0].hostPid, process.pid);
+  });
+});
+
+describe("Container-aware peer kill", () => {
+  it("selects containerized live peers even when pid is 0", () => {
+    const row: RegistryRow = {
+      project: "proj",
+      name: "box",
+      pid: 0,
+      cwd: "/tmp/work",
+      purpose: "",
+      endpoint: "/tmp/a.sock",
+      busy: false,
+      queueDepth: 0,
+      contextUsedPct: 0,
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      container: "pi-peer-proj-box",
+    };
+    const sel = selectKillTargets([row], { name: "box" }, () => true);
+    assert.equal(sel.targets.length, 1);
+  });
+
+  it("attaches container name in planPeerKills for supervised containerized peer", () => {
+    const records = [{ cname: "box", project: "proj", pid: 4000, childPid: 4001, container: "pi-peer-proj-box" }];
+    const row: RegistryRow = {
+      project: "proj",
+      name: "box",
+      pid: 0,
+      cwd: "/tmp/work",
+      purpose: "",
+      endpoint: "/tmp/a.sock",
+      busy: false,
+      queueDepth: 0,
+      contextUsedPct: 0,
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      container: "pi-peer-proj-box",
+    };
+    const plan = planPeerKills({
+      rows: [row],
+      supervisedKeys: supervisedPeerKeys(records),
+      records,
+      request: { name: "box", project: "proj" },
+      isAlive: () => true,
+    });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].reason, "supervisor");
+    assert.equal(plan[0].signalPid, 4000);
+    assert.equal(plan[0].container, "pi-peer-proj-box");
+  });
+
+  it("invokes container removal via podman rm -f in executePeerKillEntry", () => {
+    const removed: string[] = [];
+    const killed: Array<[number, string]> = [];
+    const ok = executePeerKillEntry(
+      { name: "box", project: "proj", signalPid: 4000, container: "pi-peer-proj-box", reason: "supervisor" },
+      {
+        removeContainer: (c) => removed.push(c),
+        killPid: (pid, sig) => killed.push([pid, sig]),
+      },
+    );
+    assert.equal(ok, true);
+    assert.deepEqual(removed, ["pi-peer-proj-box"]);
+    assert.deepEqual(killed, [[4000, "SIGTERM"]]);
+  });
+
+  it("appends podman sandbox flags in buildPeerSpawn", () => {
+    const res = buildPeerSpawn("/opt/sup/coms-peer-supervisor.mjs", {
+      cname: "box",
+      project: "proj",
+      sandbox: "podman",
+      image: "localhost/pi-peer:abcdef012345",
+      cpus: 2,
+      memory: "2g",
+    });
+    assert.equal(res.ok, true);
+    if (res.ok) {
+      assert.ok(res.command.includes("--sandbox"));
+      assert.ok(res.command.includes("podman"));
+      assert.ok(res.command.includes("--image"));
+      assert.ok(res.command.includes("localhost/pi-peer:abcdef012345"));
+    }
+  });
+
+  it("rejects buildPeerSpawn with podman sandbox when image is missing", () => {
+    const res = buildPeerSpawn("/opt/sup/coms-peer-supervisor.mjs", {
+      cname: "box",
+      project: "proj",
+      sandbox: "podman",
+    });
+    assert.equal(res.ok, false);
+  });
+
+  it("renders container badge in formatPeerTable", () => {
+    const table = formatPeerTable([{
+      project: "proj",
+      name: "box",
+      pid: 0,
+      hostPid: 5150,
+      cwd: "/tmp/work",
+      purpose: "test",
+      endpoint: "/tmp/a.sock",
+      busy: false,
+      queueDepth: 0,
+      contextUsedPct: 12,
+      startedAt: null,
+      heartbeatAt: null,
+      container: "pi-peer-proj-box",
+    }]);
+    assert.match(table, /🐳 pi-peer-proj-box/);
+  });
+
+  it("renders container line in formatPeerDetailLines", () => {
+    const lines = formatPeerDetailLines({
+      project: "proj",
+      name: "box",
+      pid: 0,
+      hostPid: 5150,
+      cwd: "/tmp/work",
+      purpose: "test",
+      endpoint: "/tmp/a.sock",
+      busy: false,
+      queueDepth: 0,
+      contextUsedPct: 12,
+      startedAt: null,
+      heartbeatAt: null,
+      container: "pi-peer-proj-box",
+    });
+    assert.ok(lines.some((line) => line.includes("container pi-peer-proj-box")));
+  });
+
+  it("renders Container detail row in buildPeerInfoRow", () => {
+    const row = buildPeerInfoRow({
+      name: "box",
+      project: "proj",
+      busy: false,
+      container: "pi-peer-proj-box",
+    });
+    assert.ok(row.items[0].detail.some(([k, v]) => k === "Container" && v === "pi-peer-proj-box"));
+    assert.ok(row.items[0].detail.some(([k, v]) => k === "Shell" && v === "podman exec -it pi-peer-proj-box bash"));
+  });
+
+  it("preserves container metadata on stopped supervised peer rows", () => {
+    const stopped = listStoppedSupervisedPeers(
+      [{ cname: "box", project: "proj", container: "pi-peer-proj-box", exitedAt: "2026-11-28T00:00:00.000Z" }],
+      [],
+    );
+    assert.equal(stopped.length, 1);
+    assert.equal(stopped[0].container, "pi-peer-proj-box");
+  });
+
+  it("propagates container field in buildComsPeersPayload", () => {
+    const payload = buildComsPeersPayload(
+      [{ name: "box", purpose: "test", model: "m", color: "#ffffff", busy: false, queue_depth: 0, context_used_pct: 5, container: "pi-peer-proj-box", staleCount: 0 }],
+      { name: "main", project: "proj" },
+    );
+    assert.equal(payload.peers[0].container, "pi-peer-proj-box");
+  });
+});

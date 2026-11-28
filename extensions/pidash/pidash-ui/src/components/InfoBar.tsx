@@ -64,6 +64,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
     count: number;
     tasks: Array<{ id: string; description: string; schedule: string; lastRun?: number; nextRun?: number; leader?: boolean; paused?: boolean }>;
   }>({ count: 0, tasks: [] });
+  const [podmanBuild, setPodmanBuild] = useState<{ state: string; targetTag?: string | null; logPath?: string } | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const thinkingButtonRef = useRef<HTMLButtonElement>(null);
   const thinkingOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -136,6 +137,13 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       }
       if (ev.type === "cron-status") {
         setCronTasks({ count: ev.count || 0, tasks: ev.tasks || [] });
+      }
+      if (ev.type === "podman-build-status") {
+        if (ev.state === "building" || ev.state === "ready") {
+          setPodmanBuild({ state: ev.state, targetTag: ev.targetTag, logPath: ev.logPath });
+        } else {
+          setPodmanBuild(null);
+        }
       }
     });
   }, [onMessage]);
@@ -623,12 +631,28 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         )}
 
         {/* Container — mount only when running inside a container. */}
-        {session.container && (
+        {(session.container || session.containerName) && (
           <span
-            className="text-[10px] px-1 py-0.5 border border-border rounded shrink-0"
-            title="Session runs inside a container"
+            data-testid="pidash-container-badge"
+            className="text-[10px] px-1 py-0.5 border border-border rounded shrink-0 max-w-[12rem] truncate"
+            title={
+              session.containerName
+                ? `Container: ${session.containerName} (podman exec -it ${session.containerName} bash)`
+                : "Session runs inside a container"
+            }
           >
-            🧊
+            {session.containerName ? `🐳 ${session.containerName}` : "🧊"}
+          </span>
+        )}
+
+        {/* Non-blocking Podman peer image build status (#1512) */}
+        {podmanBuild && (podmanBuild.state === "building" || podmanBuild.state === "ready") && (
+          <span
+            data-testid="pidash-podman-build-status"
+            className="text-[10px] px-1.5 py-0.5 border border-border rounded shrink-0 text-cyan-600 dark:text-cyan-400"
+            title={podmanBuild.logPath ? `Podman peer image build (${podmanBuild.logPath})` : "Podman peer image build"}
+          >
+            {podmanBuild.state === "building" ? "🐳 Building peer image…" : "✓ Peer image ready"}
           </span>
         )}
 

@@ -29,8 +29,14 @@ import {
 } from "../shared/widget-visibility.js";
 import { Type } from "typebox";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { getSetting } from "../orchestrator/project-settings.js";
+import {
+    readBuildStatus,
+    resolveImageForSpawn,
+    startBackgroundPeerImageBuild,
+} from "../../scripts/podman-peer-image.mjs";
 import {
     activationVerified,
     collectComsActivityEvents,
@@ -44,6 +50,7 @@ import {
     resolveKillScope,
     resolvePeerScope,
     supervisedPeerKeys,
+    type KillPlanEntry,
     type RegistryRow,
 } from "./coms-peers.js";
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
@@ -64,6 +71,55 @@ function mapToFlagOverrides(values: Map<string, any>): ComsPeerFlagOverrides {
     if (typeof color === "string" && color) out.color = color;
     if (values.get("explicit") === true) out.explicit = true;
     return out;
+}
+
+export interface ExecutePeerKillDeps {
+    killPid?: (pid: number, signal: NodeJS.Signals) => void;
+    removeContainer?: (containerName: string) => void;
+}
+
+/**
+ * Stop one planned peer kill entry.
+ * For containerized peers (#1512), runs `podman rm -f <container>` AND signals the host
+ * supervisor so its state record cleans up cleanly.
+ */
+export function executePeerKillEntry(
+    entry: KillPlanEntry,
+    deps: ExecutePeerKillDeps = {},
+): boolean {
+    const killPid = deps.killPid ?? ((pid: number, sig: NodeJS.Signals) => { process.kill(pid, sig); });
+    const removeContainer = deps.removeContainer ?? ((containerName: string) => {
+        execFileSync("podman", ["rm", "-f", containerName], { stdio: "ignore", timeout: 15_000 });
+    });
+
+    let stopped = false;
+    if (entry.container) {
+        try {
+            removeContainer(entry.container);
+            stopped = true;
+            log.info("coms_peer_container_removed", { name: entry.name, project: entry.project, container: entry.container });
+        } catch (error: unknown) {
+            log.warn("coms_peer_container_remove_failed", {
+                name: entry.name,
+                container: entry.container,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+    if (entry.signalPid !== null && entry.signalPid > 0) {
+        try {
+            killPid(entry.signalPid, "SIGTERM");
+            stopped = true;
+        } catch (error: unknown) {
+            log.warn("coms_peer_kill failed", {
+                name: entry.name,
+                pid: entry.signalPid,
+                container: entry.container ?? null,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+    return stopped;
 }
 
 export interface RegisterComsOptions {
@@ -94,9 +150,93 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     let cachedRegistry: ComsRegistry | null = null;
     let cachedHistoryReader: { path: string; reader: ReturnType<typeof createTailHistoryReader> } | null = null;
     let pidashUnsubscribe: (() => void) | null = null;
+    let settingsChangedUnsubscribe: (() => void) | null = null;
+    let podmanBuildPollTimer: ReturnType<typeof setInterval> | null = null;
+    let podmanReadyClearTimer: ReturnType<typeof setTimeout> | null = null;
     /** In-flight peer revives keyed by `project::name`, tagged per launch token so an older exit never clears a newer claim. */
     const revivingPeers = new Map<string, { claimedAt: number; token: symbol }>();
     const REVIVE_CLAIM_TTL_MS = 45_000;
+
+    const clearPodmanBuildTimers = (): void => {
+        if (podmanBuildPollTimer) {
+            clearInterval(podmanBuildPollTimer);
+            podmanBuildPollTimer = null;
+        }
+        if (podmanReadyClearTimer) {
+            clearTimeout(podmanReadyClearTimer);
+            podmanReadyClearTimer = null;
+        }
+    };
+
+    const emitPodmanBuildStatus = (
+        ctx: any,
+        payload: { state: "building" | "ready" | "error" | "idle"; targetTag: string | null; logPath?: string; error?: string | null },
+    ): void => {
+        try { pi.events.emit("pidash:podman-build-status", payload); } catch { /* pidash not loaded */ }
+        if (!ctx?.hasUI || !isLiveExtensionCtx(ctx)) return;
+        try {
+            if (payload.state === "building") {
+                ctx.ui.setStatus("7-podman-peer", ctx.ui.theme.fg("accent", "🐳 Building peer image…"));
+            } else if (payload.state === "ready") {
+                ctx.ui.setStatus("7-podman-peer", ctx.ui.theme.fg("success", "✓ Peer image ready"));
+                if (podmanReadyClearTimer) clearTimeout(podmanReadyClearTimer);
+                podmanReadyClearTimer = setTimeout(() => {
+                    podmanReadyClearTimer = null;
+                    try {
+                        if (liveCtx?.hasUI && isLiveExtensionCtx(liveCtx)) liveCtx.ui.setStatus("7-podman-peer", undefined);
+                    } catch { /* ignore */ }
+                }, 8000);
+                podmanReadyClearTimer.unref?.();
+            } else {
+                ctx.ui.setStatus("7-podman-peer", undefined);
+            }
+        } catch { /* ignore stale ctx */ }
+    };
+
+    const trackPodmanBuildProgress = (ctx: any, targetTag: string | null, logPath: string): void => {
+        emitPodmanBuildStatus(ctx, { state: "building", targetTag, logPath });
+        if (podmanBuildPollTimer) return;
+        podmanBuildPollTimer = setInterval(() => {
+            const snap = readBuildStatus();
+            if (snap.state === "building") return;
+            if (podmanBuildPollTimer) {
+                clearInterval(podmanBuildPollTimer);
+                podmanBuildPollTimer = null;
+            }
+            emitPodmanBuildStatus(liveCtx ?? ctx, {
+                state: snap.state,
+                targetTag: snap.targetTag ?? targetTag,
+                logPath: snap.logPath || logPath,
+                error: snap.error ?? null,
+            });
+        }, 5000);
+        podmanBuildPollTimer.unref?.();
+    };
+
+    const maybePrewarmPodmanPeerImage = (cwd: string, ctx: any): void => {
+        if (process.env.PI_COMS_SUPERVISED_PEER === "1" || process.env.PI_SUBAGENT_CHILD === "1") return;
+        let mode: string;
+        try {
+            mode = String(getSetting(cwd, "coms_peer_sandbox") || "off");
+        } catch {
+            return;
+        }
+        if (mode !== "podman") return;
+        // Run non-blockingly off the session_start / settings event tick
+        setImmediate(() => {
+            try {
+                const baseImage = String(getSetting(cwd, "coms_peer_sandbox_base_image") || "");
+                const bg = startBackgroundPeerImageBuild({ baseImage: baseImage || undefined });
+                if (bg.status === "building") {
+                    trackPodmanBuildProgress(ctx, bg.targetTag, bg.logPath);
+                } else if (bg.status === "error") {
+                    log.warn("podman_prewarm_failed", { error: bg.error });
+                }
+            } catch (err: unknown) {
+                log.warn("podman_prewarm_threw", { error: err instanceof Error ? err.message : String(err) });
+            }
+        });
+    };
 
     const getTailHistoryReader = () => {
         const histPath = getRegistry().historyPath();
@@ -180,6 +320,10 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         } catch (e: unknown) {
             const err = e instanceof Error ? e : new Error(String(e));
             log.warn("stale cleanup failed", err.message.slice(0, 100), err);
+        }
+
+        if (evt?.reason !== "reload" && ctx?.mode === "tui") {
+            maybePrewarmPodmanPeerImage(ctx?.cwd || process.cwd(), ctx);
         }
 
         if (evt?.reason === "reload") {
@@ -267,6 +411,11 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     });
 
     pi.on("session_shutdown", async (evt: any, ctx: any) => {
+        clearPodmanBuildTimers();
+        if (settingsChangedUnsubscribe) {
+            try { settingsChangedUnsubscribe(); } catch { /* ignore */ }
+            settingsChangedUnsubscribe = null;
+        }
         if (pidashUnsubscribe) {
             try { pidashUnsubscribe(); } catch { /* ignore */ }
             pidashUnsubscribe = null;
@@ -468,6 +617,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                     project: row.project,
                     cwd: row.cwd || liveCtx?.cwd || process.cwd(),
                     session: row.piSessionId ?? undefined,
+                    sandbox: row.container ? "podman" : undefined,
                     onSpawnFailure: releaseOwnClaim,
                 });
                 if (!res.ok) {
@@ -581,6 +731,12 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         for (const row of rows) {
             const record = pickSupervisionRecord(records, row);
             if (record && typeof (record as any).createdBy === "string") row.createdBy = (record as any).createdBy;
+            if (record && !row.container && typeof (record as any).container === "string" && (record as any).container.trim()) {
+                row.container = (record as any).container.trim();
+            }
+            if (record && !row.hostPid && Number.isInteger((record as any).childPid) && (record as any).childPid > 0) {
+                row.hostPid = (record as any).childPid;
+            }
         }
         return rows;
     };
@@ -638,8 +794,9 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         project?: string | null;
         cwd?: string | null;
         session?: string | null;
+        sandbox?: "off" | "podman" | null;
         onSpawnFailure?: () => void;
-    }): { ok: true; pid: number | null; message: string } | { ok: false; pid: null; message: string } => {
+    }): { ok: true; pid: number | null; building?: boolean; message: string } | { ok: false; pid: null; message: string } => {
         const here = path.dirname(fileURLToPath(import.meta.url));
         const supervisor = [
             path.join(here, "..", "..", "scripts", "coms-peer-supervisor.mjs"),
@@ -647,12 +804,60 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             path.join(liveCtx?.cwd || process.cwd(), "scripts", "coms-peer-supervisor.mjs"),
         ].map(candidate => path.resolve(candidate)).find(candidate => existsSync(candidate)) ?? "";
         const resolvedProject = params.project ?? ownProject();
+        const resolvedCwd = params.cwd ?? (liveCtx?.cwd || process.cwd());
+        let effectiveSandbox: "off" | "podman" = "off";
+        if (params.sandbox === "off" || params.sandbox === "podman") {
+            effectiveSandbox = params.sandbox;
+        } else {
+            try {
+                const configured = getSetting(resolvedCwd, "coms_peer_sandbox");
+                if (configured === "podman") effectiveSandbox = "podman";
+            } catch { /* default off */ }
+        }
+
+        let podmanImage: string | undefined;
+        let podmanCpus: number | undefined;
+        let podmanMemory: string | undefined;
+        let fallbackNote = "";
+
+        if (effectiveSandbox === "podman") {
+            const baseImage = String(getSetting(resolvedCwd, "coms_peer_sandbox_base_image") || "");
+            const imgRes = resolveImageForSpawn({ baseImage: baseImage || undefined });
+            if (imgRes.action === "error") {
+                log.warn("coms_peer_spawn_podman_error", { cname: params.cname, error: imgRes.error });
+                return { ok: false, pid: null, message: `coms peer spawn (podman): ${imgRes.error}` };
+            }
+            if (imgRes.action === "building") {
+                trackPodmanBuildProgress(liveCtx, imgRes.targetTag, imgRes.logPath);
+                log.info("coms_peer_spawn_podman_building", { cname: params.cname, targetTag: imgRes.targetTag, logPath: imgRes.logPath });
+                return {
+                    ok: true,
+                    pid: null,
+                    building: true,
+                    message: `🐳 Building rootless Podman peer image (${imgRes.targetTag}) in background — first build takes ~5–10 min. Monitor: ${imgRes.logPath}. Retry coms_peer_spawn once ready, or pass sandbox: "off" for a native peer.`,
+                };
+            }
+            podmanImage = imgRes.imageTag ?? undefined;
+            podmanCpus = Number(getSetting(resolvedCwd, "coms_peer_sandbox_cpus")) || 4;
+            podmanMemory = String(getSetting(resolvedCwd, "coms_peer_sandbox_memory") || "4g");
+            if (imgRes.usingFallback) {
+                trackPodmanBuildProgress(liveCtx, imgRes.targetTag, imgRes.logPath);
+                fallbackNote = ` (booted immediately on cached ${imgRes.imageTag} while ${imgRes.targetTag} builds in background)`;
+            }
+        }
+
         const plan = buildPeerSpawn(supervisor, {
             cname: params.cname,
             purpose: params.purpose,
             project: resolvedProject,
-            cwd: params.cwd ?? (liveCtx?.cwd || process.cwd()),
+            cwd: resolvedCwd,
             session: params.session,
+            ...(effectiveSandbox === "podman" ? {
+                sandbox: "podman" as const,
+                image: podmanImage,
+                cpus: podmanCpus,
+                memory: podmanMemory,
+            } : {}),
         }, log);
         if (!plan.ok) {
             log.warn("coms_peer_spawn_rejected", { message: plan.message });
@@ -671,11 +876,17 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 params.onSpawnFailure?.();
             });
             child.unref();
-            log.info("coms_peer_spawned", { cname: params.cname, pid: child.pid ?? null, args: plan.command.slice(2).join(" ") });
+            log.info("coms_peer_spawned", {
+                cname: params.cname,
+                pid: child.pid ?? null,
+                sandbox: effectiveSandbox,
+                args: plan.command.slice(2).join(" "),
+            });
+            const sandboxLabel = effectiveSandbox === "podman" ? " [rootless Podman sandbox]" : "";
             return {
                 ok: true,
                 pid: child.pid ?? null,
-                message: `Started supervisor for peer "${params.cname}" (pid ${child.pid ?? "?"}). The peer registers in ~20-30s — check coms_peers; if it never appears, read ~/.pi/logs/coms-peers/${params.cname}@${resolvedProject}.log`,
+                message: `Started supervisor for peer "${params.cname}"${sandboxLabel} (pid ${child.pid ?? "?"})${fallbackNote}. The peer registers in ~20-30s — check coms_peers; if it never appears, read ~/.pi/logs/coms-peers/${params.cname}@${resolvedProject}.log`,
             };
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);
@@ -707,15 +918,18 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         }
         const killed: string[] = [];
         for (const entry of plan) {
-            if (entry.signalPid === null) continue;
+            if (entry.signalPid === null && !entry.container) continue;
             const liveRow = rows.find((r) => r.name === entry.name && r.project === entry.project);
             if (liveRow) persistPeerSessionForRevive(liveRow);
-            try {
-                process.kill(entry.signalPid, "SIGTERM");
-                killed.push(`${entry.name}·${entry.project}`);
-                log.info("coms_peer_kill", { name: entry.name, project: entry.project, pid: entry.signalPid, via: entry.reason });
-            } catch (error: unknown) {
-                log.warn("coms_peer_kill failed", { name: entry.name, pid: entry.signalPid, error: error instanceof Error ? error.message : String(error) });
+            if (executePeerKillEntry(entry)) {
+                killed.push(entry.container ? `${entry.name}·${entry.project} (${entry.container})` : `${entry.name}·${entry.project}`);
+                log.info("coms_peer_kill", {
+                    name: entry.name,
+                    project: entry.project,
+                    pid: entry.signalPid,
+                    container: entry.container ?? null,
+                    via: entry.reason,
+                });
             }
         }
         if (killed.length === 0) return { text: "Nothing to kill: no supervised peer matched (see logs for why).", killed: 0 };
@@ -746,12 +960,15 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             exposure: "codemode",
             namespace: TOOL_NAMESPACES.coms,
             annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-            description: "Spawn a supervised `pi --coms` peer process (registers in ~20-30s). Stop it with coms_peer_kill when done.",
+            description: "Spawn a supervised `pi --coms` peer process (native host process or opt-in rootless Podman container via sandbox:'podman'; registers in ~20-30s). Stop it with coms_peer_kill when done.",
             parameters: Type.Object({
                 cname: Type.String({ description: "Peer name (letters, digits, dot, dash, underscore)" }),
                 purpose: Type.Optional(Type.String({ description: "One-line peer purpose" })),
                 project: Type.Optional(Type.String({ description: "Project namespace (default: this project)" })),
                 cwd: Type.Optional(Type.String({ description: "Working directory (default: this cwd)" })),
+                sandbox: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("podman")], {
+                    description: "Runtime sandbox override: 'off' (native host process) or 'podman' (isolated rootless Podman container). Defaults to coms_peer_sandbox setting (default: 'off').",
+                })),
             }),
             async execute(_id: string, params: any) {
                 const res = spawnSupervisedPeer({
@@ -759,10 +976,11 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                     purpose: params?.purpose,
                     project: params?.project ?? ownProject(),
                     cwd: params?.cwd ?? (liveCtx?.cwd || process.cwd()),
+                    sandbox: params?.sandbox,
                 });
                 return {
                     content: [{ type: "text" as const, text: res.message }],
-                    details: { ok: res.ok, pid: res.pid },
+                    details: { ok: res.ok, pid: res.pid, ...(res.ok && res.building ? { building: true } : {}) },
                 };
             },
         });
@@ -788,6 +1006,17 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     } catch (e: unknown) {
         log.warn("registering coms_peers/coms_peer_kill failed", e instanceof Error ? e.message : String(e));
     }
+
+    // Trigger non-blocking background Podman image pre-warm when user enables coms_peer_sandbox="podman".
+    try {
+        const unsub = pi.events?.on?.("orchestrator:settings-changed", (data: unknown) => {
+            const evt = data as { key?: string; cwd?: string } | null;
+            if (evt?.key === "coms_peer_sandbox" || evt?.key === "coms_peer_sandbox_base_image") {
+                maybePrewarmPodmanPeerImage(evt.cwd || liveCtx?.cwd || process.cwd(), liveCtx);
+            }
+        });
+        if (typeof unsub === "function") settingsChangedUnsubscribe = unsub;
+    } catch { /* ignore */ }
 
     // Single pidash command registration for /coms.
     ensurePidashRegistration();

@@ -23,15 +23,29 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
   const [steer, setSteer] = useState(false);
   const [priority, setPriority] = useState(false);
   const [sending, setSending] = useState(false);
+  const [buildStatus, setBuildStatus] = useState<{ state: string; targetTag?: string | null; logPath?: string } | null>(null);
 
   useEffect(() => {
     sendCmd("coms-peers");
+    fetch("/api/podman-build-status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((snap) => {
+        if (snap && snap.state === "building") setBuildStatus(snap);
+      })
+      .catch(() => {});
     return onMessage((ev: any) => {
       if (ev.type === "coms-peers") {
         setPeers(ev.peers || []);
         setSelf(ev.self || null);
         // Keep selection fresh with live state
         setSelected((prev) => (prev ? (ev.peers || []).find((p: ComsPeer) => p.name === prev.name) ?? prev : prev));
+      }
+      if (ev.type === "podman-build-status") {
+        if (ev.state === "building" || ev.state === "ready") {
+          setBuildStatus({ state: ev.state, targetTag: ev.targetTag, logPath: ev.logPath });
+        } else {
+          setBuildStatus(null);
+        }
       }
       if (ev.type === "coms-send-result") {
         setSending(false);
@@ -69,6 +83,17 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
         {self?.name && <span className="text-muted-foreground font-normal"> — you are {self.name}</span>}
       </div>
 
+      {buildStatus && (buildStatus.state === "building" || buildStatus.state === "ready") && (
+        <div
+          data-testid="podman-build-banner"
+          className="px-2 py-1 rounded border border-border bg-muted/40 text-[10px] text-foreground flex items-center justify-between gap-2"
+          title={buildStatus.logPath ? `Build log: ${buildStatus.logPath}` : undefined}
+        >
+          <span>{buildStatus.state === "building" ? "🐳 Building peer image…" : "✓ Peer image ready"}</span>
+          {buildStatus.targetTag && <span className="text-muted-foreground truncate">{buildStatus.targetTag}</span>}
+        </div>
+      )}
+
       {peers.length === 0 && <div className="text-xs text-muted-foreground py-4 text-center">No peers connected</div>}
 
       <div className="space-y-1">
@@ -100,6 +125,15 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
               <div className="flex items-center gap-2">
                 <span title={p.busy ? "busy" : "idle"}>{p.busy ? "⚙" : "●"}</span>
                 <span className="font-medium text-foreground flex-1 truncate">{p.name}</span>
+                {p.container && (
+                  <span
+                    data-testid="coms-peer-container-badge"
+                    className="px-1 py-0.2 rounded border border-border text-[9px] text-cyan-700 dark:text-cyan-400 shrink-0 max-w-[10rem] truncate"
+                    title={`Container: ${p.container} — podman exec -it ${p.container} bash`}
+                  >
+                    🐳 {p.container}
+                  </span>
+                )}
                 {p.busy && <span className="text-[10px] text-yellow-600 dark:text-yellow-400">busy</span>}
               </div>
               <div className="text-[10px] text-muted-foreground truncate">{p.model}{p.purpose ? ` — ${p.purpose}` : ""}</div>

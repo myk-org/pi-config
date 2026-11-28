@@ -61,10 +61,10 @@ export function parseHealth(body: string): { running: boolean; degraded: boolean
   }
 }
 
-export function checkHealth(port: number): Promise<boolean> {
+export function checkHealth(port: number, host = "127.0.0.1"): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.request(
-      { hostname: "127.0.0.1", port, path: "/api/health", timeout: HEALTH_CHECK_TIMEOUT_MS },
+      { hostname: host, port, path: "/api/health", timeout: HEALTH_CHECK_TIMEOUT_MS },
       (res) => {
         let body = "";
         res.on("data", (d) => { body += d; });
@@ -407,6 +407,8 @@ export interface DaemonClientAdapter<TConnectData = void> {
    * `findRunningPort` / `getStatusPort`.
    */
   port?: number;
+  /** Daemon host for HTTP health probes and WebSocket connections (default: `"127.0.0.1"`). */
+  host?: string;
   /** Optional readiness guard before `connect()` runs (e.g. pidiff requires `lockDir`). */
   canConnect?: (ctx: any) => boolean;
   /**
@@ -515,8 +517,9 @@ export function createDaemonClient<TConnectData = void>(
     adapter.heartbeatDeadReconnectDelayMs ?? DEFAULT_HEARTBEAT_DEAD_RECONNECT_DELAY_MS;
   const reconnectPollIntervalMs = adapter.reconnectPollIntervalMs ?? DEFAULT_RECONNECT_POLL_INTERVAL_MS;
   const restartWaitMs = adapter.restartWaitMs ?? DEFAULT_RESTART_WAIT_MS;
+  const daemonHost = (adapter.host || "").trim() || "127.0.0.1";
   const createWs = adapter.createWebSocket ?? defaultCreateWebSocket;
-  const probeHealth = adapter.probeHealth ?? checkHealth;
+  const probeHealth = adapter.probeHealth ?? ((port: number) => checkHealth(port, daemonHost));
   const waitReady = adapter.waitReady ?? ((port, maxWaitSeconds, onLog) => waitForDaemon(port, maxWaitSeconds, onLog, probeHealth));
   const sleep = adapter.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const shouldConnectCtx = adapter.shouldConnectCtx ?? ((ctx: any) => ctx?.mode === "tui");
@@ -726,8 +729,8 @@ export function createDaemonClient<TConnectData = void>(
         return;
       }
 
-      adapter.log.debug(`connecting WebSocket to port ${port}...`);
-      const wsClient = createWs(`ws://127.0.0.1:${port}/ws/pi`);
+      adapter.log.debug(`connecting WebSocket to ${daemonHost}:${port}...`);
+      const wsClient = createWs(`ws://${daemonHost}:${port}/ws/pi`);
       activeSocket = wsClient;
 
       wsClient.on("open", () => {

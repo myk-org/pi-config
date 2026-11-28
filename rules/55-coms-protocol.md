@@ -40,9 +40,9 @@ You can grow the pool instead of doing everything yourself:
 | Action | How |
 | --- | --- |
 | Start a peer as its own real pi, with its own session | `pi --mode rpc --coms --cname <name> --project <p>` under `scripts/coms-peer-supervisor.mjs` (`~/.pi/agent/npm/node_modules/pi-orchestrator-config/scripts/`, falling back to this checkout): it holds the peer's stdin, records pids in `~/.pi/coms/peers/<name>.json`, and has no lifetime of its own |
-| Spawn a peer | `coms_peer_spawn` with `cname` (+ optional `purpose`, `project`, `cwd`) — starts a supervised `pi --coms` process with its own session. It registers in ~20-30s; `coms_peers` then lists it. No human needed and no shell command to remember |
-| See spawned peers | `coms_peers` (human: `/coms`) scoped to THIS project by default; pass `project: "*"` (tool) or press `f` in `/coms` for every project. `/coms` overlays like `/async`: ↑↓ navigate, Space multi-select, `m` message, `x` kill, `X` kill all, `q` inbound queue, plain text when there is no UI |
-| Stop one peer / all peers | `coms_peer_kill` with `name` (add `project` when the name exists in several) or `all:true` (human: `/coms` → `x` / `X`). Only peers a supervisor started are killable — never your own session. |
+| Spawn a peer | `coms_peer_spawn` with `cname` (+ optional `purpose`, `project`, `cwd`, `sandbox`: `"off"` default native process or `"podman"` isolated rootless Podman container) — starts a supervised `pi --coms` process with its own session. Registers in ~20-30s; `coms_peers` then lists it. Open an interactive shell inside a containerized peer with `podman exec -it <container> bash`. |
+| See spawned peers | `coms_peers` (human: `/coms`) scoped to THIS project by default; pass `project: "*"` (tool) or press `f` in `/coms` for every project. Containerized peers show their deterministic `pi-peer-<project>-<cname>` name. `/coms` overlays like `/async`: ↑↓ navigate, Space multi-select, `m` message, `x` kill, `X` kill all, `q` inbound queue, plain text when there is no UI |
+| Stop one peer / all peers | `coms_peer_kill` with `name` (add `project` when the name exists in several) or `all:true` (human: `/coms` → `x` / `X`). Stops native supervisors with `SIGTERM` and containerized peers with `podman rm -f <container>`. Only peers a supervisor started are killable — never your own session. |
 
 Rules for spawning: a peer is an independent process that outlives this session, so **always**
 report what you spawned (`coms_peers` output) and stop peers you no longer need. Never spawn more

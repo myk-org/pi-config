@@ -59,7 +59,13 @@
     "templates/",
     "skills/",
     "settings-keys.json",
-    "scripts/coms-peer-supervisor.mjs"
+    "Containerfile.peer",
+    "scripts/coms-peer-supervisor.mjs",
+    "scripts/podman-peer-image.mjs",
+    "scripts/podman-peer-image.d.mts",
+    "scripts/podman-peer-entrypoint.sh",
+    "scripts/install.py",
+    "scripts/install_sources.py"
   ],
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

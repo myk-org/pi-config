@@ -47,6 +47,10 @@ export interface RegistryRow {
   exitCode?: number | null;
   /** #1083: the peer's own active counts. `null`/absent = not reported = `unknown`, never 0. */
   workload?: PeerWorkloadCounts | null;
+  /** #1512: rootless Podman container name when running inside a sandbox container. */
+  container?: string | null;
+  /** #1512: real host PID (`State.Pid`) for a containerized peer when known. */
+  hostPid?: number | null;
 }
 
 /** Shape of a supervisor state JSON written to `~/.pi/coms/peers/<cname>@<project>.json`. */
@@ -57,6 +61,9 @@ export interface SupervisionRecord {
   purpose?: string;
   pid?: number;
   childPid?: number | null;
+  container?: string | null;
+  image?: string | null;
+  sandbox?: string | null;
   session?: string | null;
   piSessionId?: string | null;
   createdBy?: string | null;
@@ -96,7 +103,7 @@ export function selectKillTargets(
   request: { name?: string | null; project?: string | null; all?: boolean | null },
   isAlive: (row: RegistryRow) => boolean,
 ): KillSelection {
-  const live = rows.filter((row) => isAlive(row) && (row.pid ?? 0) > 0);
+  const live = rows.filter((row) => isAlive(row) && ((row.pid ?? 0) > 0 || Boolean(row.container)));
   if (request.all === true) {
     return { targets: live, missing: [], ambiguous: [] };
   }
@@ -118,9 +125,10 @@ export function formatPeerTable(rows: RegistryRow[]): string {
       const state = row.busy ? "busy" : "idle";
       const queue = row.queueDepth ? ` queue:${row.queueDepth}` : "";
       const ctx = row.contextUsedPct === null ? "" : ` ctx:${Math.round(row.contextUsedPct)}%`;
-      const pid = row.pid ? ` pid:${row.pid}` : "";
+      const pid = row.hostPid ? ` pid:${row.hostPid}` : (row.pid ? ` pid:${row.pid}` : "");
+      const ctr = row.container ? ` 🐳 ${sanitizePeerText(row.container, 48)}` : "";
       // #1084: peer-supplied text is sanitized before it reaches a terminal.
-      return `● ${sanitizePeerText(row.name, 40)} · ${sanitizePeerText(row.project, 40)} (${state}${queue}${ctx}${pid})${formatWorkloadSuffix(row.workload)} — ${sanitizePeerText(row.cwd, 120) || "?"}`;
+      return `● ${sanitizePeerText(row.name, 40)} · ${sanitizePeerText(row.project, 40)} (${state}${queue}${ctx}${pid}${ctr})${formatWorkloadSuffix(row.workload)} — ${sanitizePeerText(row.cwd, 120) || "?"}`;
     });
   // Counts only: how many peers could not report, never what they said.
   log.debug("peer_table_rendered", { rows: rows.length, unknown: rows.filter((row) => row.workload == null).length });
@@ -147,7 +155,8 @@ export function formatPeerDetailLines(row: RegistryRow, options: PeerDetailOptio
     `purpose   ${sanitizePeerText(row.purpose, 120) || "—"}`,
     `state     ${row.busy ? "busy" : "idle"}${row.queueDepth ? ` · queue ${row.queueDepth}` : ""}`,
     `created   ${origin.by === "unknown" ? "unknown (no record)" : sanitizePeerText(origin.by, 40)} · via ${sanitizePeerText(origin.via, 40)}`,
-    `pid       ${row.pid ?? "?"}`,
+    ...(row.container ? [`container ${sanitizePeerText(row.container, 64)}`] : []),
+    `pid       ${row.hostPid ?? row.pid ?? "?"}`,
     `socket    ${sanitizePeerText(row.endpoint, 80) || "?"}`,
     `heartbeat ${age === null || age === undefined ? "unknown" : `${age}s ago`} (last keep-alive)`,
     `context   ${row.contextUsedPct === null ? "?" : `${Math.round(row.contextUsedPct)}%`}`,
@@ -197,6 +206,8 @@ export interface KillPlanEntry {
   project: string;
   /** Supervisor pid when one owns this peer, else the peer pid. */
   signalPid: number | null;
+  /** Rootless Podman container name when peer is containerized (#1512). */
+  container?: string | null;
   reason: "supervisor" | "peer" | "not-supervised" | "stale-record" | "ambiguous";
 }
 
@@ -208,7 +219,7 @@ export interface KillPlanEntry {
 export function planPeerKills(args: {
   rows: RegistryRow[];
   supervisedKeys: Set<string>;
-  records: Array<{ cname?: string; project?: string; pid?: number; childPid?: number | null; stoppedAt?: string; exitedAt?: string; failedAt?: string }>;
+  records: Array<{ cname?: string; project?: string; pid?: number; childPid?: number | null; container?: string | null; stoppedAt?: string; exitedAt?: string; failedAt?: string }>;
   request: { name?: string | null; project?: string | null; all?: boolean | null };
   isAlive: (row: RegistryRow) => boolean;
   logger?: { debug: (msg: string, data?: unknown) => void };
@@ -238,15 +249,19 @@ export function planPeerKills(args: {
       (r) => r?.cname === row.name && (r?.project ?? "default") === row.project,
     );
     if (!record) return { name: row.name, project: row.project, signalPid: null, reason: "stale-record" };
+    const container = row.container || (typeof record.container === "string" && record.container.trim() ? record.container.trim() : null);
     // A retired record is leftover bookkeeping, not a reason to leave a LIVE peer running.
     if (record.stoppedAt || record.exitedAt || record.failedAt) {
-      return { name: row.name, project: row.project, signalPid: row.pid ?? null, reason: "peer" };
+      return { name: row.name, project: row.project, signalPid: row.hostPid ?? row.pid ?? null, ...(container ? { container } : {}), reason: "peer" };
     }
-    // Signal the supervisor only when its recorded child IS this peer.
-    if (Number.isInteger(record.pid) && record.childPid === row.pid) {
-      return { name: row.name, project: row.project, signalPid: record.pid as number, reason: "supervisor" };
+    // Signal the supervisor when its recorded child or container matches this peer.
+    if (
+      Number.isInteger(record.pid) &&
+      (record.childPid === row.pid || (row.hostPid && record.childPid === row.hostPid) || (container && record.container === container))
+    ) {
+      return { name: row.name, project: row.project, signalPid: record.pid as number, ...(container ? { container } : {}), reason: "supervisor" };
     }
-    return { name: row.name, project: row.project, signalPid: row.pid ?? null, reason: "peer" };
+    return { name: row.name, project: row.project, signalPid: row.hostPid ?? row.pid ?? null, ...(container ? { container } : {}), reason: "peer" };
   });
 }
 
@@ -361,7 +376,17 @@ export function projectProblem(project: string): string | null {
  *  keep a name from becoming a shell/argv surprise in the supervisor. */
 export function buildPeerSpawn(
   supervisorPath: string,
-  args: { cname?: string | null; project?: string | null; cwd?: string | null; purpose?: string | null; session?: string | null },
+  args: {
+    cname?: string | null;
+    project?: string | null;
+    cwd?: string | null;
+    purpose?: string | null;
+    session?: string | null;
+    sandbox?: "off" | "podman" | null;
+    image?: string | null;
+    cpus?: number | null;
+    memory?: string | null;
+  },
   logger?: { warn: (msg: string, data?: unknown) => void },
 ): { ok: true; command: string[] } | { ok: false; message: string } {
   const refuse = (reason: string, message: string) => {
@@ -393,6 +418,20 @@ export function buildPeerSpawn(
       return refuse("invalid_session", "coms peer spawn: session must not contain control characters");
     }
     command.push("--session", session);
+  }
+  if (args.sandbox === "podman") {
+    const image = (args.image ?? "").trim();
+    if (!image || /[\x00-\x1f\s]/.test(image)) {
+      return refuse("invalid_image", "coms peer spawn: podman sandbox requires a valid image tag");
+    }
+    command.push("--sandbox", "podman", "--image", image);
+    if (typeof args.cpus === "number" && Number.isInteger(args.cpus) && args.cpus > 0) {
+      command.push("--cpus", String(args.cpus));
+    }
+    const memory = (args.memory ?? "").trim();
+    if (memory && !/[\x00-\x1f\s]/.test(memory)) {
+      command.push("--memory", memory);
+    }
   }
   return { ok: true, command };
 }
@@ -505,6 +544,7 @@ export function listStoppedSupervisedPeers(
         stoppedAt,
         exitCode: typeof record.exitCode === "number" ? record.exitCode : null,
         workload: null,
+        container: typeof record.container === "string" && record.container.trim() ? record.container.trim() : null,
       },
     });
   }

@@ -334,7 +334,15 @@ export function SessionSidebar({
               waiting for input
             </span>
           )}
-          {s.container && <Badge variant="outline" className="text-[8px] px-1 py-0 h-3 shrink-0">📦</Badge>}
+          {(s.container || s.containerName) && (
+            <Badge
+              variant="outline"
+              className="text-[8px] px-1 py-0 h-3 shrink-0"
+              title={s.containerName ? `Container: ${s.containerName}` : "Containerized session"}
+            >
+              {s.containerName ? "🐳" : "📦"}
+            </Badge>
+          )}
         </div>
       </div>
     );

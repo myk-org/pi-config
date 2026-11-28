@@ -159,6 +159,12 @@ function isContainer(): boolean {
   } catch { return false; }
 }
 
+/** Resolve host for PiDash daemon HTTP health checks and WebSocket connections (#1512). */
+export function resolvePidashHost(env: Record<string, string | undefined> = process.env): string {
+  const configured = (env.PI_PIDASH_HOST || "").trim();
+  return configured || "127.0.0.1";
+}
+
 /** Replay session history to the WebSocket client for browser display. */
 export function replaySessionHistory(wsClient: any, ctx: any, pushBuffered: (ev: string) => void): void {
   // Wrap the whole history in the replay markers the browser already
@@ -826,6 +832,7 @@ export function registerPidash(
           const cwd = client.lastCtx?.cwd || process.cwd();
           const result = applySetting(cwd, parsed.scope, String(parsed.key), "value" in parsed ? parsed.value : null);
           if (result.ok) {
+            try { pi.events.emit("orchestrator:settings-changed", { key: String(parsed.key), cwd }); } catch {}
             // Broadcast fresh state to EVERY connected browser — settings
             // files are shared across sessions (same project / global scope),
             // so browsers watching other sessions must not keep stale values
@@ -947,19 +954,22 @@ export function registerPidash(
 
   // ── Shared daemon client adapter ───────────────────────────────────
 
+  const pidashHost = resolvePidashHost(registrationEnv);
+
   const client = createDaemonClient<{ git: GitStatus; worktrees: WorktreeSummary | null }>(pi, {
     name: "pidash",
     settingKey: "pidash_enable",
     statusKey: "9-pidash",
     log,
     port: pidashPort,
+    host: pidashHost,
     startFailureHint: " — check ~/.pi/pidash-server.log",
     strictCommandUsage: true,
     reconnectPollIntervalMs: opts.reconnectPollIntervalMs,
     shouldConnectCtx: canConnectCtx,
-    // Only interactive TUI sessions auto-spawn pidash-server; supervised COMS RPC peers
-    // attach whenever pidash-server is already running and avoid burst-spawn races.
-    shouldAutoSpawn: (ctx) => ctx?.mode === "tui",
+    // Only interactive TUI sessions on localhost auto-spawn pidash-server; supervised COMS RPC peers
+    // and containerized peers (`PI_PIDASH_HOST=host.containers.internal`) attach without spawning locally.
+    shouldAutoSpawn: (ctx) => ctx?.mode === "tui" && pidashHost === "127.0.0.1",
 
     spawn() {
       spawnDaemon(pidashPort);
@@ -1023,6 +1033,7 @@ export function registerPidash(
         env: registrationEnv,
       });
       const supervisedPeer = isSupervisedRpcPeerCtx(ctx, registrationEnv);
+      const containerName = (registrationEnv.PI_COMS_CONTAINER_NAME || "").trim() || undefined;
       const reg = JSON.stringify({
         type: "register",
         pid: process.pid,
@@ -1035,7 +1046,8 @@ export function registerPidash(
         worktreeCount: regWorktrees.worktreeCount,
         worktreeDirtyCount: regWorktrees.worktreeDirtyCount,
         inLinkedWorktree: regWorktrees.inLinkedWorktree,
-        container: isContainer(),
+        container: isContainer() || Boolean(containerName),
+        ...(containerName ? { containerName } : {}),
         model: m?.name || m?.id || "",
         reasoning: m?.reasoning === true,
         supportsImages: supportsImagesFor(m),
@@ -1312,6 +1324,12 @@ export function registerPidash(
       const d = data as { customType?: string; content?: string };
       if (!d?.customType) return;
       client.send({ type: "coms_peer_event", customType: d.customType, content: d.content || "" });
+    });
+
+    // Forward rootless Podman peer image build status to browser (#1512)
+    pi.events.on("pidash:podman-build-status", (data: unknown) => {
+      if (!data || typeof data !== "object") return;
+      client.send({ type: "podman-build-status", ...(data as Record<string, unknown>) });
     });
 
     // Keep connected browsers in sync when TUI /worktree mutates worktrees (#1427)

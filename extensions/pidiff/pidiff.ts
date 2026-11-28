@@ -50,6 +50,12 @@ function isGitRepo(cwd: string): boolean {
   try { execFileSync("git", ["rev-parse", "--git-dir"], { cwd, stdio: "ignore" }); return true; } catch { return false; }
 }
 
+/** Resolve host for PiDiff daemon HTTP health checks and WebSocket connections (#1512). */
+export function resolvePidiffHost(env: Record<string, string | undefined> = process.env): string {
+  const configured = (env.PI_PIDIFF_HOST || "").trim();
+  return configured || "127.0.0.1";
+}
+
 /**
  * Format a pidiff `publish-review` payload into a compact follow-up message.
  *
@@ -121,11 +127,16 @@ export function registerPidiff(pi: ExtensionAPI): void {
     });
   }
 
+  const pidiffHost = resolvePidiffHost(process.env);
+  const probePidiffHealth = (port: number) => checkHealth(port, pidiffHost);
+
   const client = createDaemonClient(pi, {
     name: "pidiff",
     settingKey: "pidiff_enable",
     statusKey: "8-diff",
+    host: pidiffHost,
     log,
+    shouldAutoSpawn: () => pidiffHost === "127.0.0.1",
 
     canConnect() {
       return Boolean(lockDir);
@@ -133,7 +144,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
     findRunningPort() {
       const preferred = activePort || readLockfile(lockDir, legacyLockDir)?.port || 0;
-      return findRunningPidiffPort(lockDir, legacyLockDir, preferred);
+      return findRunningPidiffPort(lockDir, legacyLockDir, preferred, probePidiffHealth);
     },
 
     getStatusPort() {
@@ -159,7 +170,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         await new Promise((r) => setTimeout(r, 1000));
         if (!isLiveExtensionCtx(ctx)) return { acquired: false, port: null };
         const lock = readLockfile(lockDir, legacyLockDir);
-        if (lock && await checkHealth(lock.port)) {
+        if (lock && await probePidiffHealth(lock.port)) {
           return { acquired: false, port: lock.port };
         }
       }

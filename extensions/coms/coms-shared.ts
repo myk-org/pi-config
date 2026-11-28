@@ -526,6 +526,7 @@ export interface ComsPeerCard {
 	queue_depth?: number;
 	busy?: boolean;
 	tasks_summary?: unknown;
+	container?: string | null;
 	staleCount: number;
 }
 
@@ -543,6 +544,7 @@ export function buildComsPeersPayload(
 			queueDepth: card.queue_depth ?? 0,
 			contextUsedPct: card.context_used_pct ?? 0,
 			tasksSummary: card.tasks_summary ?? null,
+			...(card.container ? { container: card.container } : {}),
 		});
 	}
 	return {

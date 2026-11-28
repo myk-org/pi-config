@@ -208,10 +208,24 @@ A few practical implications are worth remembering:
 
 ### Reviving Stopped Supervised Peers & Live Activity Log
 
-Supervised peers write launch and shutdown metadata (including `cname`, `project`, `cwd`, `purpose`, and `piSessionId` when available) to `~/.pi/coms/peers/<name>@<project>.json`. Recently stopped supervised peers remain visible in the `/coms` Roster (`○ stopped`):
+Supervised peers write launch and shutdown metadata (including `cname`, `project`, `cwd`, `purpose`, `container`, and `piSessionId` when available) to `~/.pi/coms/peers/<name>@<project>.json`. Recently stopped supervised peers remain visible in the `/coms` Roster (`○ stopped`):
 
-- Press `r` on a stopped peer (or a multi-selection containing stopped peers) to respawn it through `scripts/coms-peer-supervisor.mjs` with its prior identity, working directory, purpose, and `--session` resume when recorded. Pressing `r` on a live peer displays an inline notice without spawning a duplicate.
+- Press `r` on a stopped peer (or a multi-selection containing stopped peers) to respawn it through `scripts/coms-peer-supervisor.mjs` with its prior identity, working directory, purpose, sandbox mode, and `--session` resume when recorded. Pressing `r` on a live peer displays an inline notice without spawning a duplicate.
 - Press `2` to switch from `[1] Roster` to `[2] Activity` for a unified chronological stream of peer lifecycle events, COMS message traffic (`history.jsonl`), and delivery errors. Inside Activity view, `f` cycles filters (`All | Errors | Tools | Messages`), `/` searches text inline, `Space` toggles auto-follow (manual scrolling pauses follow), `Enter` jumps straight to that peer's drilldown/detail view, and `1` returns to the Roster.
+
+### Rootless Podman Peer Sandbox (Opt-In)
+
+Supervised COMS peers run as native host processes by default (`coms_peer_sandbox: "off"`). Set `coms_peer_sandbox: "podman"` in global settings (`PI_COMS_PEER_SANDBOX=podman`) or pass `sandbox: "podman"` to `coms_peer_spawn` to isolate peers inside rootless Podman containers:
+
+- **3-layer cached image (`Containerfile.peer` + `scripts/podman-peer-image.mjs`):**
+  - **Layer 1:** pinned `BASE_IMAGE` (`registry.fedoraproject.org/fedora:45` by default; floating `:latest` is rejected) plus system deps, Chromium libs, and uid/gid `1000` user `peer`.
+  - **Layer 2:** `scripts/install.py --all` with `/opt/node_modules` moved in the same `RUN` layer (rebuilds only when `scripts/install.py` changes).
+  - **Layer 3:** `--build-arg PI_VERSION` detected dynamically from host `pi --version` (verified `>= MIN_PI_VERSION`), rebuilding in ~15 seconds on `pi update`.
+  - Host `pi-orchestrator-config` is bind-mounted `:ro` at `/opt/pi-config`, so daily `pi-config` updates need zero image rebuilds.
+  - Built images are tagged `localhost/pi-peer:<12-char sha256>` and stale tags are pruned after each successful build.
+- **Non-blocking background pre-warm & zero-wait fallback:** enabling `coms_peer_sandbox: "podman"` or starting an interactive session triggers a file-locked (`~/.pi/run/podman-peer-build.lock`) background build logging to `~/.pi/logs/coms/podman-build.log`, with a compact TUI and PiDash build status indicator (`🐳 Building peer image…`). If `coms_peer_spawn` runs while a new tag is building and an older cached `localhost/pi-peer:<hash>` exists, the peer boots immediately on the cached image; on a cold first build, `coms_peer_spawn` returns a non-blocking status message with the log path.
+- **Host-agnostic isolation & teardown:** containers use deterministic names (`pi-peer-<project>-<cname>`), `--init` (zero zombie processes), `--cpus` / `--memory` / `--pids-limit=512`, dynamic `--userns=keep-id:uid=1000,gid=1000`, SELinux `--security-opt label=disable` only when `/sys/fs/selinux/enforce` is `1` (never `:Z`/`:z` on host `~/.pi/`), an isolated local git clone with HTTPS `origin` + `gh auth setup-git` (zero `~/.ssh`), read-only `auth.json`/`models.json`, and `PI_PIDASH_HOST=host.containers.internal` / `PI_PIDIFF_HOST=host.containers.internal` for direct host PiDash and PiDiff connectivity without `socat`.
+- **Liveness, kill, and shell access:** containerized peers record `container` (`PI_COMS_CONTAINER_NAME`) and optional `host_pid` (`PI_COMS_HOST_PID`) in their registry entries so `isRegistryRowAlive()` stays accurate across PID namespaces. `coms_peer_kill` stops containerized peers via `podman rm -f <container>` plus host supervisor cleanup. Open an interactive shell with `podman exec -it <container> bash` (no `sshd`). Live peers (including container names) are also exposed at PiDash `GET /api/peers`.
 
 ## Commands
 

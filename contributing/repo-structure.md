@@ -239,6 +239,9 @@ pi-config/
 │   ├── serve-ui.ts                  # Shared static UI serving + auto-build for daemon servers
 │   ├── pr-retro-collect.mjs         # Deterministic $0 PR + session + check-config telemetry collector (issue #1343)
 │   ├── diagnostic-report-collect.mjs # Deterministic $0 runtime snapshot & redacted session warn/error log collector (issue #1446)
+│   ├── coms-peer-supervisor.mjs     # Supervised COMS peer launcher & lifecycle manager (native process or opt-in rootless Podman container)
+│   ├── podman-peer-image.mjs        # 3-layer Podman peer image hasher, file-locked background pre-warm, and host-agnostic `podman run` argv builder (typed via podman-peer-image.d.mts)
+│   ├── podman-peer-entrypoint.sh    # Container entrypoint for rootless Podman COMS peers (gitconfig/gitignore/gh HTTPS auth + RPC stdin-holder)
 │   └── install.py                   # Interactive TUI installer for native deployment (questionary)
 ├── packages/                        # Workspace packages
 │   ├── pi-sidecar/                  # HTTP sidecar wrapping Pi SDK (@myk-org/pi-sidecar)
@@ -274,6 +277,7 @@ pi-config/
 │       └── vitest.config.ts           # Test config
 ├── .coderabbit.yaml                 # CodeRabbit CLI config (assertive profile, linter selection)
 ├── Dockerfile                       # Container image definition
+├── Containerfile.peer               # 3-layer Fedora 45 rootless Podman sandbox image for opt-in COMS peers
 ├── init-entrypoint.sh               # Container init (UID remap, HOME map, docker.sock, then entrypoint.sh)
 ├── entrypoint.sh                    # Container entrypoint (pi/package updates + gitignore, then pi)
 ├── README.md                        # Project README

@@ -338,6 +338,44 @@
     "max": 10000,
     "group": "Coms"
   },
+  "coms_peer_sandbox": {
+    "description": "Default runtime sandbox for supervised COMS peers spawned via coms_peer_spawn ('off' = native host process, 'podman' = isolated rootless Podman container; global settings or PI_COMS_PEER_SANDBOX env only)",
+    "type": "string",
+    "env": "PI_COMS_PEER_SANDBOX",
+    "default": "off",
+    "enum": [
+      "off",
+      "podman"
+    ],
+    "global_only": true,
+    "group": "Coms"
+  },
+  "coms_peer_sandbox_cpus": {
+    "description": "CPU limit (--cpus) for rootless Podman COMS peer containers (global settings or PI_COMS_PEER_SANDBOX_CPUS env only)",
+    "type": "int",
+    "env": "PI_COMS_PEER_SANDBOX_CPUS",
+    "default": 4,
+    "min": 1,
+    "max": 128,
+    "global_only": true,
+    "group": "Coms"
+  },
+  "coms_peer_sandbox_memory": {
+    "description": "Memory limit (--memory, e.g. '4g', '8192m') for rootless Podman COMS peer containers (global settings or PI_COMS_PEER_SANDBOX_MEMORY env only)",
+    "type": "string",
+    "env": "PI_COMS_PEER_SANDBOX_MEMORY",
+    "default": "4g",
+    "global_only": true,
+    "group": "Coms"
+  },
+  "coms_peer_sandbox_base_image": {
+    "description": "Pinned base container image for rootless Podman COMS peer builds (never use floating :latest; global settings or PI_COMS_PEER_SANDBOX_BASE_IMAGE env only)",
+    "type": "string",
+    "env": "PI_COMS_PEER_SANDBOX_BASE_IMAGE",
+    "default": "registry.fedoraproject.org/fedora:45",
+    "global_only": true,
+    "group": "Coms"
+  },
   "log_pitasks": {
     "description": "Log level for pitasks module",
     "type": "string",
