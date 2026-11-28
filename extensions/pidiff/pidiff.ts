@@ -136,16 +136,13 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
   const pidiffHost = resolvePidiffHost(process.env);
   const pidiffPortOverride = resolvePidiffPortOverride(process.env);
-  const pidiffAuthToken = (process.env.PI_PIDIFF_AUTH_TOKEN || "").trim();
-  const pidiffHeaders = pidiffAuthToken ? { "x-pidiff-token": pidiffAuthToken } : undefined;
-  const probePidiffHealth = (port: number) => checkHealth(port, pidiffHost, pidiffHeaders);
+  const probePidiffHealth = (port: number) => checkHealth(port, pidiffHost);
 
   const client = createDaemonClient(pi, {
     name: "pidiff",
     settingKey: "pidiff_enable",
     statusKey: "8-diff",
     host: pidiffHost,
-    ...(pidiffAuthToken ? { wsHeaders: { "x-pidiff-token": pidiffAuthToken } } : {}),
     log,
     shouldAutoSpawn: () => pidiffHost === "127.0.0.1",
 
@@ -218,7 +215,6 @@ export function registerPidiff(pi: ExtensionAPI): void {
         sessionId: `${process.pid}:${ctx.cwd}`,
         cwd: ctx.cwd,
         branch: getGitBranch(ctx.cwd),
-        ...(pidiffAuthToken ? { authToken: pidiffAuthToken } : {}),
       }));
     },
 

@@ -9,10 +9,7 @@ import { createRoot, type Root } from "../../../extensions/pidash/pidash-ui/node
 import { resolvePidashHost } from "../../../extensions/pidash/pidash.ts";
 import { resolvePidiffHost, resolvePidiffPortOverride } from "../../../extensions/pidiff/pidiff.ts";
 import { isLoopbackAddress, registerPidashSession, type PiClient } from "../../../scripts/pidash-session-state.ts";
-import { createDaemonServer } from "../../../scripts/daemon-shared.ts";
-import { WebSocket } from "ws";
 import fs from "node:fs";
-import os from "node:os";
 import type { SessionInfo } from "../../../extensions/shared/types.ts";
 import { elements, installReactDomShim } from "./react-dom-shim.mjs";
 
@@ -70,53 +67,13 @@ describe("Native daemon host resolution", () => {
     assert.equal(resolvePidiffPortOverride({}), null);
   });
 
-  it("rejects unauthenticated requests when allowRequest enforces bearer token", async () => {
-    const expectedToken = "host-issued-test-token"; // pragma: allowlist secret
-    const daemon = createDaemonServer({
-      port: 0,
-      uiDir: os.tmpdir(),
-      uiName: "test-ui",
-      log: () => {},
-      allowRequest: (pathname, _remoteAddress, req) => {
-        if (pathname !== "/api/health" && pathname !== "/ws/pi") return false;
-        return req.headers["x-pidiff-token"] === expectedToken;
-      },
-      onPiMessage: () => {},
-      onPiClose: () => {},
-    });
-    await new Promise<void>((resolve) => daemon.server.listen(0, "127.0.0.1", resolve));
-    try {
-      const addr = daemon.server.address() as { port: number };
-      const deniedHttp = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
-      assert.equal(deniedHttp.status, 403);
-
-      const allowedHttp = await fetch(`http://127.0.0.1:${addr.port}/api/health`, {
-        headers: { "x-pidiff-token": expectedToken },
-      });
-      assert.equal(allowedHttp.status, 200);
-
-      const deniedWs = await new Promise<boolean>((resolve) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/ws/pi`);
-        ws.once("unexpected-response", (_req, res) => resolve(res.statusCode === 403));
-        ws.once("open", () => { ws.close(); resolve(false); });
-        ws.once("error", () => resolve(true));
-      });
-      assert.equal(deniedWs, true);
-
-      const allowedWs = await new Promise<boolean>((resolve) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/ws/pi`, {
-          headers: { "x-pidiff-token": expectedToken },
-        });
-        ws.once("open", () => { ws.close(); resolve(true); });
-        ws.once("error", () => resolve(false));
-      });
-      assert.equal(allowedWs, true);
-
-      assert.equal(isLoopbackAddress("192.168.1.50"), false);
-      assert.equal(isLoopbackAddress("127.0.0.1"), true);
-    } finally {
-      await new Promise<void>((resolve) => daemon.server.close(() => resolve()));
-    }
+  it("keeps scripts/pidiff-server.ts strictly bound to host loopback 127.0.0.1", () => {
+    const src = fs.readFileSync(path.resolve("scripts", "pidiff-server.ts"), "utf8");
+    assert.match(src, /listenAddress:\s*"127\.0\.0\.1"/);
+    assert.doesNotMatch(src, /PI_PIDIFF_LISTEN_HOST/);
+    assert.doesNotMatch(src, /PI_PIDIFF_AUTH_TOKEN/);
+    assert.equal(isLoopbackAddress("192.168.1.50"), false);
+    assert.equal(isLoopbackAddress("127.0.0.1"), true);
   });
 });
 

@@ -358,14 +358,53 @@ function startPodmanPeer() {
   let forceTimer = null;
   let exited = false;
   let containerRemoved = false;
+  let cleanupError = null;
+
+  const isContainerGone = () => {
+    try {
+      execFileSync("podman", ["inspect", "-f", "{{.Id}}", "--", containerId], { stdio: "ignore", timeout: 5000 });
+      return false;
+    } catch {
+      return true;
+    }
+  };
 
   const removeOwnContainer = () => {
-    if (containerRemoved) return;
-    containerRemoved = true;
-    try {
-      execFileSync("podman", ["rm", "-f", "--", containerId], { stdio: "ignore", timeout: 10_000 });
-      log.debug("podman_container_removed", { containerName, cid: containerId.slice(0, 12) });
-    } catch { /* already removed */ }
+    if (containerRemoved) return true;
+    let lastError = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        execFileSync("podman", ["rm", "-f", "--", containerId], { stdio: "ignore", timeout: 10_000 });
+        containerRemoved = true;
+        cleanupError = null;
+        log.debug("podman_container_removed", { containerName, cid: containerId.slice(0, 12), attempt });
+        return true;
+      } catch (err) {
+        lastError = err?.message ?? String(err);
+        if (isContainerGone()) {
+          containerRemoved = true;
+          cleanupError = null;
+          log.debug("podman_container_already_gone", { containerName, cid: containerId.slice(0, 12), attempt });
+          return true;
+        }
+        log.warn("podman_container_remove_failed", {
+          containerName,
+          cid: containerId.slice(0, 12),
+          attempt,
+          error: lastError,
+        });
+        if (attempt < 2) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+        }
+      }
+    }
+    cleanupError = lastError || "podman rm -f failed";
+    log.error("podman_container_cleanup_exhausted", {
+      containerName,
+      cid: containerId.slice(0, 12),
+      error: cleanupError,
+    });
+    return false;
   };
 
   const finalize = (code, signal) => {
@@ -376,7 +415,7 @@ function startPodmanPeer() {
     // Always remove THIS supervisor's exited container (by immutable containerId) so stopped
     // containers never accumulate or block `pruneStalePeerImages`.
     removeOwnContainer();
-    log.info("podman_peer_exited", { containerName, cid: containerId.slice(0, 12), code, signal, forced });
+    log.info("podman_peer_exited", { containerName, cid: containerId.slice(0, 12), code, signal, forced, containerRemoved });
     const { owned, preservedSessionId } = preserveSessionAndCheckOwner();
     if (!owned) process.exit(0);
     writeStateRecord(baseFields, {
@@ -386,6 +425,7 @@ function startPodmanPeer() {
       exitCode: code,
       exitSignal: signal,
       ...(forced ? { forced: true } : {}),
+      ...(cleanupError ? { cleanupError } : {}),
     });
     process.exit(0);
   };

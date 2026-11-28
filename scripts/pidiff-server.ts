@@ -10,7 +10,6 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -319,54 +318,18 @@ interface PiClient {
   session: SessionInfo;
 }
 
-function isLoopbackAddr(addr: string | undefined): boolean {
-  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
-}
-
-function constantTimeTokenMatch(provided: string | undefined, expected: string): boolean {
-  if (!provided || !expected) return false;
-  const a = Buffer.from(provided, "utf8");
-  const b = Buffer.from(expected, "utf8");
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-const rawListenHost = (process.env.PI_PIDIFF_LISTEN_HOST || "").trim();
-const pidiffAuthToken = (process.env.PI_PIDIFF_AUTH_TOKEN || "").trim();
-// Refuse non-loopback binding unless a host-issued bearer token is configured.
-const listenAddress = rawListenHost && rawListenHost !== "127.0.0.1" && pidiffAuthToken
-  ? rawListenHost
-  : "127.0.0.1";
-if (rawListenHost && rawListenHost !== "127.0.0.1" && !pidiffAuthToken) {
-  log("PI_PIDIFF_LISTEN_HOST set without PI_PIDIFF_AUTH_TOKEN — falling back to loopback 127.0.0.1");
-}
-
+// Keep pidiff-server strictly bound to host loopback (127.0.0.1) — never expose a plaintext
+// diff listener on non-loopback interfaces; rootless Podman pasta/slirp4netns reaches host
+// loopback via host.containers.internal over a local-only channel.
 const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, start } = createDaemonServer({
   port,
   uiDir: resolveUiDir(process.argv[1], import.meta.url, "..", "extensions", "pidiff", "pidiff-ui", "dist"),
   uiName: "pidiff-ui",
   log,
-  listenAddress,
-  // Browser UI, /ws/browser, and /api/sessions stay strictly loopback-only.
-  // Non-loopback clients on /api/health and /ws/pi MUST present the host-issued x-pidiff-token.
-  allowRequest: listenAddress === "127.0.0.1"
-    ? undefined
-    : (pathname, remoteAddress, req) => {
-        if (isLoopbackAddr(remoteAddress)) return true;
-        if (pathname !== "/api/health" && pathname !== "/ws/pi") return false;
-        const headerVal = req.headers["x-pidiff-token"];
-        const token = Array.isArray(headerVal) ? headerVal[0] : headerVal;
-        return constantTimeTokenMatch(token, pidiffAuthToken);
-      },
+  listenAddress: "127.0.0.1",
 
   onPiMessage: (ws, parsed, getPiClient, setPiClient) => {
     if (parsed.type === "register") {
-      if (listenAddress !== "127.0.0.1") {
-        const remoteAddr = ws?._socket?.remoteAddress as string | undefined;
-        if (!isLoopbackAddr(remoteAddr) && !constantTimeTokenMatch(typeof parsed.authToken === "string" ? parsed.authToken : undefined, pidiffAuthToken)) {
-          log(`register rejected: invalid or missing authToken from ${remoteAddr || "unknown"}`);
-          return;
-        }
-      }
       const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
       const cwd = parsed.cwd || "";
       if (!cwd) { log(`register rejected: empty cwd from ${sessionId}`); return; }

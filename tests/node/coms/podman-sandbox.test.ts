@@ -523,6 +523,74 @@ describe("Sandbox workspace isolation", () => {
     assert.equal(fs.readFileSync(path.join(second.backupPath!, "peer-wip.txt"), "utf8"), "unsaved-work\n");
     assert.equal(fs.readFileSync(path.join(second.workspaceDir, "file.txt"), "utf8"), "v2\n");
   });
+
+  it("never executes peer-configured core.fsmonitor commands during host workspace inspection", () => {
+    const repo = makeTempDir("pi-repo-fsm-");
+    const sandboxDir = makeTempDir("pi-sb-fsm-");
+    const markerFile = path.join(sandboxDir, "pwned-by-fsmonitor");
+    initTempGitRepo(repo, "file.txt", "v1\n");
+
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1" });
+    // Simulate a hostile peer configuring core.fsmonitor inside its writable clone .git/config
+    execFileSync("git", ["config", "core.fsmonitor", `touch "${markerFile}"`], { cwd: first.workspaceDir, stdio: "ignore" });
+
+    // Advance source HEAD to trigger host-side inspection + re-clone
+    fs.writeFileSync(path.join(repo, "file.txt"), "v2\n");
+    execFileSync("git", ["add", "file.txt"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "v2"], { cwd: repo, stdio: "ignore" });
+
+    prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1" });
+    assert.equal(fs.existsSync(markerFile), false, "host must never execute peer core.fsmonitor");
+  });
+
+  it("backs up existing workspace when peer created only a gitignored file", () => {
+    const repo = makeTempDir("pi-repo-ign-");
+    const sandboxDir = makeTempDir("pi-sb-ign-");
+    initTempGitRepo(repo, ".gitignore", "*.local\n");
+
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1" });
+    fs.writeFileSync(path.join(first.workspaceDir, "notes.local"), "ignored-peer-output\n");
+
+    fs.writeFileSync(path.join(repo, "next.txt"), "v2\n");
+    execFileSync("git", ["add", "next.txt"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "v2"], { cwd: repo, stdio: "ignore" });
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1" });
+    assert.ok(second.backupPath && second.backupPath.endsWith(".bak"));
+    assert.equal(fs.readFileSync(path.join(second.backupPath!, "notes.local"), "utf8"), "ignored-peer-output\n");
+  });
+
+  it("does not create spurious backups for a clean origin-less clone when source HEAD advances", () => {
+    const repo = makeTempDir("pi-repo-noorigin-");
+    const sandboxDir = makeTempDir("pi-sb-noorigin-");
+    initTempGitRepo(repo, "file.txt", "v1\n");
+
+    prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1" });
+
+    fs.writeFileSync(path.join(repo, "file.txt"), "v2\n");
+    execFileSync("git", ["add", "file.txt"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "v2"], { cwd: repo, stdio: "ignore" });
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1" });
+    assert.equal(second.cloned, true);
+    assert.equal(second.backupPath, null);
+  });
+
+  it("prunes older workspace backups beyond maxBackups", () => {
+    const repo = makeTempDir("pi-repo-prune-");
+    const sandboxDir = makeTempDir("pi-sb-prune-");
+    initTempGitRepo(repo, "file.txt", "v1\n");
+
+    // Pre-seed 3 older backup directories
+    fs.mkdirSync(path.join(sandboxDir, "workspace.1000.bak"), { recursive: true });
+    fs.mkdirSync(path.join(sandboxDir, "workspace.2000.bak"), { recursive: true });
+    fs.mkdirSync(path.join(sandboxDir, "workspace.3000.bak"), { recursive: true });
+
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", maxBackups: 2 });
+    assert.equal(first.cloned, true);
+    const remaining = fs.readdirSync(sandboxDir).filter((n) => /^workspace\.\d+\.bak$/.test(n));
+    assert.equal(remaining.length, 2);
+  });
 });
 
 describe("File-locked background pre-warm", () => {
@@ -1130,5 +1198,55 @@ exit 0
     const afterRecord = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(afterRecord.pid, 999999);
     assert.equal(afterRecord.containerId, "222222222222");
+  });
+
+  it("retries failed podman rm -f and records cleanupError when removal fails permanently", () => {
+    const tmpHome = makeTempDir("pi-sup-failrm-home-");
+    const repoDir = makeTempDir("pi-sup-failrm-repo-");
+    const binDir = makeTempDir("pi-sup-failrm-bin-");
+    const comsDir = path.join(tmpHome, ".pi", "coms");
+    const podmanLog = path.join(tmpHome, "podman-failrm.log");
+    initTempGitRepo(repoDir);
+
+    const failCid = "cafebabe".repeat(8);
+    const fakePodman = path.join(binDir, "podman");
+    fs.writeFileSync(
+      fakePodman,
+      `#!/usr/bin/env bash
+echo "$@" >> "${podmanLog}"
+if [ "$1" = "run" ]; then
+  echo "${failCid}"
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  echo "$$"
+  exit 0
+fi
+if [ "$1" = "wait" ]; then
+  echo "0"
+  exit 0
+fi
+if [ "$1" = "rm" ]; then
+  exit 1
+fi
+exit 0
+`,
+      { mode: 0o755 },
+    );
+
+    const supervisorScript = path.join(REPO_ROOT, "scripts", "coms-peer-supervisor.mjs");
+    execFileSync(
+      process.execPath,
+      [supervisorScript, "failrm-peer", "--project", "demo", "--cwd", repoDir, "--sandbox", "podman", "--image", "localhost/pi-peer:111122223333"],
+      {
+        env: { ...process.env, HOME: tmpHome, PI_COMS_DIR: comsDir, PATH: `${binDir}:${process.env.PATH}` },
+        timeout: 15_000,
+      },
+    );
+
+    const calls = fs.readFileSync(podmanLog, "utf8").split(/\r?\n/).filter((l) => l.startsWith(`rm -f -- ${failCid}`));
+    assert.equal(calls.length, 2, "expected bounded retry of failed podman rm -f");
+    const state = JSON.parse(fs.readFileSync(path.join(comsDir, "peers", "failrm-peer@demo.json"), "utf8"));
+    assert.ok(typeof state.cleanupError === "string" && state.cleanupError.length > 0);
   });
 });

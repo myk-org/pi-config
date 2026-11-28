@@ -193,8 +193,6 @@ export interface DaemonServerOptions {
   extraUpgrades?: (pathname: string, req: IncomingMessage, socket: any, head: Buffer) => boolean;
   /** Listen address (default "127.0.0.1") */
   listenAddress?: string;
-  /** Optional per-request remote-address / header access control guard for HTTP and WebSocket routes. */
-  allowRequest?: (pathname: string, remoteAddress: string | undefined, req: IncomingMessage) => boolean;
   /** Custom origin validation regex (default: localhost/127.0.0.1 only) */
   originPattern?: RegExp;
   /** Optional async cleanup hook awaited on SIGTERM/SIGINT (bounded by shutdownTimeoutMs). */
@@ -213,7 +211,6 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     onBrowserConnect, onBrowserMessage, onBrowserWatch,
     extraUpgrades,
     listenAddress = "127.0.0.1",
-    allowRequest,
     originPattern = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/,
     onShutdown,
     shutdownTimeoutMs = 2000,
@@ -234,13 +231,6 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
-
-    if (allowRequest && !allowRequest(url.pathname, req.socket?.remoteAddress, req)) {
-      log(`rejected HTTP ${url.pathname} from ${req.socket?.remoteAddress || "unknown"}`);
-      res.writeHead(403, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "forbidden" }));
-      return;
-    }
 
     if (url.pathname === "/api/health") {
       // A daemon whose startup hook failed is listening but degraded: sessions connect and their
@@ -343,12 +333,6 @@ export function createDaemonServer(opts: DaemonServerOptions) {
       return;
     }
     const url = new URL(req.url || "/", `http://localhost`);
-    if (allowRequest && !allowRequest(url.pathname, req.socket?.remoteAddress, req)) {
-      log(`rejected WebSocket upgrade ${url.pathname} from ${req.socket?.remoteAddress || "unknown"}`);
-      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-      socket.destroy();
-      return;
-    }
     if (url.pathname === "/ws/pi") {
       piWss.handleUpgrade(req, socket, head, (ws: any) => piWss.emit("connection", ws, req));
     } else if (url.pathname === "/ws/browser") {

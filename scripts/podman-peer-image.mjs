@@ -25,6 +25,16 @@ export const MIN_PI_VERSION = "1.7.0";
 export const DEFAULT_PIDS_LIMIT = 512;
 export const DEFAULT_PIDASH_HOST = "host.containers.internal";
 export const DEFAULT_PIDIFF_HOST = "host.containers.internal";
+export const MAX_SANDBOX_BACKUPS = 3;
+
+/** Hardened git flags preventing repository-controlled `.git/config` hooks/fsmonitor execution on the host. */
+const SAFE_GIT_INSPECT_FLAGS = [
+  "-c", "core.fsmonitor=false",
+  "-c", "core.hooksPath=/dev/null",
+  "-c", "core.sshCommand=false",
+  "-c", "core.pager=cat",
+  "-c", "core.editor=false",
+];
 
 /** Strict validation pattern for deterministic Podman peer container names (`pi-peer-...`). */
 export const VALID_PEER_CONTAINER_RE = /^pi-peer-[a-z0-9][a-z0-9._-]{0,55}$/;
@@ -481,23 +491,46 @@ export function prepareSandboxWorkspace(opts) {
       } catch { /* ignore */ }
     }
 
-    // Check if the previous workspace has uncommitted changes or unpushed local commits before replacing it.
+    // Check if the previous workspace has uncommitted changes (including ignored peer files)
+    // or unpushed local commits beyond the recorded source HEAD before replacing it.
+    // Run git with core.fsmonitor=false & core.hooksPath=/dev/null so peer-controlled .git/config
+    // can never execute host commands.
     let backupPath = null;
     let cleanOldDir = null;
     if (fs.existsSync(workspaceDir)) {
       let hasUnsavedWork = false;
       if (hasExistingClone) {
         try {
-          const dirty = String(execFn("git", ["status", "--porcelain"], {
+          const safeGitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1" };
+          const dirty = String(execFn(
+            "git",
+            [...SAFE_GIT_INSPECT_FLAGS, "status", "--porcelain", "--ignored=matching"],
+            {
+              cwd: workspaceDir,
+              encoding: "utf8",
+              timeout: 5000,
+              env: safeGitEnv,
+              stdio: ["ignore", "pipe", "ignore"],
+            },
+          )).trim();
+          const baseSha =
+            typeof existingMarker?.headSha === "string" && /^[a-f0-9]{40}$/i.test(existingMarker.headSha)
+              ? existingMarker.headSha
+              : null;
+          const logArgs = [
+            ...SAFE_GIT_INSPECT_FLAGS,
+            "log",
+            "--branches",
+            "--not",
+            ...(baseSha ? [baseSha] : []),
+            "--remotes",
+            "--oneline",
+          ];
+          const unpushed = String(execFn("git", logArgs, {
             cwd: workspaceDir,
             encoding: "utf8",
             timeout: 5000,
-            stdio: ["ignore", "pipe", "ignore"],
-          })).trim();
-          const unpushed = String(execFn("git", ["log", "--branches", "--not", "--remotes", "--oneline"], {
-            cwd: workspaceDir,
-            encoding: "utf8",
-            timeout: 5000,
+            env: safeGitEnv,
             stdio: ["ignore", "pipe", "ignore"],
           })).trim();
           hasUnsavedWork = dirty.length > 0 || unpushed.length > 0;
@@ -515,7 +548,7 @@ export function prepareSandboxWorkspace(opts) {
         log.warn("sandbox_workspace_backed_up", {
           previousWorkspace: workspaceDir,
           backupPath,
-          reason: "uncommitted_or_unpushed_work",
+          reason: "uncommitted_ignored_or_unpushed_work",
         });
       } else {
         cleanOldDir = path.join(sandboxDir, `workspace.old.${process.pid}.${Date.now()}`);
@@ -537,6 +570,28 @@ export function prepareSandboxWorkspace(opts) {
     if (cleanOldDir) {
       try { fs.rmSync(cleanOldDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
+
+    // Bound workspace.*.bak retention to the N newest backups so ~/.pi/sandboxes never grows unbounded.
+    const maxBackups = Number.isInteger(opts.maxBackups) && opts.maxBackups >= 1 ? opts.maxBackups : MAX_SANDBOX_BACKUPS;
+    try {
+      const backups = fs.readdirSync(sandboxDir)
+        .filter((name) => /^workspace\.\d+\.bak$/.test(name))
+        .map((name) => {
+          const full = path.join(sandboxDir, name);
+          let mtimeMs = 0;
+          try { mtimeMs = fs.statSync(full).mtimeMs; } catch { /* ignore */ }
+          return { name, full, mtimeMs };
+        })
+        .sort((a, b) => (b.mtimeMs !== a.mtimeMs ? b.mtimeMs - a.mtimeMs : b.name.localeCompare(a.name)));
+      for (const stale of backups.slice(maxBackups)) {
+        try {
+          fs.rmSync(stale.full, { recursive: true, force: true });
+          log.info("sandbox_workspace_backup_pruned", { prunedPath: stale.full, kept: maxBackups });
+        } catch (pruneErr) {
+          log.warn("sandbox_workspace_backup_prune_failed", { path: stale.full, error: pruneErr?.message ?? String(pruneErr) });
+        }
+      }
+    } catch { /* best-effort */ }
 
     writeJsonAtomic(markerPath, {
       sourceCwd: resolvedSource,

@@ -4,6 +4,7 @@ export declare const MIN_PI_VERSION: string;
 export declare const DEFAULT_PIDS_LIMIT: number;
 export declare const DEFAULT_PIDASH_HOST: string;
 export declare const DEFAULT_PIDIFF_HOST: string;
+export declare const MAX_SANDBOX_BACKUPS: number;
 export declare const VALID_PEER_CONTAINER_RE: RegExp;
 export declare const DEFAULT_PASSTHROUGH_ENV_KEYS: string[];
 
@@ -118,6 +119,7 @@ export declare function prepareSandboxWorkspace(opts: {
   sourceCwd: string;
   project: string;
   cname: string;
+  maxBackups?: number;
   execFileSync?: (...args: any[]) => any;
   logger?: ReturnType<typeof createPodmanLogger>;
 }): { workspaceDir: string; cloned: boolean; revived: boolean; backupPath?: string | null };
