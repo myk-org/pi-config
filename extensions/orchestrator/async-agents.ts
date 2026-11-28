@@ -916,6 +916,7 @@ export function registerAsyncAgents(
             startedAt: j.startedAt,
             cwd: j.cwd ?? "",
             taskId: j.taskId ?? null,
+            piSessionId: j.sessionId ?? null,
             mode: "async" as const,
           })),
           ...syncRuns.map(r => ({
@@ -1620,6 +1621,7 @@ export function registerAsyncAgents(
         : undefined,
       workerDir,
       sessionId: `${process.pid}:${process.cwd()}`,
+      piSessionId: resolvedSessionId || null,
       piCommand: inv.command,
       piArgs: inv.args,
     }), { mode: 0o600 });

@@ -18,12 +18,13 @@ import {
 } from "../orchestrator/overlay-activity-log.js";
 import {
   isFreshHeartbeat,
+  isPeerBusy,
   pickSupervisionRecord,
   type RegistryRow,
   type SupervisionRecord,
 } from "./coms-registry-core.js";
 
-export { isFreshHeartbeat, pickSupervisionRecord, type RegistryRow, type SupervisionRecord };
+export { isFreshHeartbeat, isPeerBusy, pickSupervisionRecord, type RegistryRow, type SupervisionRecord };
 
 const log = createLogger("coms-peers");
 
@@ -73,7 +74,7 @@ export function formatPeerTable(rows: RegistryRow[]): string {
     .slice()
     .sort((a, b) => (a.project === b.project ? a.name.localeCompare(b.name) : a.project.localeCompare(b.project)))
     .map((row) => {
-      const state = row.busy ? "busy" : "idle";
+      const state = isPeerBusy(row) ? "busy" : "idle";
       const queue = row.queueDepth ? ` queue:${row.queueDepth}` : "";
       const ctx = row.contextUsedPct === null ? "" : ` ctx:${Math.round(row.contextUsedPct)}%`;
       const pid = row.hostPid ? ` pid:${row.hostPid}` : (row.pid ? ` pid:${row.pid}` : "");
@@ -81,9 +82,11 @@ export function formatPeerTable(rows: RegistryRow[]): string {
       // #1084: peer-supplied text is sanitized before it reaches a terminal.
       return `● ${sanitizePeerText(row.name, 40)} · ${sanitizePeerText(row.project, 40)} (${state}${queue}${ctx}${pid}${ctr})${formatWorkloadSuffix(row.workload)} — ${sanitizePeerText(row.cwd, 120) || "?"}`;
     });
+  const busyCount = rows.filter((row) => isPeerBusy(row)).length;
+  const busyHeader = busyCount > 0 ? ` (${busyCount} busy)` : "";
   // Counts only: how many peers could not report, never what they said.
   log.debug("peer_table_rendered", { rows: rows.length, unknown: rows.filter((row) => row.workload == null).length });
-  return `${rows.length} peer(s):\n${lines.join("\n")}`;
+  return `${rows.length} peer(s)${busyHeader}:\n${lines.join("\n")}`;
 }
 
 export interface PeerDetailOptions {
@@ -104,7 +107,7 @@ export function formatPeerDetailLines(row: RegistryRow, options: PeerDetailOptio
   const lines = [
     `cwd       ${sanitizePeerText(row.cwd, 120) || "?"}`,
     `purpose   ${sanitizePeerText(row.purpose, 120) || "—"}`,
-    `state     ${row.busy ? "busy" : "idle"}${row.queueDepth ? ` · queue ${row.queueDepth}` : ""}`,
+    `state     ${isPeerBusy(row) ? "busy" : "idle"}${row.queueDepth ? ` · queue ${row.queueDepth}` : ""}`,
     `created   ${origin.by === "unknown" ? "unknown (no record)" : sanitizePeerText(origin.by, 40)} · via ${sanitizePeerText(origin.via, 40)}`,
     ...(row.container ? [`container ${sanitizePeerText(row.container, 64)}`] : []),
     `pid       ${row.hostPid ?? row.pid ?? "?"}`,
@@ -562,7 +565,7 @@ export function collectComsActivityEvents(args: {
     const id = peerOverlayRowId(row);
     registerRosterLookup(row, id);
     const ts = row.startedAt ? (Date.parse(row.startedAt) || now) : now;
-    const stateDesc = row.busy
+    const stateDesc = isPeerBusy(row)
       ? `peer busy${row.queueDepth ? ` (queue ${row.queueDepth})` : ""}`
       : "peer online";
     events.push({

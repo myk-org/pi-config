@@ -300,7 +300,7 @@ describe("InfoBar cron status trigger", () => {
   it("renders muted cron trigger when no crons exist", async () => {
     const { cronTrigger } = await renderCronBar();
     assert.equal(cronTrigger()!.textContent.trim(), "⏰ 0 crons");
-    assert.match(String(cronTrigger()!.getAttribute("class") || ""), /text-muted-foreground\/50/);
+    assert.match(String(cronTrigger()!.getAttribute("class") || ""), /text-muted-foreground\/75/);
   });
 
   it("renders blue cron trigger when all crons are active", async () => {
@@ -344,7 +344,7 @@ describe("InfoBar cron status trigger", () => {
     const spans = elements(mixed, "span");
     assert.equal(spans.length, 3);
     assert.match(String(spans[0].getAttribute("class") || ""), /text-blue-400/);
-    assert.match(String(spans[1].getAttribute("class") || ""), /text-muted-foreground\/50/);
+    assert.match(String(spans[1].getAttribute("class") || ""), /text-muted-foreground\/75/);
     assert.match(String(spans[2].getAttribute("class") || ""), /text-amber-400/);
   });
 });

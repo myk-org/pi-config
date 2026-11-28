@@ -8,6 +8,8 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { createLogger } from "../shared/logger.js";
 import { resolveStorePath } from "../pitasks/task-store.js";
+import { isPeerBusy } from "./coms-registry-core.js";
+import type { PeerWorkloadCounts } from "./coms-workload.js";
 import { stripOriginMarker } from "./peer-text.js";
 
 const log = createLogger("coms");
@@ -521,6 +523,7 @@ export interface ComsPeerCard {
 	context_used_pct?: number;
 	queue_depth?: number;
 	busy?: boolean;
+	workload?: PeerWorkloadCounts | null;
 	tasks_summary?: unknown;
 	container?: string | null;
 	staleCount: number;
@@ -536,10 +539,11 @@ export function buildComsPeersPayload(
 			name: card.name,
 			purpose: card.purpose,
 			model: card.model,
-			busy: card.busy ?? false,
+			busy: isPeerBusy(card),
 			queueDepth: card.queue_depth ?? 0,
 			contextUsedPct: card.context_used_pct ?? 0,
 			tasksSummary: card.tasks_summary ?? null,
+			...(card.workload ? { workload: card.workload } : {}),
 			...(card.container ? { container: card.container } : {}),
 		});
 	}
@@ -559,6 +563,7 @@ export interface PidashRegistryPeerRow {
 	busy: boolean;
 	queueDepth: number | null;
 	contextUsedPct: number | null;
+	workload?: PeerWorkloadCounts | null;
 	container?: string | null;
 }
 
@@ -589,6 +594,7 @@ export function buildPidashComsPeersPayload(args: {
 		contextUsedPct: number;
 		tasksSummary: unknown;
 		supervised: boolean;
+		workload?: PeerWorkloadCounts | null;
 		container?: string | null;
 	}>;
 } {
@@ -608,6 +614,7 @@ export function buildPidashComsPeersPayload(args: {
 		contextUsedPct: number;
 		tasksSummary: unknown;
 		supervised: boolean;
+		workload?: PeerWorkloadCounts | null;
 		container?: string | null;
 	}> = [];
 	const seenKeys = new Set<string>();
@@ -624,17 +631,20 @@ export function buildPidashComsPeersPayload(args: {
 		seenKeys.add(key);
 		const card = cardByKey.get(key);
 		const container = row.container || card?.container || null;
+		const workload = card?.workload ?? row.workload ?? null;
+		const rawBusy = card?.busy ?? row.busy ?? false;
 		peers.push({
 			name: row.name,
 			project: row.project,
 			purpose: row.purpose || card?.purpose || "",
 			model: row.model || card?.model || "",
 			cwd: row.cwd || "",
-			busy: card?.busy ?? row.busy ?? false,
+			busy: isPeerBusy({ busy: rawBusy, workload }),
 			queueDepth: card?.queue_depth ?? row.queueDepth ?? 0,
 			contextUsedPct: card?.context_used_pct ?? row.contextUsedPct ?? 0,
 			tasksSummary: card?.tasks_summary ?? null,
 			supervised: args.supervisedKeys.has(key),
+			...(workload ? { workload } : {}),
 			...(container ? { container } : {}),
 		});
 	}
@@ -644,17 +654,19 @@ export function buildPidashComsPeersPayload(args: {
 		if (seenKeys.has(key)) continue;
 		if (args.self && card.name === args.self.name) continue;
 		seenKeys.add(key);
+		const workload = card.workload ?? null;
 		peers.push({
 			name: card.name,
 			project: selfProject,
 			purpose: card.purpose || "",
 			model: card.model || "",
 			cwd: "",
-			busy: card.busy ?? false,
+			busy: isPeerBusy(card),
 			queueDepth: card.queue_depth ?? 0,
 			contextUsedPct: card.context_used_pct ?? 0,
 			tasksSummary: card.tasks_summary ?? null,
 			supervised: args.supervisedKeys.has(key),
+			...(workload ? { workload } : {}),
 			...(card.container ? { container: card.container } : {}),
 		});
 	}

@@ -45,7 +45,7 @@ Single extension that provides:
 | **Rule injection** | Injects orchestrator routing rules into system prompt |
 | **Git status** | Live git status in status line with colored icons — updates after every tool call. Shows clickable `#N` when the branch has an open PR. Last-activity clock `⏱ HH:MM (Xm/Xh ago)` shows time since last response |
 | **Desktop notifications** | Notifies via `notify-send` on task completion, waiting for input, and action required |
-| **File preview** | Serves generated HTML/frontend files via HTTP for browser preview from container |
+| **File preview** | Serves generated HTML/frontend files via HTTP for browser preview |
 | **Trail-code integration** | On by default when the `trail` binary is installed. Main agents and subagents query the local code map before raw project navigation: the first project navigation per turn is gated behind a `trail_*` call, guidance is map-first (`trail_find_code` first, `trail_repo_map` once per session), and injected hits carry source. Worktrees resolve the map under `graft/` or `.trail/cache/`, inherit enablement from the main checkout, and seed from it instead of cold-building. Stale maps stay usable and failures fall open. |
 | **Pidash dashboard** | Live web dashboard — multi-session monitoring with browser tab title sync, sidebar Needs Attention / Pin / Archived grouping, browser messaging, `1`–`9` keyboard `ask_user` + multi-line answers, one-click bash output copy, model switching, live session name updates, reasoning token display, side panels (Tasks, Worktrees with guarded remove/prune/detail, Coms, Memory, MCP, Settings), and a loopback-only read-only `/api/*` JSON surface for external tools |
 | **Pidiff viewer** | Per-project diff viewer with review comments — branch diffs, file tree, inline comments, git-based ignore rules |
@@ -194,18 +194,6 @@ Forked from [disler/pi-vs-claude-code](https://github.com/disler/pi-vs-claude-co
 
 ## Installation
 
-### Docker (Recommended)
-
-The recommended way to run pi-config is via the pre-built container image. It provides filesystem isolation, consistent tooling, and all dependencies pre-installed.
-
-```bash
-docker pull ghcr.io/myk-org/pi-config:latest
-```
-
-See the [Docker section](#docker-sandboxed-execution) below for the full run command and shell alias.
-
-### Native (without Docker)
-
 Install `pi` first (`npm install -g @earendil-works/pi-coding-agent`). On Linux distros with system-packaged Node.js
 (root-owned `/usr` or `/usr/local` npm prefix), configure a user-writable npm prefix first or install `pi` with `sudo`:
 
@@ -250,17 +238,11 @@ For non-interactive (CI) usage:
 uv run scripts/install.py --all
 ```
 
+Need container isolation for parallel worker peers? Enable opt-in rootless Podman sandboxes for supervised COMS peers
+(`coms_peer_sandbox: "podman"`, built from `Containerfile.peer`) — see
+[Sandboxed Execution (Podman COMS Peers)](#sandboxed-execution-podman-coms-peers).
+
 ## Updating
-
-### Docker
-
-```bash
-docker pull ghcr.io/myk-org/pi-config:latest
-```
-
-The container runs `pi update` automatically on each start.
-
-### Native
 
 ```bash
 pi update --extensions             # Pi and installed packages
@@ -561,111 +543,21 @@ pi config              # Toggle showCacheMissNotices in settings UI
 
 Defaults to `false`. Enable when debugging cost spikes from cache invalidation.
 
-## Docker (Sandboxed Execution)
+## Sandboxed Execution (Podman COMS Peers)
 
-Run pi inside a disposable container for **filesystem isolation** — the agent can only access your mounted project directory and pi settings. Everything else on the host is protected.
+Supervised COMS peers run as native host processes by default (`coms_peer_sandbox: "off"`). For container isolation,
+enable opt-in rootless Podman sandboxes by setting `coms_peer_sandbox: "podman"` in global settings
+(`PI_COMS_PEER_SANDBOX=podman`) or passing `sandbox: "podman"` to `coms_peer_spawn`.
 
-### Why?
-
-- **Safety** — Prevents accidental `rm -rf`, modifications outside the project, or unintended system changes
-- **Filesystem isolation** — pi can only read/write the mounted project directory
-- **Consistent tooling** — All required tools pre-installed in a single image
-- **Disposable** — Container is destroyed after each session (`--rm`)
-
-**Trail-code (`trail_enable`, on by default):** The image installs the latest
-`@trailhq/trail-code` with `DO_NOT_TRACK=1`. It downloads with scripts disabled, derives
-an exact script allowlist by auditing the installed package's reachable dependency
-metadata in a dedicated npm prefix, then strictly rebuilds that isolated tree with
-those approvals. Only after the rebuild succeeds is the completed prefix moved under
-the global npm prefix and its `trail` binary linked globally. This prevents unrelated
-global packages from entering npm's strict preflight. The allowlist is command-scoped
-and changes with `@latest`; other npm commands keep npm 12's install-script
-protections. The image includes Python 3,
-`make`, and the GCC/G++ toolchain required by node-gyp for Trail-code and other native
-npm packages; these remain available for reliable package rebuilds. The build then
-verifies `trail --version`. The map is written to the mounted project's `./graft/` or
-`.trail/cache/` directory; set `trail_enable` to `false` and delete that directory to
-disable and remove the cache.
-Native installations require Node.js 22+, npm 12+, Python 3, `make`, and G++; the
-installer uses the same audited strict installation and failure remains non-fatal.
-
-**Persistent cron locking:** The image includes `flock` from `util-linux` for kernel-backed,
-cross-container store mutations on shared mounts. The shared filesystem must support
-advisory locks. Before deploying this version alongside old Pi containers, stop and
-drain every legacy cron writer. An existing legacy mutation-lock directory blocks
-new writes until an operator verifies old writers cannot resume and removes only
-that directory. Do not stop running containers merely to test this PR.
+- Uses a 3-layer cached Fedora image (`Containerfile.peer`, `scripts/podman-peer-image.mjs`, `scripts/podman-peer-entrypoint.sh`) with per-container workspace clones under `~/.pi/sandboxes/<container>`.
+- Connects directly to host PiDash and PiDiff via `host.containers.internal` and opens interactive shells with `podman exec -it <container> bash`.
+- See [Inter-Agent Communication](docs/inter-agent-communication.md) and [Configuration](docs/configuration.md) for
+  resource limits (`coms_peer_sandbox_cpus`, `coms_peer_sandbox_memory`, `coms_peer_sandbox_base_image`) and teardown
+  details.
 
 **Extension ops logs:** Extensions and dreaming write structured logs to `~/.pi/logs/` (not the chat UI). Fallback: `.pi/tmp/pi-logs/` or `~/.pi/tmp/pi-logs/`.
 
-### Pre-built image
-
-```bash
-docker pull ghcr.io/myk-org/pi-config:latest
-```
-
-### Build from source (optional)
-
-> **Note:** The image is built for **linux/amd64** only.
-> On ARM hosts, build with `--platform linux/amd64`.
-
-```bash
-git clone https://github.com/myk-org/pi-config.git
-cd pi-config
-docker build -t ghcr.io/myk-org/pi-config:latest .
-```
-
-### Run
-
-```bash
-docker run --rm -it \
-  --name "pi-config-$(basename $PWD)-$(date +%s)" \
-  --network host \
-  --env-file /path/to/.env \
-  -v "$PWD":"$PWD":rw \
-  -v "$HOME/.pi":"$HOME/.pi":rw \
-  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
-  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
-  -v "$HOME/.ssh":"$HOME/.ssh":ro \
-  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
-  -w "$PWD" \
-  ghcr.io/myk-org/pi-config:latest
-```
-
-### Environment file
-
-Create a `.env` file with external service credentials and container-specific
-variables. Pi-config settings (`agent_model`, `vertex_claude_1m`, etc.)
-go in `.pi/pi-config-settings.json` — not here:
-
-```env
-# Timezone (host timezone for correct timestamps) — plain value, no inline comment:
-# `docker run --env-file` does not strip trailing comments.
-TZ=America/New_York
-
-# Host username (creates /home/<user> -> container home symlink so host paths resolve)
-PI_HOST_USER=youruser
-
-# Host UID/GID belong on the docker alias (see below), not hardcoded here:
-#   -e PI_HOST_UID="$(id -u)" -e PI_HOST_GID="$(id -g)"
-# The entrypoint remaps user `node` to those ids so bind-mounted 0600/0700
-# files (~/.npmrc, ~/.ssh) are readable. IPA/LDAP users are not UID 1000.
-
-# Google Cloud / Vertex AI
-GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_CLOUD_LOCATION=us-east5
-GOOGLE_APPLICATION_CREDENTIALS=/home/youruser/.config/gcloud/application_default_credentials.json
-
-# GitHub
-GITHUB_TOKEN=ghp_xxx
-GITHUB_API_TOKEN=ghp_xxx
-GH_CONFIG_DIR=/home/youruser/.config/gh
-
-# Gemini (optional — Google/Gemini API key)
-GEMINI_API_KEY=xxx
-```
-
-Pass via `--env-file /path/to/.env` in the docker run command.
+## Features & Tooling
 
 ### Project memory
 
@@ -697,12 +589,9 @@ wording) rejects and asks which rule is correct; a confirmed rule change
 re-supplies the write with `overrideConflicts: true` and supersedes the old
 entry. Pinned entries are never auto-superseded — the user edits them directly.
 
-The `.pi/memory/` directory is auto-added to the global gitignore in the container
-(along with `.pi/`, `.worktrees/`, `.cursor/agents/`, `.claude/agents/`, and
-`.gemini/agents/`). This repo's `.gitignore` also ignores those three `*/agents/`
-dirs so `uv build` does not pack local specialist symlinks.
-
-For **native** (non-container) usage, add memory to your global gitignore:
+Keep `.pi/` (including `.pi/memory/`), `.worktrees/`, `.cursor/agents/`,
+`.claude/agents/`, and `.gemini/agents/` out of git via your global gitignore
+(`scripts/install.py` can configure this for you):
 
 ```bash
 echo '.pi/memory/' >> ~/.gitignore-global
@@ -839,20 +728,7 @@ PI_PIDIFF_ENABLE=false pi
 /pidiff restart   # Restart the server
 ```
 
-### Optional mounts
-
-| Mount | Purpose |
-| --- | --- |
-| `-v "$HOME/.agents":"$HOME/.agents":rw` | User-level skills (install/uninstall from container) |
-| `-v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro` | Google Cloud ADC (for Claude via Vertex AI) |
-| `-v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro` | GitLab CLI config (auth tokens, host settings) |
-| `-v "$HOME/.coderabbit":"$HOME/.coderabbit":rw` | CodeRabbit CLI auth and review data |
-| `-v "$HOME/.qodo":"$HOME/.qodo":rw` | Qodo CLI auth directory (mount at the container user's `$HOME/.qodo`; with `PI_HOST_USER`, that is `/home/$PI_HOST_USER/.qodo`). Create it on the host first with `mkdir -p "$HOME/.qodo"`; inside the container run `qodo read whoami` and, if signed out, `qodo login`. Host OS-keychain credentials may not work inside the container. |
-| `-v "$HOME/screenshots":"$HOME/screenshots"` | Share screenshots/images with the agent |
-| `-v /var/run/docker.sock:/var/run/docker.sock:ro` + `--group-add $(stat -c '%g' /var/run/docker.sock)` | Docker container inspection via `docker-safe` |
-| `-v /var/run/podman/podman.sock:/var/run/podman/podman.sock:ro` | Podman container inspection via `docker-safe` |
-
-### What's in the image
+### Tools & Dependencies
 
 | Tool | Purpose |
 | --- | --- |
@@ -860,23 +736,17 @@ PI_PIDIFF_ENABLE=false pi
 | `git` | Version control |
 | `gh` | GitHub CLI (PRs, issues) |
 | `glab` | GitLab CLI (MRs, issues, pipelines) — install [gitlab-cli-skills](https://github.com/vince-winkintel/gitlab-cli-skills) for full agent support |
-| `gcc` | C compiler — needed for building Python C extensions (e.g. ovirt-engine-sdk-python) |
 | `uv` / `uvx` | Python execution (enforced by orchestrator) |
 | `go` | Go development and code review |
-| `libxml2-dev` | libxml2 headers — needed for building Python C extensions (e.g. ovirt-engine-sdk-python) |
 | `myk-pi-tools` | PR review, release, and other CLI utilities |
 | `prek` | Pre-commit hook runner |
 | `kubectl` / `oc` | Kubernetes and OpenShift CLI |
 | `agent-browser` | Browser automation CLI (navigate, click, screenshot, forms) |
-| `trail` | Local code map for `trail_enable` (on by default); the regenerable cache lives in the mounted project's `./graft/` or `.trail/cache/` directory |
-| `procps` | Process utilities (ps, top, pgrep, pkill) |
-| `passwd` | `usermod`/`groupmod` — init remaps user `node` to `PI_HOST_UID`/`PI_HOST_GID` |
-| `docker` / `podman` | Container CLIs (used via `docker-safe` read-only wrapper) |
-| `docker-safe` | Restricted Docker/Podman wrapper — container only (ps, logs, inspect, top, stats) |
+| `trail` | Local code map for `trail_enable` (on by default); the regenerable cache lives in `./graft/` or `.trail/cache/` |
 | `jq` | JSON processing |
 | `rg` (ripgrep) | Fast recursive search |
 | `cr` | CodeRabbit CLI — local AI code reviews |
-| `qodo` | Qodo CLI (npm package `@qodo/command`) — local code reviews (`qodo --version`; mount `~/.qodo` as above and authenticate inside the container if needed — `--version` exits non-zero when logged out) |
+| `qodo` | Qodo CLI (npm package `@qodo/command`) — local code reviews (`qodo --version`; exits non-zero when logged out) |
 | `curl` | HTTP requests |
 
 #### `myk-pi-tools` subcommands
@@ -911,7 +781,7 @@ A repo can opt into **scoped releases** by committing a `release-map.toml` at it
 (see this repo's own map for the format): a `[release]` section, one `[[package]]` block per
 published artifact (`name`, `registry` `npm`/`pypi`/`npm+pypi`, `version-files`, `paths`,
 optional `exclude-paths`, `npm-name`/`pypi-name` overrides for scoped or renamed registry
-names), and a `[container]` `rebuild-paths` list.
+names), and an optional `[container]` `rebuild-paths` list for repos that publish a container image.
 
 With a map present, `myk-pi-tools release plan` (read-only) reports which packages changed since **their own last publish**:
 
@@ -931,7 +801,8 @@ myk-pi-tools release plan --force-package pi-docsite
   belong to no package, no exclude, and no container rebuild-path. A change that ships
   nowhere silently is the broken failure mode — the operator maps the path or consciously
   accepts it as release-inert.
-- The container image is reported as needing a rebuild when any package ships or a `rebuild-paths` entry changed since the last repo tag.
+- When `[container]` `rebuild-paths` is configured, the container image is reported as needing a rebuild when any
+  package ships or a `rebuild-paths` entry changed since the last repo tag.
 
 `myk-pi-tools release bump-scoped` performs the scoped version bump: only affected
 packages' version files are written, and any errored package or undetected version file
@@ -991,65 +862,6 @@ deduped.
 - `review_complete`: surfaced so a skipped/incomplete run is visible without blocking approval.
 - `reason`: describes the findings catalog (`no_findings`, `open_findings`, `not_at_head`, or `all_resolved`) and can
   be `all_resolved` while `approved` is `false`.
-
-### What's protected
-
-**Filesystem isolation** — the container cannot access anything outside the mounted volumes:
-
-- ✅ `$PWD` (your project) — read/write
-- ✅ `~/.pi` (pi settings/sessions) — read/write
-- ✅ Git, GitHub, SSH config — read-only
-- ❌ Other directories on your host — not accessible
-- ❌ Other git repos — not accessible
-- ❌ System files — not accessible
-
-**Network** — `--network host` shares the host network stack,
-so the container can reach any service your host can (LAN, localhost),
-and the host can reach services started inside the container.
-This is required for local MCP servers, OpenAI-compatible proxy, and file preview
-(agents serve generated HTML/frontend files via HTTP for browser access).
-If your LLM provider is cloud-based, you don't use local MCPs,
-and you don't need file preview, you can omit `--network host`.
-
-### Shell alias
-
-Add to your `~/.bashrc` or `~/.zshrc`:
-
-```bash
-alias pi-docker='docker pull ghcr.io/myk-org/pi-config:latest && \
-  docker run --rm -it \
-  --name "pi-config-$(basename $PWD)-$(date +%s)" \
-  --network host \
-  --env-file "$HOME/.pi/.env" \
-  -e PI_HOST_UID="$(id -u)" \
-  -e PI_HOST_GID="$(id -g)" \
-  -v "$PWD":"$PWD":rw \
-  -v "$HOME/.pi":"$HOME/.pi":rw \
-  -v "$HOME/.gitconfig":"$HOME/.gitconfig":ro \
-  -v "$HOME/.gitignore-global":"$HOME/.gitignore-global":ro \
-  -v "$HOME/.ssh":"$HOME/.ssh":ro \
-  -v "$HOME/.config/gh":"$HOME/.config/gh":ro \
-  -v "$HOME/.agents":"$HOME/.agents":rw \
-  -v "$HOME/.config/gcloud/application_default_credentials.json":"$HOME/.config/gcloud/application_default_credentials.json":ro \
-  -v "$HOME/.config/glab-cli":"$HOME/.config/glab-cli":ro \
-  -v "$HOME/screenshots":"$HOME/screenshots":ro \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  --group-add $(stat -c '%g' /var/run/docker.sock) \
-  -w "$PWD" \
-  ghcr.io/myk-org/pi-config:latest'
-```
-
-Then just run `pi-docker` from any project directory.
-
-> **Startup note:** The container runs as non-root user `node`. At start the
-> entrypoint remaps `node` to `PI_HOST_UID`/`PI_HOST_GID` (pass `$(id -u)` /
-> `$(id -g)` on the alias) so bind-mounted secrets match the host user.
-> Without those env vars, `node` stays UID 1000 (breaks IPA/LDAP hosts).
-> `pi install` runs on each start.
-> A `WARNING` on stderr is normal when the package is already cached in `~/.pi`.
-> If pi misbehaves or the warning persists, verify network connectivity
-> and run `pi install npm:pi-orchestrator-config` and
-> `pi install npm:@myk-org/pi-vertex-claude` manually.
 
 ## Discord Bot
 

@@ -40,6 +40,8 @@ export interface SessionInfo {
   supervisedPeer?: boolean;
   /** PiDash sessionId of the parent LLM session that spawned this supervised peer (#1527). */
   parentSessionId?: string;
+  /** Number of currently running async subagents spawned by this session (#1509). */
+  runningAsyncAgents?: number;
   /** Exact authoritative Trail savings for this parent Pi session. */
   trailTokenSavings?: number;
   /** Linked (non-main) worktree count for this session's repository. */

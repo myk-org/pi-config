@@ -546,6 +546,120 @@ describe("pidash loopback /api/* surface", () => {
     assert.equal(data.peers[0].name, "p1");
   });
 
+  it("counts a peer with busy false plus workload.agents 1 as busy on /api/peers", async () => {
+    const now = 1_750_000_000_000;
+    const deps = makeBaseDeps(tmpRoot, { now: () => now });
+    const reg = new ComsRegistry(deps.comsDir!);
+    const sock = path.join(deps.comsDir!, "sockets", "async-worker.sock");
+    fs.mkdirSync(path.dirname(sock), { recursive: true });
+    fs.writeFileSync(sock, "");
+
+    reg.writeEntryAtomic(
+      {
+        coms_session_id: "s-async",
+        name: "async-worker",
+        purpose: "runs subagents",
+        model: "m",
+        color: "#fff",
+        pid: process.pid,
+        endpoint: sock,
+        cwd: tmpRoot,
+        started_at: new Date(now - 10_000).toISOString(),
+        heartbeat_at: new Date(now - 1_000).toISOString(),
+        explicit: true,
+        version: 1,
+        busy: false,
+        workload: { agents: 1, tasks: 0, crons: 0 },
+      },
+      "proj-a",
+    );
+
+    const router = createPidashApiRouter(deps);
+    const { response } = await invokeRouter(router, { urlPath: "/api/peers?project=*" });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.total, 1);
+    assert.equal(data.busy, 1);
+    assert.equal(data.idle, 0);
+    assert.equal(data.peers[0].busy, true);
+  });
+
+  it("keeps a peer with workload.agents 0 plus pending tasks idle on /api/peers", async () => {
+    const now = 1_750_000_000_000;
+    const deps = makeBaseDeps(tmpRoot, { now: () => now });
+    const reg = new ComsRegistry(deps.comsDir!);
+    const sock = path.join(deps.comsDir!, "sockets", "tasks-only.sock");
+    fs.mkdirSync(path.dirname(sock), { recursive: true });
+    fs.writeFileSync(sock, "");
+
+    reg.writeEntryAtomic(
+      {
+        coms_session_id: "s-tasks",
+        name: "tasks-only",
+        purpose: "planning",
+        model: "m",
+        color: "#fff",
+        pid: process.pid,
+        endpoint: sock,
+        cwd: tmpRoot,
+        started_at: new Date(now - 10_000).toISOString(),
+        heartbeat_at: new Date(now - 1_000).toISOString(),
+        explicit: true,
+        version: 1,
+        busy: false,
+        workload: { agents: 0, tasks: 3, crons: 1 },
+      },
+      "proj-a",
+    );
+
+    const router = createPidashApiRouter(deps);
+    const { response } = await invokeRouter(router, { urlPath: "/api/peers?project=*" });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.total, 1);
+    assert.equal(data.busy, 0);
+    assert.equal(data.idle, 1);
+    assert.equal(data.peers[0].busy, false);
+  });
+
+  it("keeps a peer with busy true plus workload.agents 0 busy on /api/peers", async () => {
+    const now = 1_750_000_000_000;
+    const deps = makeBaseDeps(tmpRoot, { now: () => now });
+    const reg = new ComsRegistry(deps.comsDir!);
+    const sock = path.join(deps.comsDir!, "sockets", "turn-busy.sock");
+    fs.mkdirSync(path.dirname(sock), { recursive: true });
+    fs.writeFileSync(sock, "");
+
+    reg.writeEntryAtomic(
+      {
+        coms_session_id: "s-turn",
+        name: "turn-busy",
+        purpose: "active turn",
+        model: "m",
+        color: "#fff",
+        pid: process.pid,
+        endpoint: sock,
+        cwd: tmpRoot,
+        started_at: new Date(now - 10_000).toISOString(),
+        heartbeat_at: new Date(now - 1_000).toISOString(),
+        explicit: true,
+        version: 1,
+        busy: true,
+        workload: { agents: 0, tasks: 0, crons: 0 },
+      },
+      "proj-a",
+    );
+
+    const router = createPidashApiRouter(deps);
+    const { response } = await invokeRouter(router, { urlPath: "/api/peers?project=*" });
+    assert.equal(response.statusCode, 200);
+    const data = response.json();
+    assert.equal(data.total, 1);
+    assert.equal(data.busy, 1);
+    assert.equal(data.idle, 0);
+    assert.equal(data.peers[0].busy, true);
+  });
+
   // ── 2. GET /api/worktrees ─────────────────────────────────────────
 
   it("returns worktrees with dirty counts, active COMS peers, ghostDirCount", async () => {

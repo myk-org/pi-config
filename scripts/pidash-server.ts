@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 import { createAsyncDebugLogWriter, createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import type { SessionInfo } from "../extensions/shared/types.ts";
 import {
+  applyPiAsyncStatusFrame,
   buildSessionNotification,
   buildSessionUpdatedBroadcast,
   clearPendingUiRequests,
@@ -30,6 +31,7 @@ import {
   resetSessionViewState,
   shouldDeliverSupervisedPeerBroadcast,
   shouldNotifyWorktreeChange,
+  syncSessionRunningAsyncAgents,
   updatePidashSession,
   type PiClient,
 } from "./pidash-session-state.ts";
@@ -72,7 +74,6 @@ const browserRemoteAddrMap = new WeakMap<any, string>();
 // Per-session learned git repository root (used to scope minimal worktrees-changed notices)
 const sessionRepoRootMap = new Map<string, string>();
 // Per-session live running sync subagents (bounded, populated from `async-status` frames)
-const MAX_SYNC_AGENTS_PER_SESSION = 50;
 const sessionSyncAgentsMap = new Map<string, import("./pidash-session-state.ts").ActiveAsyncAgentInfo[]>();
 
 function getActiveSessions(): SessionInfo[] {
@@ -176,6 +177,12 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     piClient.session.activityBeforePrompt = undefined;
     piClient.session.streaming = false;
     piClient.session.working = false;
+    piClient.session.runningAsyncAgents = 0;
+    piClient.currentPiSessionId =
+      typeof parsed.piSessionId === "string" && parsed.piSessionId.trim() ? parsed.piSessionId.trim() : null;
+    piClient.asyncStatusRunningIds = undefined;
+    piClient.asyncStatusAnonymousCount = 0;
+    syncSessionRunningAsyncAgents(piClient, asyncRegistry ? asyncRegistry.agents.values() : []);
     sessionRepoRootMap.delete(piClient.session.sessionId);
     sessionSyncAgentsMap.delete(piClient.session.sessionId);
     resetSessionViewState(piClient); // Clear viewState to prevent cross-session leakage
@@ -202,7 +209,11 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
 
   if (parsed.type === "replay_complete" && piClient) {
     piClient.replaying = false;
+    const prevRunningAsync = piClient.session.runningAsyncAgents ?? 0;
     reconcileActiveAsyncAgents(piClient, asyncRegistry.agents.values());
+    if ((piClient.session.runningAsyncAgents ?? 0) !== prevRunningAsync) {
+      broadcastToBrowsers({ type: "session_updated", session: piClient.session });
+    }
     log(`replay complete for ${piClient.session.sessionId}`);
     return;
   }
@@ -260,28 +271,15 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     return;
   }
 
-  // #1508: capture live running sync subagent jobs pushed via `async-status` frames
+  // #1508 / #1509: capture live running sync subagent jobs and merge running async agent count
   if (parsed.type === "async-status" && piClient && Array.isArray(parsed.jobs)) {
     const sid = piClient.session.sessionId;
-    const liveSync: import("./pidash-session-state.ts").ActiveAsyncAgentInfo[] = [];
-    for (const job of parsed.jobs) {
-      if (liveSync.length >= MAX_SYNC_AGENTS_PER_SESSION) break;
-      if (!job || job.mode !== "sync" || job.status !== "running" || typeof job.id !== "string") continue;
-      const agentName = typeof job.agent === "string" ? job.agent : "agent";
-      liveSync.push({
-        id: job.id,
-        name: typeof job.name === "string" && job.name ? job.name : agentName,
-        agent: agentName,
-        mode: "sync",
-        task: typeof job.task === "string" ? job.task : "",
-        cwd: typeof job.cwd === "string" ? job.cwd : piClient.session.cwd,
-        sessionId: sid,
-        taskId: typeof job.taskId === "string" && job.taskId ? job.taskId : null,
-        startedAt: typeof job.startedAt === "number" && Number.isFinite(job.startedAt) ? job.startedAt : Date.now(),
-        currentTool: typeof job.currentTool === "string" && job.currentTool ? job.currentTool : null,
-        text: "",
-      });
-    }
+    const liveSync = applyPiAsyncStatusFrame(
+      piClient,
+      parsed.jobs,
+      asyncRegistry ? asyncRegistry.agents.values() : [],
+      broadcastToBrowsers,
+    );
     if (liveSync.length > 0) sessionSyncAgentsMap.set(sid, liveSync);
     else sessionSyncAgentsMap.delete(sid);
   }

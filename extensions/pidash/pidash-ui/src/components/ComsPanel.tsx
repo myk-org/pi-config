@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import type { ComsPeer, ComsQueueItem, SessionInfo } from "@/types";
 import { createLogger } from "@/lib/create-logger";
 import { CopyButton } from "@/components/CopyButton";
+import { isPeerBusy } from "../../../../coms/coms-registry-core.ts";
 
 const log = createLogger("ComsPanel");
 
@@ -23,8 +24,13 @@ function peerKey(p: Pick<ComsPeer, "name" | "project">): string {
 }
 
 function formatPeerCopyText(p: ComsPeer): string {
+  const busy = isPeerBusy(p);
+  const runningAgents = typeof p.workload?.agents === "number" && p.workload.agents > 0 ? p.workload.agents : 0;
+  const statusText = busy
+    ? (runningAgents > 0 ? `busy (${runningAgents} agent${runningAgents === 1 ? "" : "s"})` : "busy")
+    : "idle";
   const lines = [`Peer: ${p.name}${p.project ? ` (${p.project})` : ""}`];
-  lines.push(`Status: ${p.busy ? "busy" : "idle"} · ctx ${p.contextUsedPct}% · queue ${p.queueDepth}`);
+  lines.push(`Status: ${statusText} · ctx ${p.contextUsedPct}% · queue ${p.queueDepth}`);
   if (p.model) lines.push(`Model: ${p.model}`);
   if (p.purpose) lines.push(`Purpose: ${p.purpose}`);
   if (p.cwd) lines.push(`CWD: ${p.cwd}`);
@@ -62,6 +68,8 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
     if (!targetProject) return rawPeers;
     return rawPeers.filter((p) => !p.project || p.project === targetProject);
   }, [rawPeers, scope, ownProject, self?.project]);
+
+  const busyCount = useMemo(() => peers.filter((p) => isPeerBusy(p)).length, [peers]);
 
   useEffect(() => {
     sendCmd("coms-peers", { scope, requestId: `peers-${Date.now()}` });
@@ -190,6 +198,14 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
             </span>
           )}
           {self?.name && <span className="text-muted-foreground font-normal truncate">— {self.name}</span>}
+          {peers.length > 0 && (
+            <span
+              data-testid="coms-panel-busy-summary"
+              className="text-[10px] font-normal text-muted-foreground shrink-0"
+            >
+              · {busyCount} busy / {peers.length}
+            </span>
+          )}
         </div>
         <button
           type="button"
@@ -258,6 +274,9 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
           }
           const isConfirmingKill = confirmKillKey === key;
           const isKilling = killingKey === key;
+          const busy = isPeerBusy(p);
+          const runningAgents = typeof p.workload?.agents === "number" && p.workload.agents > 0 ? p.workload.agents : 0;
+          const busyLabel = runningAgents > 0 ? `busy (${runningAgents} agent${runningAgents === 1 ? "" : "s"})` : "busy";
           return (
             <div
               key={key}
@@ -265,7 +284,7 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
             >
               <div className="w-full text-left p-2 min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span title={p.busy ? "busy" : "idle"}>{p.busy ? "⚙" : "●"}</span>
+                  <span title={busy ? busyLabel : "idle"}>{busy ? "⚙" : "●"}</span>
                   <span className="font-medium text-foreground flex-1 truncate">{p.name}</span>
                   {p.container && (
                     <span
@@ -281,7 +300,7 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
                       supervised
                     </span>
                   )}
-                  {p.busy && <span className="text-[10px] text-yellow-600 dark:text-yellow-400 shrink-0">busy</span>}
+                  {busy && <span className="text-[10px] text-yellow-600 dark:text-yellow-400 shrink-0">{busyLabel}</span>}
                 </div>
                 {scope === "all" && p.project && (
                   <div className="text-[10px] text-cyan-700 dark:text-cyan-400/90 truncate">◆ {p.project}</div>
@@ -295,7 +314,7 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
                   {p.queueDepth > 0 && (
                     <span className="text-yellow-600 dark:text-yellow-400"> · queue {p.queueDepth}</span>
                   )}
-                  {!peerSession && <span className="opacity-60"> · no local session</span>}
+                  {!peerSession && <span className="opacity-80"> · no local session</span>}
                 </div>
               </div>
 

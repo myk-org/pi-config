@@ -37,7 +37,7 @@ No test suite may depend on ambient environment variables for asserted behavior:
   (`npm:pi-orchestrator-config`, `npm:@myk-org/pi-vertex-claude`, `npm:pi-web-access`, PyPI
   `myk-pi-tools`; `scripts/httpd.py` reads from `~/.pi/agent/npm/node_modules/pi-orchestrator-config`). Never
   add `pi install git:github.com/myk-org/pi-config`, `git+https` `myk-pi-tools`, or `git clone` of
-  `myk-org/pi-config` in `entrypoint.sh` (verified by `tests/python/test_install.py`).
+  `myk-org/pi-config` in `scripts/install.py` (verified by `tests/python/test_install.py`).
 - **CLI in prompts and rules:** Always reference `uvx myk-pi-tools@latest <subcommand>` in prompts and
   rules. Because `uvx` runs published PyPI, verify local CLI fixes against the working tree; release
   scripts use the local build.

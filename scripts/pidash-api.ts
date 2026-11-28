@@ -44,7 +44,7 @@ import { fileURLToPath } from "node:url";
 import { createLogger } from "../extensions/shared/logger.ts";
 import { MIN_PI_VERSION, getPiVersion } from "../extensions/shared/pi-version.ts";
 import { ComsRegistry, isRegistryRowAlive, resolveComsDir } from "../extensions/coms/coms-registry.ts";
-import { pickSupervisionRecord } from "../extensions/coms/coms-registry-core.ts";
+import { isPeerBusy, pickSupervisionRecord } from "../extensions/coms/coms-registry-core.ts";
 import { readBuildStatus } from "./podman-peer-image.mjs";
 import { isGitRepo, listWorktreesCheckedAsync, matchPathToWorktrees, type WorktreeEntry } from "../extensions/orchestrator/git-helpers.ts";
 import { TaskStore, resolveStorePath } from "../extensions/pitasks/task-store.ts";
@@ -380,7 +380,7 @@ export function collectPeers(deps: PidashApiDeps, projectParam: string | null, c
       return {
         name: row.name,
         project: row.project,
-        busy: Boolean(row.busy),
+        busy: isPeerBusy(row),
         contextUsedPct: typeof row.contextUsedPct === "number" ? row.contextUsedPct : null,
         queueDepth: typeof row.queueDepth === "number" ? row.queueDepth : null,
         workload: row.workload ?? null,

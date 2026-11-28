@@ -8,7 +8,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { hyperlink } from "@earendil-works/pi-tui";
-import { isFreshHeartbeat } from "../coms/coms-peers.js";
+import { isFreshHeartbeat, isPeerBusy } from "../coms/coms-peers.js";
 import { sanitizePeerText } from "../coms/peer-text.js";
 import { createLogger } from "../shared/logger.js";
 import {
@@ -304,7 +304,7 @@ export function inspectLiveComsPeers(
         name: sanitizePeerText(entry.name, 40),
         project: sanitizePeerText(project, 60),
         cwd: typeof entry.cwd === "string" ? entry.cwd : "",
-        busy: entry.busy === true,
+        busy: isPeerBusy(entry),
         pid,
         purpose: sanitizePeerText(typeof entry.purpose === "string" ? entry.purpose : "", 120),
       });

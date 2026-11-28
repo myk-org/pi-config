@@ -197,7 +197,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
       data-testid="pidash-infobar"
       className={cn(
         "flex flex-col border-t border-border text-xs text-muted-foreground relative whitespace-nowrap shrink-0",
-        inactive && "opacity-50 pointer-events-none",
+        inactive && "opacity-65 pointer-events-none",
       )}
     >
       {/* Row 1 — Primary controls & pinned actions. Keeping controls in their
@@ -339,7 +339,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",
             cronTasks.count === 0
-              ? "text-muted-foreground/50"
+              ? "text-muted-foreground/75"
               : pausedCronCount === 0
                 ? "text-blue-400 hover:text-blue-300"
                 : activeCronCount === 0
@@ -353,7 +353,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
             ) : (
               <>
                 <span className="text-blue-400 hover:text-blue-300">⏰ {activeCronCount}</span>
-                <span className="text-muted-foreground/50"> · </span>
+                <span className="text-muted-foreground/75"> · </span>
                 <span className="text-amber-400 hover:text-amber-300">⏸ {pausedCronCount}</span>
               </>
             )}
@@ -409,7 +409,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         <Popover>
           <PopoverTrigger className={cn(
             "cursor-pointer text-xs",
-            asyncAgents.count > 0 ? "text-yellow-400 hover:text-yellow-300" : "text-muted-foreground/50"
+            asyncAgents.count > 0 ? "text-yellow-400 hover:text-yellow-300" : "text-muted-foreground/75"
           )}>
             ⏳ {asyncAgents.count} agent{asyncAgents.count === 1 ? "" : "s"}
           </PopoverTrigger>

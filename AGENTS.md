@@ -15,7 +15,7 @@
 1. All gates exit 0: `prek run --all-files`, `uv run --group tests pytest`, `npx tsx --test tests/node/**/*.test.ts`, `npm run typecheck`.
 2. Update docs when code/features change:
    - New, changed, or removed feature/command/tool → `docs/features.md` + `README.md` feature table (sync enforced by `tests/python/test_features_doc.py`);
-     new prompt template → `docs/features.md` + `README.md` prompt table; new CLI tool/dep → `docs/features.md` + `README.md` tools table + `Dockerfile`.
+     new prompt template → `docs/features.md` + `README.md` prompt table; new CLI tool/dep → `docs/features.md` + `README.md` tools table.
    - New/modified extension module → `contributing/repo-structure.md`; new/removed agent → `contributing/repo-structure.md` +
      `rules/10-agent-routing.md` + `rules/50-agent-bug-reporting.md`; dev workflow → `DEVELOPMENT.md`.
 3. **LLM-facing capability is TAUGHT, not just built:** document new tools, params, keys, or modes in BOTH `rules/` (injected every
@@ -69,6 +69,5 @@ flow, `warn` recoverable issues, `error` failures) — use `createLogger`, never
   - Never `git add .` — stage explicit file paths.
   - Never `--no-verify`, force push, or commit to `main`/protected branches — fix hooks and work on an issue branch.
   - Never hand-edit generated `docs/*.html` or run `pi-docsite` in PRs — edit `docs/*.md` and let `.github/workflows/docs.yml` build on `main`.
-  - Never add `pi install git:github.com/myk-org/pi-config`, `git+https` `myk-pi-tools`, or `git clone` of this repo in `entrypoint.sh` — install from npm and PyPI.
   - Never edit `.pi/pi-config-settings.json(c)` or `~/.pi/...` settings via agent tools (`dangerous_command_allowlist` protection;
     code-enforced) — ask the user to update settings via `/pi-config-settings`.

@@ -84,37 +84,37 @@
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
+    --background: #010409;
+    --foreground: #ffffff;
+    --card: #0d1117;
+    --card-foreground: #ffffff;
+    --popover: #161b22;
+    --popover-foreground: #ffffff;
+    --primary: #ffffff;
+    --primary-foreground: #0d1117;
+    --secondary: #161b22;
+    --secondary-foreground: #e8ecf1;
+    --muted: #161b22;
+    --muted-foreground: #c3cbd4;
+    --accent: #1c2128;
+    --accent-foreground: #ffffff;
     --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
+    --border: #30363d;
+    --input: #30363d;
+    --ring: #388bfd;
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --sidebar: #0d1117;
+    --sidebar-foreground: #ffffff;
+    --sidebar-primary: #388bfd;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #1c2128;
+    --sidebar-accent-foreground: #ffffff;
+    --sidebar-border: #30363d;
+    --sidebar-ring: #388bfd;
 }
 
 @layer base {
@@ -160,6 +160,18 @@ body {
 * {
   scrollbar-width: thin;
   scrollbar-color: oklch(0.4 0 0) transparent;
+}
+.dark ::-webkit-scrollbar-thumb,
+.dark::-webkit-scrollbar-thumb {
+  background: #30363d;
+}
+.dark ::-webkit-scrollbar-thumb:hover,
+.dark::-webkit-scrollbar-thumb:hover {
+  background: #656d76;
+}
+.dark,
+.dark * {
+  scrollbar-color: #30363d transparent;
 }
 
 /* Mobile viewport fix — use dvh (dynamic viewport height) to account for browser chrome */

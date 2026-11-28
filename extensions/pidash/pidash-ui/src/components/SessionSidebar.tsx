@@ -6,6 +6,7 @@ import { NotificationSettings } from "@/components/NotificationSettings";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, NotificationPreferences } from "@/types";
 import { sessionActivityDisplay } from "@/lib/activity-display";
+import { isPeerBusy } from "../../../../coms/coms-registry-core.ts";
 import { loadTheme, setTheme, type Theme } from "@/lib/theme";
 import { createLogger } from "@/lib/create-logger";
 import { isSessionWaitingForInput, partitionSidebarSessions, sessionRowDisplayLabel } from "@/lib/pidash-ux-helpers";
@@ -19,6 +20,16 @@ function ago(iso: string): string {
   if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
+}
+
+function runningAsyncAgentCount(s: SessionInfo): number {
+  return s.active && typeof s.runningAsyncAgents === "number" && s.runningAsyncAgents > 0 ? s.runningAsyncAgents : 0;
+}
+
+function isSessionBusy(s: SessionInfo): boolean {
+  if (!s.active) return false;
+  const status = sessionActivityDisplay(s);
+  return isPeerBusy({ busy: status.isWorking, workload: { agents: runningAsyncAgentCount(s) } });
 }
 
 interface Props {
@@ -294,7 +305,8 @@ export function SessionSidebar({
     const isPinned = Boolean(pinnedSessionIds?.has(s.sessionId));
     const isArchived = Boolean(archivedSessionIds?.has(s.sessionId));
     const isWaiting = isSessionWaitingForInput(s, extraAttentionIds);
-    const status = sessionActivityDisplay(s);
+    const runningAgents = runningAsyncAgentCount(s);
+    const isBusy = isSessionBusy(s);
     const rowKey = opts.keyPrefix ? `${opts.keyPrefix}:${s.sessionId}` : s.sessionId;
     const displayLabel = sessionRowDisplayLabel(s, { preferComsName: opts.preferComsName });
     const indentClass = opts.nested
@@ -319,7 +331,7 @@ export function SessionSidebar({
             : isWaiting
               ? "bg-cyan-500/10 border-l-3 border-l-cyan-500 hover:bg-cyan-500/15"
               : "hover:bg-accent/30",
-          !s.active && "opacity-35",
+          !s.active && "opacity-65",
         )}
         onClick={() => onSelect(s)}
       >
@@ -353,10 +365,19 @@ export function SessionSidebar({
             </span>
           )}
           {!s.active && <Pause className="h-3 w-3 flex-shrink-0 text-muted-foreground" />}
-          {s.active && status.isWorking && (
+          {s.active && isBusy && (
             <span className="relative flex h-2 w-2 flex-shrink-0" aria-label="working">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
+            </span>
+          )}
+          {runningAgents > 0 && (
+            <span
+              data-running-agents={runningAgents}
+              className="text-[10px] text-yellow-600 dark:text-yellow-400 shrink-0"
+              title={`${runningAgents} running async subagent${runningAgents === 1 ? "" : "s"}`}
+            >
+              ⏳{runningAgents}
             </span>
           )}
           {isWaiting && (
@@ -486,7 +507,7 @@ export function SessionSidebar({
   const comsEntries = sortedComsProjects.map((entry) => ({
     project: entry.project,
     sessions: entry.sessions,
-    busy: entry.sessions.filter((s) => s.active && s.activity === "working").length,
+    busy: entry.sessions.filter((s) => isSessionBusy(s)).length,
     waiting: entry.sessions.filter((s) => isSessionWaitingForInput(s, extraAttentionIds)).length,
   }));
   const comsMemberCount = comsEntries.reduce((n, info) => n + info.sessions.length, 0);
@@ -575,7 +596,7 @@ export function SessionSidebar({
           const isExpanded = !collapsedProjects.has(groupKey);
           const hasActive = group.sessions.some(s => s.active);
           const count = group.sessions.length;
-          const busyCount = group.sessions.filter((s) => s.active && s.activity === "working").length;
+          const busyCount = group.sessions.filter((s) => isSessionBusy(s)).length;
           const waitingCount = group.sessions.filter((s) => isSessionWaitingForInput(s, extraAttentionIds)).length;
 
           return (
@@ -626,7 +647,7 @@ export function SessionSidebar({
                 <>
                   {group.nodes.map((node) => {
                     const childrenExpanded = !collapsedParents.has(node.session.sessionId);
-                    const childBusy = node.children.filter((c) => c.active && c.activity === "working").length;
+                    const childBusy = node.children.filter((c) => isSessionBusy(c)).length;
                     const childWaiting = node.children.filter((c) => isSessionWaitingForInput(c, extraAttentionIds)).length;
                     return (
                       <div key={node.session.sessionId}>
