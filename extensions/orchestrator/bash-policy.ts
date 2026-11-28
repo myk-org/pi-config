@@ -6403,6 +6403,7 @@ function stripSandboxWrappers(rawWords: SandboxShellWord[]): StrippedSandboxCmd 
   const words = rawWords.map((w, idx) => {
     let v = w.value;
     if (idx === 0 && !w.quoted && v.startsWith("(")) {
+      hadConditionalOrGroup = true;
       v = v.replace(/^\(+/, "");
     }
     if (idx === rawWords.length - 1 && !w.quoted && v.endsWith(")")) {
@@ -6924,8 +6925,11 @@ function validateXargsUpstreamStage(
       if (!check.safe) return check;
     }
     let effectiveGitCwd = ctx.effectiveCwd;
-    for (let i = 0; i < redir.filtered.length; i++) {
-      const w = redir.filtered[i]!;
+    const args = redir.filtered;
+    let i = 0;
+    let subcmd: string | null = null;
+    while (i < args.length) {
+      const w = args[i]!;
       if (w.unterminatedQuote || w.hasDynamicExpansion) {
         return { safe: false, reason: "dynamic token in upstream git command" };
       }
@@ -6933,36 +6937,89 @@ function validateXargsUpstreamStage(
         return { safe: false, reason: "upstream git --config-env cannot be verified" };
       }
       if (!w.quoted && w.value === "-c") {
-        const cfgCheck = validateGitConfigOption(redir.filtered[i + 1]);
+        const cfgCheck = validateGitConfigOption(args[i + 1]);
         if (!cfgCheck.safe) return cfgCheck;
-        i += 1;
+        i += 2;
         continue;
       }
       if (!w.quoted && w.value.startsWith("-c") && w.value.length > 2) {
         const cfgCheck = validateGitConfigOption({ ...w, value: w.value.slice(2) });
         if (!cfgCheck.safe) return cfgCheck;
+        i += 1;
         continue;
       }
       if (!w.quoted && (w.value === "--work-tree" || w.value === "--git-dir")) {
-        const dirWord = redir.filtered[i + 1];
+        const dirWord = args[i + 1];
         if (!dirWord) return { safe: false, reason: `upstream git ${w.value} missing directory` };
         const check = isSandboxTargetSafe(dirWord, { ...ctx, effectiveCwd: effectiveGitCwd });
         if (!check.safe) return check;
-        i += 1;
+        i += 2;
         continue;
       }
       if (!w.quoted && (w.value.startsWith("--work-tree=") || w.value.startsWith("--git-dir="))) {
         const dirWord: SandboxShellWord = { ...w, value: w.value.slice(w.value.indexOf("=") + 1) };
         const check = isSandboxTargetSafe(dirWord, { ...ctx, effectiveCwd: effectiveGitCwd });
         if (!check.safe) return check;
+        i += 1;
         continue;
       }
-      if (!w.quoted && w.value === "-C" && redir.filtered[i + 1]) {
-        const check = isSandboxTargetSafe(redir.filtered[i + 1]!, { ...ctx, effectiveCwd: effectiveGitCwd });
+      if (!w.quoted && w.value === "-C") {
+        const dirWord = args[i + 1];
+        if (!dirWord) return { safe: false, reason: "upstream git -C missing directory" };
+        const check = isSandboxTargetSafe(dirWord, { ...ctx, effectiveCwd: effectiveGitCwd });
         if (!check.safe) return check;
-        effectiveGitCwd = resolveLiteralDir(redir.filtered[i + 1]!, effectiveGitCwd, ctx.home);
-        i += 1;
+        if (dirWord.hasGlob) return { safe: false, reason: "upstream git -C glob cannot be verified" };
+        effectiveGitCwd = resolveLiteralDir(dirWord, effectiveGitCwd, ctx.home);
+        i += 2;
+        continue;
       }
+      if (!w.quoted && w.value.startsWith("-C") && w.value.length > 2) {
+        const dirWord: SandboxShellWord = { ...w, value: w.value.slice(2) };
+        const check = isSandboxTargetSafe(dirWord, { ...ctx, effectiveCwd: effectiveGitCwd });
+        if (!check.safe) return check;
+        if (dirWord.hasGlob) return { safe: false, reason: "upstream git -C glob cannot be verified" };
+        effectiveGitCwd = resolveLiteralDir(dirWord, effectiveGitCwd, ctx.home);
+        i += 1;
+        continue;
+      }
+      if (!w.quoted && w.value.startsWith("-")) {
+        return { safe: false, reason: `unverifiable upstream git global flag "${w.value}"` };
+      }
+      subcmd = w.value;
+      i += 1;
+      break;
+    }
+    if (subcmd !== "ls-files") {
+      return { safe: false, reason: `upstream git subcommand "${subcmd ?? ""}" can emit arbitrary paths` };
+    }
+    const SAFE_LS_FILES_LONG = new Set([
+      "--others", "--ignored", "--cached", "--deleted", "--modified", "--killed", "--unmerged",
+      "--exclude-standard", "--directory", "--no-empty-directory", "--full-name", "--deduplicate",
+    ]);
+    let sawNullFlag = false;
+    let pastSep = false;
+    for (let j = i; j < args.length; j++) {
+      const w = args[j]!;
+      if (w.unterminatedQuote || w.hasDynamicExpansion) {
+        return { safe: false, reason: "dynamic token in upstream git ls-files" };
+      }
+      if (!pastSep && !w.quoted && w.value === "--") {
+        pastSep = true;
+        continue;
+      }
+      if (!pastSep && !w.quoted && w.value.startsWith("-")) {
+        if (SAFE_LS_FILES_LONG.has(w.value)) continue;
+        if (/^-[oicdmkuz]+$/.test(w.value)) {
+          if (w.value.includes("z")) sawNullFlag = true;
+          continue;
+        }
+        return { safe: false, reason: `disallowed upstream git ls-files option "${w.value}"` };
+      }
+      const check = isSandboxTargetSafe(w, { ...ctx, effectiveCwd: effectiveGitCwd });
+      if (!check.safe) return check;
+    }
+    if (xargsUsesNull && !sawNullFlag) {
+      return { safe: false, reason: "upstream git ls-files feeding xargs -0 requires -z" };
     }
     return checkLiteralPathSafe(".", { ...ctx, effectiveCwd: effectiveGitCwd });
   }
@@ -7217,7 +7274,10 @@ function updateCwdFromStage(
 }
 
 /** Non-mutating commands that cannot create symlinks before a subsequent destructive stage. */
-const SANDBOX_NON_SYMLINK_STAGE_CMDS = new Set(["cd", "pushd", "mkdir", "true", "false", "test", "[", "echo", "printf", "pwd", "fi", "done", "esac"]);
+const SANDBOX_NON_SYMLINK_STAGE_CMDS = new Set([
+  "cd", "pushd", "mkdir", "true", "false", "test", "[", "echo", "printf", "pwd", "fi", "done", "esac",
+  "ls", "fd", "rg", "grep", "egrep", "fgrep", "sort", "uniq", "head", "tail",
+]);
 
 function stageMayCreateSymlinks(stage: string): boolean {
   if (isReadOnlyStatement(stage)) return false;
@@ -7225,6 +7285,14 @@ function stageMayCreateSymlinks(stage: string): boolean {
   if (stripped.opaque) return true;
   if (stripped.words.length === 0) return false;
   const base = cmdBasename(stripped.words[0]);
+  if (base === "find") {
+    return stripped.words.some((w) => !w.quoted && (w.value === "-exec" || w.value === "-execdir" || w.value === "-ok" || w.value === "-okdir"));
+  }
+  if (base === "git") {
+    // Only read-only `git ls-files` is guaranteed not to create symlinks in the worktree.
+    const sub = stripped.words.slice(1).find((w) => !w.quoted && !w.value.startsWith("-"))?.value;
+    return sub !== "ls-files";
+  }
   return !SANDBOX_NON_SYMLINK_STAGE_CMDS.has(base);
 }
 
@@ -7312,13 +7380,26 @@ function evaluatePodmanSandboxRelaxation(
       .map((s) => s.trim())
       .filter(Boolean);
 
-    let chainHadDangerous = false;
+    // Concurrent pipeline stages run simultaneously: if any non-dangerous stage in a
+    // multi-stage pipeline can create symlinks (e.g. `rm -rf x | ln -s /coms x`),
+    // mark priorSymlinkRisk immediately so both this pipeline and later chains fail closed.
+    const stageMatchedRules = stages.map((stage) =>
+      isReadOnlyStatement(stage) || isNoexecSyntaxCheck(stage)
+        ? []
+        : DANGEROUS_RULES.filter((r) => r.pattern.test(stage)),
+    );
+    if (stages.length > 1) {
+      for (let s = 0; s < stages.length; s++) {
+        if (stageMatchedRules[s]!.length === 0 && stageMayCreateSymlinks(stages[s]!)) {
+          priorSymlinkRisk = true;
+        }
+      }
+    }
+
     for (let s = 0; s < stages.length; s++) {
       const stage = stages[s]!;
-      if (isReadOnlyStatement(stage) || isNoexecSyntaxCheck(stage)) continue;
-      const matchedRules = DANGEROUS_RULES.filter((r) => r.pattern.test(stage));
+      const matchedRules = stageMatchedRules[s]!;
       if (matchedRules.length === 0) continue;
-      chainHadDangerous = true;
 
       if (!matchedRules.every((r) => r.podmanSandboxRelaxable === true)) {
         nonRelaxableCount += 1;
@@ -7349,15 +7430,17 @@ function evaluatePodmanSandboxRelaxation(
     if (stages.length === 1) {
       const cdUpdate = updateCwdFromStage(stages[0]!, currentCwd, home, homeMutatedInCmd, cdpathSetInCmd);
       currentCwd = cdUpdate.nextCwd;
-      if (!chainHadDangerous && !cdUpdate.isSimpleCd && stageMayCreateSymlinks(stages[0]!)) {
+      if (stageMatchedRules[0]!.length === 0 && !cdUpdate.isSimpleCd && stageMayCreateSymlinks(stages[0]!)) {
         priorSymlinkRisk = true;
       }
     } else {
-      for (const st of stages) {
+      // A `cd`/`pushd`/`popd` inside a pipeline runs in a subshell (or lastpipe) and never
+      // reliably updates the parent shell's cwd — fail closed instead of persisting it.
+      for (let s = 0; s < stages.length; s++) {
+        const st = stages[s]!;
         const cdUpdate = updateCwdFromStage(st, currentCwd, home, homeMutatedInCmd, cdpathSetInCmd);
-        if (cdUpdate.nextCwd === null) currentCwd = null;
-        if (!chainHadDangerous && stageMayCreateSymlinks(st)) {
-          priorSymlinkRisk = true;
+        if (cdUpdate.isSimpleCd || cdUpdate.nextCwd === null || cdUpdate.nextCwd !== currentCwd) {
+          currentCwd = null;
         }
       }
     }

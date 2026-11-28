@@ -216,6 +216,19 @@ describe("Podman peer sandbox relaxed container-local rules", () => {
     assert.equal(decision.action, "allow");
   });
 
+  it("allows git ls-files piped to xargs rm inside verified Podman peer", async () => {
+    const { workspace, comsDir } = makeSandboxDirs();
+    initFeatureRepo(workspace);
+    const decision = await evaluateBashPolicy({
+      command: "git ls-files --others --exclude-standard | xargs rm -f",
+      cwd: workspace,
+      inContainer: true,
+      comsContainerName: VALID_CONTAINER,
+      comsDir,
+    });
+    assert.equal(decision.action, "allow");
+  });
+
   it("allows chmod 777 on workspace file inside verified Podman peer", async () => {
     const { workspace, comsDir } = makeSandboxDirs();
     const decision = await evaluateBashPolicy({
@@ -756,6 +769,69 @@ describe("Podman peer sandbox protected COMS, home, root boundary", () => {
     const { workspace, comsDir } = makeSandboxDirs();
     const decision = await evaluateBashPolicy({
       command: "fd -L . ./build | xargs rm -f",
+      cwd: workspace,
+      inContainer: true,
+      comsContainerName: VALID_CONTAINER,
+      comsDir,
+    });
+    assert.equal(decision.action, "block");
+  });
+
+  it("blocks git log --format emitting protected path into xargs rm", async () => {
+    const { workspace, comsDir } = makeSandboxDirs();
+    initFeatureRepo(workspace);
+    const decision = await evaluateBashPolicy({
+      command: "git log --format=/home/peer -1 | xargs rm -rf",
+      cwd: workspace,
+      inContainer: true,
+      comsContainerName: VALID_CONTAINER,
+      comsDir,
+    });
+    assert.equal(decision.action, "block");
+  });
+
+  it("blocks git ls-files --format emitting protected path into xargs rm", async () => {
+    const { workspace, comsDir } = makeSandboxDirs();
+    initFeatureRepo(workspace);
+    const decision = await evaluateBashPolicy({
+      command: "git ls-files --format=/home/peer | xargs rm -rf",
+      cwd: workspace,
+      inContainer: true,
+      comsContainerName: VALID_CONTAINER,
+      comsDir,
+    });
+    assert.equal(decision.action, "block");
+  });
+
+  it("blocks relative rm after shared-mount cd followed by pipeline-local cd", async () => {
+    const { workspace, comsDir } = makeSandboxDirs();
+    const decision = await evaluateBashPolicy({
+      command: `cd ${join(comsDir, "projects", "myproj")}; cd /tmp | true; rm -rf ./victim`,
+      cwd: workspace,
+      inContainer: true,
+      comsContainerName: VALID_CONTAINER,
+      comsDir,
+    });
+    assert.equal(decision.action, "block");
+  });
+
+  it("blocks relative rm after shared-mount cd followed by subshell cd", async () => {
+    const { workspace, comsDir } = makeSandboxDirs();
+    const decision = await evaluateBashPolicy({
+      command: `cd ${join(comsDir, "projects", "myproj")}; (cd /tmp); rm -rf ./victim`,
+      cwd: workspace,
+      inContainer: true,
+      comsContainerName: VALID_CONTAINER,
+      comsDir,
+    });
+    assert.equal(decision.action, "block");
+  });
+
+  it("blocks rm following mixed pipeline creating symlink to PI_COMS_DIR", async () => {
+    const { workspace, comsDir } = makeSandboxDirs();
+    const absentSafe = join(workspace, "initially-absent-safe");
+    const decision = await evaluateBashPolicy({
+      command: `rm -rf ${absentSafe} | ln -s ${join(comsDir, "projects", "myproj")} ${absentSafe}; rm -rf ${absentSafe}/victim`,
       cwd: workspace,
       inContainer: true,
       comsContainerName: VALID_CONTAINER,
