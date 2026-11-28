@@ -719,8 +719,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 
 **Features:**
 
-- Multi-session dashboard with browser tab title sync (`[!]` prefix when waiting for input) and sidebar grouped by **Needs attention**, **Pinned**, project folders, **Coms**,
-  and collapsible **Archived** (auto-unarchives on send)
+- Multi-session dashboard with browser tab title sync (`[!]` prefix when waiting for input), inline waiting-for-input highlights and collapsed-group attention badges,
+  and a scrollable sidebar grouped by **Pinned**, project folders, **Coms**, and collapsible **Archived** (auto-unarchives on send)
 - Live conversation streaming (user, assistant, tool, thinking)
 - Send messages from browser to pi
 - Model and thinking level switching from browser

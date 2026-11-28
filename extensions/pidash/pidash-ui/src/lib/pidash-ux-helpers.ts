@@ -259,16 +259,14 @@ export function reconcileAndUnarchive(
 }
 
 export interface SidebarSessionPartitions {
-  needsAttention: SessionInfo[];
   pinned: SessionInfo[];
   groups: SessionGroup[];
   archived: SessionInfo[];
 }
 
 /**
- * Partition sessions into sidebar buckets:
- * - `needsAttention`: active sessions waiting on user input (including archived ones).
- * - `pinned`: non-archived pinned sessions not already in `needsAttention`.
+ * Partition sessions into sidebar buckets without duplicating waiting-for-input sessions:
+ * - `pinned`: non-archived pinned sessions.
  * - `groups`: remaining non-archived sessions grouped by project directory.
  * - `archived`: all archived sessions (for the collapsible Archived footer section).
  */
@@ -277,55 +275,32 @@ export function partitionSidebarSessions(
   opts: {
     pinnedIds: ReadonlySet<string>;
     archivedIds: ReadonlySet<string>;
-    extraAttentionIds?: ReadonlySet<string>;
   },
 ): SidebarSessionPartitions {
-  const needsAttention: SessionInfo[] = [];
-  const attentionIds = new Set<string>();
+  const pinned: SessionInfo[] = [];
+  const regular: SessionInfo[] = [];
   const archived: SessionInfo[] = [];
 
   for (const s of sessions) {
-    if (isSessionWaitingForInput(s, opts.extraAttentionIds)) {
-      needsAttention.push(s);
-      attentionIds.add(s.sessionId);
-    }
     if (opts.archivedIds.has(s.sessionId)) {
       archived.push(s);
-    }
-  }
-
-  needsAttention.sort((a, b) => {
-    const pinDiff = (opts.pinnedIds.has(b.sessionId) ? 1 : 0) - (opts.pinnedIds.has(a.sessionId) ? 1 : 0);
-    if (pinDiff !== 0) return pinDiff;
-    return sessionSortLabel(a).localeCompare(sessionSortLabel(b));
-  });
-
-  archived.sort((a, b) => {
-    const activeDiff = (b.active ? 1 : 0) - (a.active ? 1 : 0);
-    if (activeDiff !== 0) return activeDiff;
-    return sessionSortLabel(a).localeCompare(sessionSortLabel(b));
-  });
-
-  const pinned: SessionInfo[] = [];
-  const regular: SessionInfo[] = [];
-
-  for (const s of sessions) {
-    if (opts.archivedIds.has(s.sessionId) || attentionIds.has(s.sessionId)) continue;
-    if (opts.pinnedIds.has(s.sessionId)) {
+    } else if (opts.pinnedIds.has(s.sessionId)) {
       pinned.push(s);
     } else {
       regular.push(s);
     }
   }
 
-  pinned.sort((a, b) => {
+  const sortByActiveThenLabel = (a: SessionInfo, b: SessionInfo) => {
     const activeDiff = (b.active ? 1 : 0) - (a.active ? 1 : 0);
     if (activeDiff !== 0) return activeDiff;
     return sessionSortLabel(a).localeCompare(sessionSortLabel(b));
-  });
+  };
+
+  pinned.sort(sortByActiveThenLabel);
+  archived.sort(sortByActiveThenLabel);
 
   return {
-    needsAttention,
     pinned,
     groups: groupAndSortSessions(regular),
     archived,
@@ -343,7 +318,6 @@ export function flattenSidebarSessions(partitions: SidebarSessionPartitions): Se
       out.push(s);
     }
   };
-  pushUnique(partitions.needsAttention);
   pushUnique(partitions.pinned);
   for (const g of partitions.groups) pushUnique(g.sessions);
   pushUnique(partitions.archived);

@@ -40,7 +40,7 @@ A single-page index of every capability `pi-config` adds on top of upstream Pi, 
 
 ## Web dashboards (`pidash` and `pidiff`)
 
-- **Multi-session web dashboard (`pidash` and `/pidash`).** Monitors and drives active Pi sessions from a React browser UI with sidebar attention, pin, and archive grouping, model switching, reasoning token display, one-click bash copy, and live session naming ([Using the Web Dashboard](using-the-web-dashboard.html)).
+- **Multi-session web dashboard (`pidash` and `/pidash`).** Monitors and drives active Pi sessions from a React browser UI with inline sidebar attention indicators, pin and archive grouping, model switching, reasoning token display, one-click bash copy, and live session naming ([Using the Web Dashboard](using-the-web-dashboard.html)).
 - **Bidirectional TUI and browser parity.** Bridges `ask_user`, dangerous-command confirmations, commit-trailer pickers, and project-agent prompts between terminal and browser on a first-answer-wins basis alongside live Tasks, Worktrees, COMS, Memory, MCP, and Settings panels ([Pidash TUI Parity](pidash-tui-parity.html)).
 - **Per-project visual diff viewer (`pidiff` and `/pidiff`).** Runs a per-worktree diff server built on `@pierre/diffs` and `@pierre/trees` with a file tree, git-aware ignores, and inline review comments ([Daemon and WebSockets](daemon-and-websockets.html)).
 - **Discord remote control bot.** Runs inside the `pidash` daemon to watch sessions, send prompts and files, answer interactive prompts with buttons or menus, manage per-session threads or a forum board, and control runs through slash commands and reactions ([Discord Bot](discord-bot.html)).
