@@ -51,6 +51,8 @@ export const DEFAULT_PASSTHROUGH_ENV_KEYS = [
   "ANTHROPIC_VERTEX_PROJECT_ID",
   "CLOUD_ML_REGION",
   "PI_LOG_LEVEL",
+  "PI_COMS_INSTANCE_ID",
+  "PI_COMS_SHUTDOWN_TOKEN",
 ];
 
 const LEVEL_ORDER = { off: -1, debug: 0, info: 1, warn: 2, error: 3 };

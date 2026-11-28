@@ -68,6 +68,7 @@ export interface SupervisionRecord {
   failedAt?: string;
   exitCode?: number | null;
   exitSignal?: string | null;
+  shutdownMode?: string | null;
   failure?: string;
 }
 
