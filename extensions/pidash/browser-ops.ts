@@ -489,7 +489,7 @@ export async function loadWorktreeDetailPayload(
 /** Run `git worktree prune -v` and `.worktrees/` ghost cleanup via the shared `runWorktreePrune` helper. */
 export async function pruneWorktreesOp(
   cwd: string,
-  deps: Pick<WorktreeDeps, "runGitAsync" | "onWorktreesChanged"> = {},
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "onWorktreesChanged" | "logger"> = {},
 ): Promise<WorktreeOpResult> {
   try {
     const res = await runWorktreePrune(cwd, deps);

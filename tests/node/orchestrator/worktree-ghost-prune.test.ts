@@ -16,10 +16,29 @@ import {
   registerWorktree,
   runWorktreePrune,
 } from "../../../extensions/orchestrator/worktree.js";
-import { classifyGhostWorktreeDir } from "../../../extensions/orchestrator/worktree-helpers.js";
+import { classifyGhostWorktreeDir, type WorktreePeerInfo } from "../../../extensions/orchestrator/worktree-helpers.js";
 import { pruneWorktreesOp } from "../../../extensions/pidash/browser-ops.js";
+import type { Logger } from "../../../extensions/shared/logger.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+
+interface CapturedLog {
+  level: "debug" | "info" | "warn" | "error";
+  msg: string;
+  data?: unknown;
+}
+
+function makeCapturingLogger(): { logger: Logger; entries: CapturedLog[] } {
+  const entries: CapturedLog[] = [];
+  const logger: Logger = {
+    debug(msg, data) { entries.push({ level: "debug", msg, data }); },
+    info(msg, data) { entries.push({ level: "info", msg, data }); },
+    warn(msg, data) { entries.push({ level: "warn", msg, data }); },
+    error(msg, data) { entries.push({ level: "error", msg, data }); },
+    isDebugEnabled: () => true,
+  };
+  return { logger, entries };
+}
 
 function initTempGitRepo(rootDir: string): string {
   const repoDir = join(rootDir, "repo");
@@ -33,6 +52,8 @@ function initTempGitRepo(rootDir: string): string {
   execFileSync("git", ["commit", "-q", "-m", "initial commit"], { cwd: repoDir, stdio: "ignore" });
   return repoDir;
 }
+
+const noPeers = { readLivePeers: () => [] as WorktreePeerInfo[] };
 
 describe("classifyGhostWorktreeDir (#1504)", () => {
   it("accepts a directory containing only .pi", () => {
@@ -131,13 +152,15 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
       mkdirSync(join(ghostDir, ".pi", "tmp"), { recursive: true });
       mkdirSync(join(ghostDir, ".pi", "data"), { recursive: true });
       writeFileSync(join(ghostDir, ".pi", "tmp", "scratch.txt"), "tmp\n");
+      const { logger, entries } = makeCapturingLogger();
 
-      const res = await runWorktreePrune(repoDir);
+      const res = await runWorktreePrune(repoDir, { ...noPeers, logger });
       assert.equal(res.ok, true);
       assert.deepEqual(res.removedGhosts, ["ghost-pi"]);
       assert.deepEqual(res.skippedGhosts, []);
       assert.equal(existsSync(ghostDir), false);
       assert.match(res.message, /ghost-pi/);
+      assert.equal(entries.some((e) => e.level === "info" && e.msg === "worktree_ghost_removed"), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -151,7 +174,7 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
       mkdirSync(ghostDir, { recursive: true });
       writeFileSync(join(ghostDir, "graft"), "leftover\n");
 
-      const res = await runWorktreePrune(repoDir);
+      const res = await runWorktreePrune(repoDir, noPeers);
       assert.equal(res.ok, true);
       assert.deepEqual(res.removedGhosts, ["ghost-graft"]);
       assert.equal(existsSync(ghostDir), false);
@@ -160,32 +183,21 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
     }
   });
 
-  it("never removes a registered worktree even if its filesystem only holds .pi", async () => {
+  it("never removes a real registered worktree under .worktrees during prune", async () => {
     const dir = makeTempDir("wt-ghost-reg-");
     try {
       const repoDir = initTempGitRepo(dir);
       const registeredWt = join(repoDir, ".worktrees", "active-wt");
+      execFileSync("git", ["worktree", "add", "-q", "-b", "feat/active", registeredWt], {
+        cwd: repoDir,
+        stdio: "ignore",
+      });
       mkdirSync(join(registeredWt, ".pi", "tmp"), { recursive: true });
 
-      const porcelain = [
-        `worktree ${repoDir}`,
-        "HEAD 1111111111111111111111111111111111111111",
-        "branch refs/heads/main",
-        "",
-        `worktree ${registeredWt}`,
-        "HEAD 2222222222222222222222222222222222222222",
-        "branch refs/heads/feat/active",
-        "",
-      ].join("\n");
-      const mockRunner: GitAsyncRunner = async (args) => {
-        if (args[0] === "worktree" && args[1] === "list") return { stdout: porcelain, stderr: "", code: 0 };
-        if (args[0] === "worktree" && args[1] === "prune") return { stdout: "", stderr: "", code: 0 };
-        return { stdout: "", stderr: "", code: 0 };
-      };
-
-      const res = await runWorktreePrune(repoDir, { runGitAsync: mockRunner });
+      const res = await runWorktreePrune(repoDir, noPeers);
       assert.equal(res.ok, true);
       assert.deepEqual(res.removedGhosts, []);
+      assert.deepEqual(res.skippedGhosts, []);
       assert.equal(existsSync(registeredWt), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -199,14 +211,16 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
       const userDir = join(repoDir, ".worktrees", "keep-notes");
       mkdirSync(join(userDir, ".pi", "tmp"), { recursive: true });
       writeFileSync(join(userDir, "notes.txt"), "important user data\n");
+      const { logger, entries } = makeCapturingLogger();
 
-      const res = await runWorktreePrune(repoDir);
+      const res = await runWorktreePrune(repoDir, { ...noPeers, logger });
       assert.equal(res.ok, true);
       assert.deepEqual(res.removedGhosts, []);
       assert.deepEqual(res.skippedGhosts, ["keep-notes"]);
       assert.equal(existsSync(join(userDir, "notes.txt")), true);
       assert.match(res.message, /Skipped 1 unregistered dir/);
       assert.match(res.message, /keep-notes/);
+      assert.equal(entries.some((e) => e.level === "info" && e.msg === "worktree_ghost_skip_unsafe"), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -220,7 +234,7 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
       mkdirSync(join(srcDir, "src"), { recursive: true });
       writeFileSync(join(srcDir, "src", "index.ts"), "export const x = 1;\n");
 
-      const res = await runWorktreePrune(repoDir);
+      const res = await runWorktreePrune(repoDir, noPeers);
       assert.equal(res.ok, true);
       assert.deepEqual(res.removedGhosts, []);
       assert.deepEqual(res.skippedGhosts, ["keep-src"]);
@@ -242,13 +256,89 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
       mkdirSync(worktreesDir, { recursive: true });
       const linkPath = join(worktreesDir, "escape-link");
       symlinkSync(outsideDir, linkPath, "dir");
+      const { logger, entries } = makeCapturingLogger();
 
-      const res = await runWorktreePrune(repoDir);
+      const res = await runWorktreePrune(repoDir, { ...noPeers, logger });
       assert.equal(res.ok, true);
       assert.deepEqual(res.removedGhosts, []);
       assert.deepEqual(res.skippedGhosts, ["escape-link"]);
       assert.equal(existsSync(linkPath), true);
       assert.equal(readFileSync(join(outsideDir, ".pi", "tmp", "precious.txt"), "utf-8"), "do not touch\n");
+      assert.equal(entries.some((e) => e.level === "warn" && e.msg === "worktree_ghost_skip_symlink"), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips a ghost directory occupied by a live COMS peer during prune", async () => {
+    const dir = makeTempDir("wt-ghost-livepeer-");
+    try {
+      const repoDir = initTempGitRepo(dir);
+      const ghostDir = join(repoDir, ".worktrees", "peer-ghost");
+      mkdirSync(join(ghostDir, ".pi", "tmp"), { recursive: true });
+      const { logger, entries } = makeCapturingLogger();
+      const livePeer: WorktreePeerInfo = {
+        name: "peer-active",
+        project: "repo",
+        cwd: ghostDir,
+        busy: true,
+        pid: process.pid,
+        purpose: "running",
+      };
+
+      const res = await runWorktreePrune(repoDir, {
+        inspectLivePeers: () => ({ peers: [livePeer], verified: true }),
+        logger,
+      });
+      assert.equal(res.ok, true);
+      assert.deepEqual(res.removedGhosts, []);
+      assert.deepEqual(res.skippedGhosts, ["peer-ghost"]);
+      assert.equal(existsSync(ghostDir), true);
+      assert.equal(entries.some((e) => e.level === "warn" && e.msg === "worktree_ghost_skip_live_peer"), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed without removing ghosts when COMS peer verification fails", async () => {
+    const dir = makeTempDir("wt-ghost-unverified-peers-");
+    try {
+      const repoDir = initTempGitRepo(dir);
+      const ghostDir = join(repoDir, ".worktrees", "peer-unverified-ghost");
+      mkdirSync(join(ghostDir, ".pi", "tmp"), { recursive: true });
+      const { logger, entries } = makeCapturingLogger();
+
+      const res = await runWorktreePrune(repoDir, {
+        inspectLivePeers: () => ({ peers: [], verified: false, error: "EACCES reading COMS registry" }),
+        logger,
+      });
+      assert.equal(res.ok, false);
+      assert.deepEqual(res.removedGhosts, []);
+      assert.equal(existsSync(ghostDir), true);
+      assert.equal(entries.some((e) => e.level === "warn" && e.msg === "worktree_ghost_prune_peers_unverified"), true);
+      assert.equal(entries.some((e) => e.level === "error" && e.msg === "worktree_prune"), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("logs failed git worktree prune at error level", async () => {
+    const dir = makeTempDir("wt-ghost-prune-err-");
+    try {
+      const repoDir = initTempGitRepo(dir);
+      const { logger, entries } = makeCapturingLogger();
+      const failingPruneRunner: GitAsyncRunner = async (args) => {
+        if (args[0] === "worktree" && args[1] === "prune") {
+          return { stdout: "", stderr: "fatal: unable to lock worktree index", code: 128 };
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      };
+
+      const res = await runWorktreePrune(repoDir, { runGitAsync: failingPruneRunner, logger });
+      assert.equal(res.ok, false);
+      const errLog = entries.find((e) => e.level === "error" && e.msg === "worktree_prune");
+      assert.ok(errLog, "expected error-level worktree_prune log entry");
+      assert.match(JSON.stringify(errLog.data), /unable to lock worktree index/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -260,6 +350,7 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
       const repoDir = initTempGitRepo(dir);
       const ghostDir = join(repoDir, ".worktrees", "ghost-untouched");
       mkdirSync(join(ghostDir, ".pi", "tmp"), { recursive: true });
+      const { logger, entries } = makeCapturingLogger();
 
       const failingListRunner: GitAsyncRunner = async (args) => {
         if (args[0] === "worktree" && args[1] === "prune") return { stdout: "", stderr: "", code: 0 };
@@ -269,12 +360,21 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
         return { stdout: "", stderr: "", code: 0 };
       };
 
-      const direct = await pruneOrphanedWorktreeShells(repoDir, { runGitAsync: failingListRunner });
+      const direct = await pruneOrphanedWorktreeShells(repoDir, {
+        runGitAsync: failingListRunner,
+        ...noPeers,
+        logger,
+      });
       assert.equal(direct.ok, false);
       assert.deepEqual(direct.removed, []);
       assert.equal(existsSync(ghostDir), true);
+      assert.equal(entries.some((e) => e.level === "warn" && e.msg === "worktree_ghost_prune_list_failed"), true);
 
-      const pruned = await runWorktreePrune(repoDir, { runGitAsync: failingListRunner });
+      const pruned = await runWorktreePrune(repoDir, {
+        runGitAsync: failingListRunner,
+        ...noPeers,
+        logger,
+      });
       assert.equal(pruned.ok, false);
       assert.deepEqual(pruned.removedGhosts, []);
       assert.equal(existsSync(ghostDir), true);
@@ -292,7 +392,7 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
       const ghostDir = join(repoDir, ".worktrees", "dead-ghost");
       mkdirSync(join(ghostDir, ".pi", "memory"), { recursive: true });
 
-      const res = await runWorktreePrune(linkedWt);
+      const res = await runWorktreePrune(linkedWt, noPeers);
       assert.equal(res.ok, true);
       assert.deepEqual(res.removedGhosts, ["dead-ghost"]);
       assert.equal(existsSync(ghostDir), false);
@@ -318,7 +418,7 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
         events: { emit() {} },
       };
       withSubagentChildEnv(undefined, () => {
-        registerWorktree(mockPi);
+        registerWorktree(mockPi, noPeers);
       });
       assert.ok(toolDef, "worktree_status tool should be registered");
 
@@ -339,7 +439,7 @@ describe("pruneOrphanedWorktreeShells / runWorktreePrune (#1504)", () => {
       const ghostDir = join(repoDir, ".worktrees", "pidash-ghost");
       mkdirSync(join(ghostDir, ".pi", "tmp"), { recursive: true });
 
-      const res = await pruneWorktreesOp(repoDir);
+      const res = await pruneWorktreesOp(repoDir, noPeers);
       assert.equal(res.op, "prune");
       assert.equal(res.ok, true);
       assert.deepEqual(res.removedGhosts, ["pidash-ghost"]);
@@ -376,7 +476,6 @@ describe("executeGuardedWorktreeRemove ghost cleanup (#1504)", () => {
         }
         if (args[0] === "status") return { stdout: "", stderr: "", code: 0 };
         if (args[0] === "worktree" && args[1] === "remove") {
-          // Simulate git unregistering the worktree then failing rmdir due to .pi/ leftovers
           registered = false;
           return {
             stdout: "",
@@ -396,6 +495,54 @@ describe("executeGuardedWorktreeRemove ghost cleanup (#1504)", () => {
       assert.equal(res.cleanedGhost, true);
       assert.equal(existsSync(targetWt), false);
       assert.equal(changed, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses ghost cleanup when targetPath is replaced by a symlink during git worktree remove", async () => {
+    const dir = makeTempDir("wt-remove-swap-");
+    try {
+      const repoDir = initTempGitRepo(dir);
+      const targetWt = join(repoDir, ".worktrees", "swap-target");
+      const unrelatedDir = join(dir, "unrelated-pi-only");
+      mkdirSync(join(targetWt, ".pi", "tmp"), { recursive: true });
+      mkdirSync(join(unrelatedDir, ".pi", "tmp"), { recursive: true });
+      writeFileSync(join(unrelatedDir, ".pi", "tmp", "keep.txt"), "safe\n");
+      const { logger, entries } = makeCapturingLogger();
+
+      let registered = true;
+      const runner: GitAsyncRunner = async (args) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          const blocks = [
+            `worktree ${repoDir}\nHEAD 1111111111111111111111111111111111111111\nbranch refs/heads/main\n`,
+          ];
+          if (registered) {
+            blocks.push(
+              `worktree ${targetWt}\nHEAD 2222222222222222222222222222222222222222\nbranch refs/heads/feat/swap\n`,
+            );
+          }
+          return { stdout: blocks.join("\n"), stderr: "", code: 0 };
+        }
+        if (args[0] === "status") return { stdout: "", stderr: "", code: 0 };
+        if (args[0] === "worktree" && args[1] === "remove") {
+          registered = false;
+          // Simulate concurrent replacement with a symlink pointing to an unrelated .pi-only directory
+          rmSync(targetWt, { recursive: true, force: true });
+          symlinkSync(unrelatedDir, targetWt, "dir");
+          return { stdout: "", stderr: "error: failed to delete: Directory not empty", code: 255 };
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      };
+
+      const res = await executeGuardedWorktreeRemove(repoDir, targetWt, {
+        runGitAsync: runner,
+        readLivePeers: () => [],
+        logger,
+      });
+      assert.equal(res.ok, false);
+      assert.equal(readFileSync(join(unrelatedDir, ".pi", "tmp", "keep.txt"), "utf-8"), "safe\n");
+      assert.equal(entries.some((e) => e.level === "warn" && e.msg === "worktree_ghost_path_changed"), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -445,6 +592,7 @@ describe("executeGuardedWorktreeRemove ghost cleanup (#1504)", () => {
       const targetWt = join(repoDir, ".worktrees", "has-notes");
       mkdirSync(join(targetWt, ".pi", "tmp"), { recursive: true });
       writeFileSync(join(targetWt, "notes.txt"), "do not delete\n");
+      const { logger, entries } = makeCapturingLogger();
 
       let registered = true;
       const runner: GitAsyncRunner = async (args) => {
@@ -470,9 +618,11 @@ describe("executeGuardedWorktreeRemove ghost cleanup (#1504)", () => {
       const res = await executeGuardedWorktreeRemove(repoDir, targetWt, {
         runGitAsync: runner,
         readLivePeers: () => [],
+        logger,
       });
       assert.equal(res.ok, false);
       assert.equal(existsSync(join(targetWt, "notes.txt")), true);
+      assert.equal(entries.some((e) => e.level === "info" && e.msg === "worktree_remove_ghost_skip_unsafe"), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
