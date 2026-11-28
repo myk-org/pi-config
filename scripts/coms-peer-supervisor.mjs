@@ -30,6 +30,7 @@ import {
   isPidAlive,
   isSelinuxEnforcing,
   isValidPeerContainerName,
+  prepareSandboxAgentDir,
   prepareSandboxWorkspace,
   resolveHostGitIdentity,
   resolvePackageRoot,
@@ -230,56 +231,6 @@ function resolveHostAgentDir() {
   return path.join(os.homedir(), ".pi", "agent");
 }
 
-function prepareSandboxAgentDir(sandboxDir, hostAgentDir) {
-  const agentDir = path.join(sandboxDir, "agent-dir");
-  fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
-
-  const containerSettingsPath = path.join(agentDir, "settings.json");
-  if (!fs.existsSync(containerSettingsPath)) {
-    let hostSettings = {};
-    try {
-      hostSettings = JSON.parse(fs.readFileSync(path.join(hostAgentDir, "settings.json"), "utf8"));
-    } catch {
-      hostSettings = {};
-    }
-    const seeded = {
-      ...(typeof hostSettings.defaultProvider === "string" ? { defaultProvider: hostSettings.defaultProvider } : {}),
-      ...(typeof hostSettings.defaultModel === "string" ? { defaultModel: hostSettings.defaultModel } : {}),
-      ...(typeof hostSettings.theme === "string" ? { theme: hostSettings.theme } : {}),
-      ...(typeof hostSettings.defaultThinkingLevel === "string" ? { defaultThinkingLevel: hostSettings.defaultThinkingLevel } : {}),
-      ...(typeof hostSettings.steeringMode === "string" ? { steeringMode: hostSettings.steeringMode } : {}),
-      ...(typeof hostSettings.followUpMode === "string" ? { followUpMode: hostSettings.followUpMode } : {}),
-      enableInstallTelemetry: false,
-      packages: [
-        "/opt/pi-config",
-        "/opt/node_modules/@myk-org/pi-vertex-claude",
-        "/opt/node_modules/pi-web-access",
-      ],
-    };
-    fs.writeFileSync(containerSettingsPath, JSON.stringify(seeded, null, 2), { mode: 0o600 });
-  }
-
-  const hostAuthPath = path.join(hostAgentDir, "auth.json");
-  const hasHostAuth = fs.existsSync(hostAuthPath);
-  if (hasHostAuth) {
-    const placeholder = path.join(agentDir, "auth.json");
-    if (!fs.existsSync(placeholder)) fs.writeFileSync(placeholder, "", { mode: 0o600 });
-  }
-
-  const hostModelsPath = path.join(hostAgentDir, "models.json");
-  const hasHostModels = fs.existsSync(hostModelsPath);
-  if (hasHostModels) {
-    const placeholder = path.join(agentDir, "models.json");
-    if (!fs.existsSync(placeholder)) fs.writeFileSync(placeholder, "", { mode: 0o600 });
-  }
-
-  return {
-    agentDir,
-    hostAuthJsonPath: hasHostAuth ? hostAuthPath : null,
-    hostModelsJsonPath: hasHostModels ? hostModelsPath : null,
-  };
-}
-
 function writeGitconfigSeed(sandboxDir, sourceCwd) {
   const seedPath = path.join(sandboxDir, "gitconfig.seed");
   const identity = resolveHostGitIdentity(sourceCwd);
@@ -329,7 +280,22 @@ function startPodmanPeer() {
     process.exit(1);
   }
 
-  const { agentDir, hostAuthJsonPath, hostModelsJsonPath } = prepareSandboxAgentDir(sandboxDir, hostAgentDir);
+  const {
+    agentDir,
+    hostAuthJsonPath,
+    hostModelsJsonPath,
+    hostSkillsDir,
+    hostAgentsSkillsDir,
+    hostAgentsDir,
+    hostPromptsDir,
+    hostPackageMounts,
+  } = prepareSandboxAgentDir({
+    sandboxDir,
+    hostAgentDir,
+    workspacePath,
+    piConfigDir: pkgRoot,
+    logger: log,
+  });
   const gitconfigSeedPath = writeGitconfigSeed(sandboxDir, cwd);
 
   // Stop any previous container with the same verified identity-hashed container name.
@@ -358,6 +324,11 @@ function startPodmanPeer() {
     agentDir,
     hostAuthJsonPath,
     hostModelsJsonPath,
+    hostSkillsDir,
+    hostAgentsSkillsDir,
+    hostAgentsDir,
+    hostPromptsDir,
+    hostPackageMounts,
     entrypointPath,
     gitconfigSeedPath,
     workspacePath,
