@@ -191,6 +191,7 @@ describe("shared per-worktree LSP broker (#1445)", () => {
     setEnv("PI_LSP_ENABLED", undefined);
     setEnv("PI_LSP_IN_SUBAGENTS", undefined);
     setEnv("PI_SUBAGENT_CHILD", undefined);
+    setEnv("PI_COMS_SUPERVISED_PEER", undefined);
   });
 
   afterEach(async () => {
