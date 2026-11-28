@@ -5,9 +5,9 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { getPiLogPath } from "../../../extensions/shared/file-logger.js";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { getPiLogPath, setGlobalSessionId, setLogLevelPin } from "../../../extensions/shared/file-logger.js";
 import {
   clearAllDangerousSessionApprovals,
   clearBranchCache,
@@ -267,18 +267,39 @@ describe("Podman peer sandbox relaxed container-local rules", () => {
 
   it("emits audit log when mixed command exempts workspace rm alongside non-relaxable sudo", async () => {
     const { workspace, comsDir } = makeSandboxDirs();
+    const prevSid = (globalThis as any).__piConfigSessionId;
+    const prevSidEnv = process.env.__PI_CONFIG_SESSION_ID;
+    const prevParentSidEnv = process.env.__PI_PARENT_SESSION_ID;
+    const throwawaySid = `podman-sandbox-audit-${process.pid}-${Date.now()}`;
+    delete process.env.__PI_PARENT_SESSION_ID;
+    setGlobalSessionId(throwawaySid);
+    setLogLevelPin("enforcement", "info");
     const logPath = getPiLogPath("enforcement");
-    const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
-    const decision = await evaluateBashPolicy({
-      command: "rm -rf build && sudo ls",
-      cwd: workspace,
-      inContainer: true,
-      comsContainerName: VALID_CONTAINER,
-      comsDir,
-    });
-    assert.equal(decision.action, "block");
-    const written = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
-    assert.match(written, /dangerous_gate_podman_sandbox_exempt/);
+    const testLogDir = logPath ? dirname(logPath) : undefined;
+    try {
+      const before = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").length : 0;
+      const decision = await evaluateBashPolicy({
+        command: "rm -rf build && sudo ls",
+        cwd: workspace,
+        inContainer: true,
+        comsContainerName: VALID_CONTAINER,
+        comsDir,
+      });
+      assert.equal(decision.action, "block");
+      const written = logPath && existsSync(logPath) ? readFileSync(logPath, "utf-8").slice(before) : "";
+      assert.match(written, /dangerous_gate_podman_sandbox_exempt/);
+    } finally {
+      setLogLevelPin("enforcement", null);
+      if (testLogDir && basename(testLogDir) === throwawaySid) {
+        rmSync(testLogDir, { recursive: true, force: true });
+      }
+      if (prevParentSidEnv === undefined) delete process.env.__PI_PARENT_SESSION_ID;
+      else process.env.__PI_PARENT_SESSION_ID = prevParentSidEnv;
+      if (prevSidEnv === undefined) delete process.env.__PI_CONFIG_SESSION_ID;
+      else process.env.__PI_CONFIG_SESSION_ID = prevSidEnv;
+      if (prevSid === undefined) delete (globalThis as any).__piConfigSessionId;
+      else (globalThis as any).__piConfigSessionId = prevSid;
+    }
   });
 
   it("reads PI_COMS_CONTAINER_NAME from process.env when override is omitted", async () => {
