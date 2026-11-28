@@ -315,6 +315,15 @@ describe("getPiInvocation pruned release recovery (#1493)", () => {
 		assert.deepEqual(inv, { command: fakeNode, args: [script, "--flag"] });
 	});
 
+	it("returns bare pi when process.argv[1] is empty under versioned node binary", () => {
+		const inv = getPiInvocation(["--version"], {
+			argv1: "",
+			execPath: "/usr/bin/node-22",
+			envPath: "",
+		});
+		assert.deepEqual(inv, { command: "pi", args: ["--version"] });
+	});
+
 	it("returns bare pi when process.argv[1] is empty under node", () => {
 		const inv = getPiInvocation(["--version"], {
 			argv1: "",

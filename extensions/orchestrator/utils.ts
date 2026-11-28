@@ -430,7 +430,7 @@ export function getPiInvocation(args: string[], opts?: PiInvocationOptions): { c
   const platform = opts?.platform ?? process.platform;
 
   const execBase = (platform === "win32" ? path.win32 : path.posix).basename(execPath).toLowerCase();
-  const isJsRuntime = /^(node|bun)(\.exe)?$/.test(execBase);
+  const isJsRuntime = /^(node(?:js|[-.]?\d+(?:\.\d+)*)?|bun)(\.exe)?$/.test(execBase);
 
   if (s) {
     const exists = fs.existsSync(s);
