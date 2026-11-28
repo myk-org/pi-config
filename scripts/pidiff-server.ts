@@ -377,8 +377,8 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
         if (ws.readyState !== 1) return;
         const worktrees = await getWorktreesAsync(cwd);
         completeRegister(worktrees);
-      }).catch((err: any) => {
-        slog.warn("register checkout validation failed", { sessionId, cwd, err: err?.message });
+      }).catch((err: unknown) => {
+        slog.error("register checkout validation failed", { sessionId, cwd, err });
       });
       return;
     }

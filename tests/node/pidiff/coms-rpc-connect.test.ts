@@ -260,6 +260,74 @@ describe("registerPidiff supervised COMS RPC attach-only lifecycle (#1501)", () 
     }
   });
 
+  it("rebinds supervised rpc peer to new repository hub on session_start repo change", async () => {
+    const dir = makeTempDir("pidiff-rpc-repo-switch-");
+    const repoA = join(dir, "repo-a");
+    const repoB = join(dir, "repo-b");
+    const serverA = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const socketsA = new WebSocketServer({ server: serverA, path: "/ws/pi" });
+    const serverB = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const socketsB = new WebSocketServer({ server: serverB, path: "/ws/pi" });
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    const { pi, events, emitPi } = createHarness();
+    const ctxA = makeCtx("rpc", repoA);
+    const ctxB = makeCtx("rpc", repoB);
+    const emittedPorts: number[] = [];
+
+    try {
+      mkdirSync(repoA, { recursive: true });
+      mkdirSync(repoB, { recursive: true });
+      initGitRepo(repoA, "branch-a");
+      initGitRepo(repoB, "branch-b");
+
+      const portA = await listenHttp(serverA);
+      const portB = await listenHttp(serverB);
+      mkdirSync(join(repoA, ".pi", "run"), { recursive: true });
+      writeFileSync(join(repoA, ".pi", "run", "pidiff.port"), String(portA));
+      mkdirSync(join(repoB, ".pi", "run"), { recursive: true });
+      writeFileSync(join(repoB, ".pi", "run", "pidiff.port"), String(portB));
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidiff_enable: true }));
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      events.on("diff-viewer:port", (p: unknown) => {
+        if (typeof p === "number") emittedPorts.push(p);
+      });
+
+      const regA = new Promise<Record<string, unknown>>((resolve) => {
+        socketsA.on("connection", (ws) => {
+          ws.once("message", (raw) => resolve(JSON.parse(raw.toString()) as Record<string, unknown>));
+        });
+      });
+      const regB = new Promise<Record<string, unknown>>((resolve) => {
+        socketsB.on("connection", (ws) => {
+          ws.once("message", (raw) => resolve(JSON.parse(raw.toString()) as Record<string, unknown>));
+        });
+      });
+
+      registerPidiff(pi, { reconnectPollIntervalMs: 50 });
+      emitPi("session_start", { reason: "startup" }, ctxA);
+      const firstReg = await regA;
+      assert.equal(firstReg.cwd, repoA);
+
+      emitPi("session_start", { reason: "resume" }, ctxB);
+      const secondReg = await regB;
+      assert.equal(secondReg.cwd, repoB);
+      assert.equal(secondReg.branch, "branch-b");
+      assert.deepEqual(emittedPorts.slice(-2), [portA, portB]);
+    } finally {
+      emitPi("session_shutdown", {}, ctxB);
+      await closeServer(serverA, socketsA);
+      await closeServer(serverB, socketsB);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("skips auto-spawn when daemon is not running for supervised rpc peer", async () => {
     const dir = makeTempDir("pidiff-rpc-no-spawn-");
     const prevChild = process.env.PI_SUBAGENT_CHILD;
@@ -654,16 +722,36 @@ describe("createRepoCheckoutMatcher (#1501)", () => {
     }
   });
 
-  it("caches git common dir lookups across repeated matchesAsync calls", async () => {
+  it("revalidates candidate checkout after path is replaced by an unrelated repo", async () => {
     const calls: string[] = [];
+    let currentCandidateCommon = "/repo/main/.git";
     const matcher = createRepoCheckoutMatcher("/repo/main", () => "git", async (_bin, cwd) => {
       calls.push(cwd);
-      return "/repo/main/.git";
+      return cwd === "/repo/main" ? "/repo/main/.git" : currentCandidateCommon;
     });
 
     assert.equal(await matcher.matchesAsync("/repo/wt-1"), true);
-    assert.equal(await matcher.matchesAsync("/repo/wt-1"), true);
-    assert.deepEqual(calls, ["/repo/main", "/repo/wt-1"]);
+    currentCandidateCommon = "/unrelated/repo/.git";
+    assert.equal(await matcher.matchesAsync("/repo/wt-1"), false);
+    assert.deepEqual(calls, ["/repo/main", "/repo/wt-1", "/repo/wt-1"]);
+  });
+
+  it("deduplicates concurrent in-flight lookups for the same candidate path", async () => {
+    let candidateCalls = 0;
+    const matcher = createRepoCheckoutMatcher("/repo/main", () => "git", async (_bin, cwd) => {
+      if (cwd === "/repo/main") return "/repo/main/.git";
+      candidateCalls++;
+      await new Promise((r) => setTimeout(r, 20));
+      return "/repo/main/.git";
+    });
+
+    const [a, b] = await Promise.all([
+      matcher.matchesAsync("/repo/wt-1"),
+      matcher.matchesAsync("/repo/wt-1"),
+    ]);
+    assert.equal(a, true);
+    assert.equal(b, true);
+    assert.equal(candidateCalls, 1);
   });
 
   it("rejects unrelated repository asynchronously", async () => {

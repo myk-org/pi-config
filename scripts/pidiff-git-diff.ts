@@ -305,18 +305,16 @@ export function isSameGitRepoCheckout(
   return same;
 }
 
-const REPO_CHECKOUT_CACHE_MAX = 128;
-
 export interface RepoCheckoutMatcher {
   isExactMatch: (candidateCwd: string) => boolean;
   matchesAsync: (candidateCwd: string) => Promise<boolean>;
 }
 
 /**
- * Non-blocking, cached checkout matcher for `pidiff-server`'s `register` path.
- * Resolves `projectCwd`'s git common dir once asynchronously and caches candidate
- * common-dir lookups per normalized path so worktree registrations and reconnects
- * never block the WebSocket event loop.
+ * Non-blocking checkout matcher for `pidiff-server`'s `register` path.
+ * Resolves `projectCwd`'s git common dir once asynchronously, deduplicates
+ * concurrent in-flight candidate lookups, and revalidates each registration's
+ * candidate checkout against Git so a replaced path can never reuse a stale match.
  */
 export function createRepoCheckoutMatcher(
   projectCwd: string,
@@ -324,7 +322,6 @@ export function createRepoCheckoutMatcher(
   resolveCommonDir: (gitBin: string, cwd: string) => Promise<string | null> = resolveGitCommonDirAsync,
 ): RepoCheckoutMatcher {
   const normalizedProject = projectCwd ? normalizeCheckoutPath(projectCwd) : "";
-  const candidateCache = new Map<string, string>();
   const inFlight = new Map<string, Promise<string | null>>();
   let projectCommonPromise: Promise<string | null> | null = normalizedProject
     ? resolveCommonDir(getGitBin(), projectCwd)
@@ -347,20 +344,9 @@ export function createRepoCheckoutMatcher(
   }
 
   async function getCandidateCommonDir(normalizedCandidate: string, rawCandidate: string): Promise<string | null> {
-    const cached = candidateCache.get(normalizedCandidate);
-    if (cached !== undefined) return cached;
     let pending = inFlight.get(normalizedCandidate);
     if (!pending) {
-      pending = resolveCommonDir(getGitBin(), rawCandidate).then((resolved) => {
-        if (resolved !== null) {
-          if (candidateCache.size >= REPO_CHECKOUT_CACHE_MAX && !candidateCache.has(normalizedCandidate)) {
-            const oldest = candidateCache.keys().next().value;
-            if (oldest !== undefined) candidateCache.delete(oldest);
-          }
-          candidateCache.set(normalizedCandidate, resolved);
-        }
-        return resolved;
-      }).finally(() => {
+      pending = resolveCommonDir(getGitBin(), rawCandidate).finally(() => {
         inFlight.delete(normalizedCandidate);
       });
       inFlight.set(normalizedCandidate, pending);

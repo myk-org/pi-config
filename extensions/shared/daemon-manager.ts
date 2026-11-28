@@ -491,6 +491,8 @@ export interface DaemonClient {
   send: (payload: string | object) => boolean;
   /** Ensure the daemon is running and open the `/ws/pi` WebSocket. */
   connect: (ctx: any) => Promise<void>;
+  /** Drop any active/in-flight WebSocket and cancel pending reconnect timers (for rebinding). */
+  disconnect: () => void;
   /** Handle `/<name> start|stop|restart|status` (already registered on `pi`). */
   handleCommand: (args: string, ctx: any) => Promise<void>;
   /** Programmatically execute a daemon action (shared by `/<name>` and `daemon_manage`). */
@@ -984,6 +986,7 @@ export function createDaemonClient<TConnectData = void>(
     setLastCtx(ctx: any) { lastCtx = ctx; },
     send,
     connect,
+    disconnect,
     handleCommand,
     executeAction,
     shutdown,
