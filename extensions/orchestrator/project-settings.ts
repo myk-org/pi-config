@@ -108,6 +108,7 @@ export interface SettingsKeyDef {
   default: unknown;
   min?: number;
   max?: number;
+  allow_zero?: boolean;
   strict_digits?: boolean;
   per_key_resolution?: boolean;
   global_only?: boolean;
@@ -777,8 +778,26 @@ export function validateSetting(
       } else {
         return { ok: false, error: `${key} must be an integer` };
       }
-      if (def.min !== undefined && num < def.min) return { ok: false, error: `${key} must be >= ${def.min}` };
-      if (def.max !== undefined && num > def.max) return { ok: false, error: `${key} must be <= ${def.max}` };
+      const allowedZero = def.allow_zero === true && num === 0;
+      if (!allowedZero) {
+        if (def.min !== undefined && num < def.min) {
+          return {
+            ok: false,
+            error: def.allow_zero
+              ? `${key} must be 0 (disabled) or between ${def.min} and ${def.max ?? "∞"}`
+              : `${key} must be >= ${def.min}`,
+          };
+        }
+        if (def.max !== undefined && num > def.max) {
+          return {
+            ok: false,
+            error:
+              def.allow_zero && def.min !== undefined
+                ? `${key} must be 0 (disabled) or between ${def.min} and ${def.max}`
+                : `${key} must be <= ${def.max}`,
+          };
+        }
+      }
       return { ok: true, value: num };
     }
 

@@ -49,6 +49,7 @@
   "pre_compaction_elision_threshold_pct": 70,
   "pre_compaction_elision_keep_turns": 6,
   "pre_compaction_elision_min_chars": 2000,
+  "auto_compact_threshold_pct": 0,
   "magic_keywords": true,
   "turn_snapshots": true,
   "qa_overlay_shortcut": "alt+q",

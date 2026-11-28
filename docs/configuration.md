@@ -1153,6 +1153,12 @@ Elision never rewrites user messages, assistant prose, thinking/reasoning blocks
 |---|---|---|---|---|---|
 | `pre_compaction_elision_min_chars` | integer `200`-`500000` | `2000` | `PI_PRE_COMPACTION_ELISION_MIN_CHARS` | Minimum character length for an older `toolResult` text block to be elided. | Smaller older tool results stay inline untouched. |
 
+### `auto_compact_threshold_pct`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `auto_compact_threshold_pct` | integer `0` or `20`-`99` | `0` | `PI_AUTO_COMPACT_THRESHOLD_PCT` | Opt-in context window usage percentage that triggers LLM auto-compaction on `agent_settled`. | `0` disables percentage-based auto-compaction and leaves Pi's default token reserve (`compaction.reserveTokens`) in charge. Values `20`-`99` trigger `ctx.compact()` on `agent_settled` (Pi's final settled boundary after mechanical `pre_compaction_elision` runs on `turn_end` and any retries or queued follow-ups finish) whenever context usage reaches `>= N%`, skipping aborted runs, pending follow-ups, oneshot runs (`pi -p` / `--mode json`), and subagent children (`PI_SUBAGENT_CHILD=1`), and suppressing immediate repeat attempts until usage drops below the threshold, grows by at least 10 percentage points above the post-compaction floor, or the session resets. Values `1`-`19`, `<0`, `>99`, and non-integers are rejected. |
+
 ```json
 {
   "session_spill_enabled": true,
@@ -1161,7 +1167,8 @@ Elision never rewrites user messages, assistant prose, thinking/reasoning blocks
   "pre_compaction_elision": true,
   "pre_compaction_elision_threshold_pct": 70,
   "pre_compaction_elision_keep_turns": 6,
-  "pre_compaction_elision_min_chars": 2000
+  "pre_compaction_elision_min_chars": 2000,
+  "auto_compact_threshold_pct": 0
 }
 ```
 
@@ -1269,6 +1276,16 @@ PI_SUBAGENT_CHILD=1
 ```
 
 See [Running Background Agents and Scheduled Tasks](async-agents-and-cron.html) for details.
+
+### `PI_CODING_AGENT_DIR` / `--agent-dir`
+
+| Parameter | Type | Default | Description | Effect |
+|---|---|---|---|---|
+| `PI_CODING_AGENT_DIR` / `--agent-dir` | string | `~/.pi/agent` | Custom Pi agent configuration directory (Pi 1.7.0 `--agent-dir <dir>` or `--agent-dir=<dir>` CLI flag, or `PI_CODING_AGENT_DIR` env var). | Extensions resolve agent files in order: explicit parameter → CLI `--agent-dir` → `PI_CODING_AGENT_DIR` → `~/.pi/agent`. When launched with `--agent-dir`, spawned subagents and supervised COMS peers inherit it via `PI_CODING_AGENT_DIR`. |
+
+```bash
+pi --agent-dir /path/to/custom-agent
+```
 
 ## Related Pages
 
