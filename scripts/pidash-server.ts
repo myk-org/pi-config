@@ -37,7 +37,7 @@ import { setupDiscordBot } from "./pidash-discord.ts";
 import { applyActivityEvent, initialActivityState, shouldAcceptActivityEvent } from "../extensions/pidash/activity-state.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
 import { ComsRegistry } from "../extensions/coms/coms-registry.ts";
-import { pickSupervisionRecord } from "../extensions/coms/coms-peers.ts";
+import { pickSupervisionRecord } from "../extensions/coms/coms-registry-core.ts";
 import { readBuildStatus } from "./podman-peer-image.mjs";
 
 const activityLog = createLogger("pidash");

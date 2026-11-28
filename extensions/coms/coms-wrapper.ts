@@ -77,17 +77,76 @@ function mapToFlagOverrides(values: Map<string, any>): ComsPeerFlagOverrides {
 export interface ExecutePeerKillDeps {
     killPid?: (pid: number, signal: NodeJS.Signals) => void;
     removeContainer?: (containerName: string) => void;
+    isSupervisorProcess?: (pid: number) => boolean;
+}
+
+/**
+ * Verify that `pid` is actually a live `coms-peer-supervisor.mjs` process before signalling it.
+ * Guards against PID reuse on crashed supervisors (so an unrelated host process is never
+ * signalled and container-removal fallback is never suppressed).
+ */
+export function defaultIsSupervisorProcess(pid: number): boolean {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+        const procPath = `/proc/${pid}/cmdline`;
+        if (existsSync(procPath)) {
+            const cmdline = readFileSync(procPath, "utf8").replace(/\0/g, " ");
+            return cmdline.includes("coms-peer-supervisor.mjs");
+        }
+    } catch {
+        return false;
+    }
+    // On non-Linux hosts without /proc, check process existence conservatively.
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Enrich live registry rows with metadata from host supervision records.
+ * Captures `peerContainer` BEFORE any mutation so a stale Podman supervision record can never
+ * attach a container name or dead `hostPid` to a live native peer.
+ */
+export function attachSupervisionMeta(rows: RegistryRow[], records: any[]): RegistryRow[] {
+    for (const row of rows) {
+        const record = pickSupervisionRecord(records, row);
+        if (!record) continue;
+        if (typeof (record as any).createdBy === "string") row.createdBy = (record as any).createdBy;
+        const peerContainer = typeof row.container === "string" && row.container.trim() ? row.container.trim() : null;
+        const recContainer =
+            typeof (record as any).container === "string" && (record as any).container.trim()
+                ? (record as any).container.trim()
+                : null;
+        const isPodmanRecord = (record as any).sandbox === "podman" || Boolean(recContainer);
+
+        // Attach hostPid ONLY when the peer itself reported the matching container identity
+        // (via PI_COMS_CONTAINER_NAME) — never let a stale Podman record override a native peer.
+        if (
+            isPodmanRecord &&
+            recContainer &&
+            peerContainer === recContainer &&
+            !row.hostPid &&
+            Number.isInteger((record as any).childPid) &&
+            (record as any).childPid > 0
+        ) {
+            row.hostPid = (record as any).childPid;
+        }
+    }
+    return rows;
 }
 
 /**
  * Stop one planned peer kill entry.
  * For containerized peers (#1512):
  * 1. Validates container name against `VALID_PEER_CONTAINER_RE` before any Podman invocation.
- * 2. Signals the host supervisor (`SIGTERM`) FIRST when `reason === "supervisor"`, letting the
- *    supervisor perform graceful `podman stop -t N -- <container>` followed by cleanup without
- *    blocking the interactive session event loop.
- * 3. Falls back to detached non-blocking `podman rm -f -- <container>` only when no live
- *    supervisor was signalled (e.g. retired/crashed supervisor).
+ * 2. Verifies supervisor process identity (`isSupervisorProcess`) before signalling `SIGTERM`
+ *    when `reason === "supervisor"`, letting the supervisor perform graceful `podman stop`
+ *    followed by cleanup without blocking the interactive session event loop.
+ * 3. Falls back to detached non-blocking `podman rm -f -- <container>` whenever no verified
+ *    live supervisor was signalled (e.g. crashed supervisor or reused PID).
  */
 export function executePeerKillEntry(
     entry: KillPlanEntry,
@@ -98,6 +157,7 @@ export function executePeerKillEntry(
         const child = spawn("podman", ["rm", "-f", "--", containerName], { detached: true, stdio: "ignore" });
         child.unref();
     });
+    const checkSupervisor = deps.isSupervisorProcess ?? defaultIsSupervisorProcess;
 
     const validContainer = entry.container && isValidPeerContainerName(entry.container) ? entry.container : null;
     if (entry.container && !validContainer) {
@@ -106,17 +166,27 @@ export function executePeerKillEntry(
 
     let supervisorSignalled = false;
     if (entry.signalPid !== null && entry.signalPid > 0) {
-        try {
-            killPid(entry.signalPid, "SIGTERM");
-            supervisorSignalled = entry.reason === "supervisor";
-            if (!validContainer) return true;
-        } catch (error: unknown) {
-            log.warn("coms_peer_kill failed", {
+        const verifiedSupervisor = entry.reason !== "supervisor" || !validContainer || checkSupervisor(entry.signalPid);
+        if (!verifiedSupervisor) {
+            log.warn("coms_peer_supervisor_pid_reused", {
                 name: entry.name,
+                project: entry.project,
                 pid: entry.signalPid,
                 container: validContainer,
-                error: error instanceof Error ? error.message : String(error),
             });
+        } else {
+            try {
+                killPid(entry.signalPid, "SIGTERM");
+                supervisorSignalled = entry.reason === "supervisor";
+                if (!validContainer) return true;
+            } catch (error: unknown) {
+                log.warn("coms_peer_kill failed", {
+                    name: entry.name,
+                    pid: entry.signalPid,
+                    container: validContainer,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
         }
     }
 
@@ -751,34 +821,8 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         return getRegistry().readSupervisionRecords(extraDirs);
     };
 
-    const attachCreatedBy = (rows: RegistryRow[], records = readSupervisionRecords()): RegistryRow[] => {
-        for (const row of rows) {
-            const record = pickSupervisionRecord(records, row);
-            if (!record) continue;
-            if (typeof (record as any).createdBy === "string") row.createdBy = (record as any).createdBy;
-            const recContainer =
-                typeof (record as any).container === "string" && (record as any).container.trim()
-                    ? (record as any).container.trim()
-                    : null;
-            const isPodmanRecord = (record as any).sandbox === "podman" || Boolean(recContainer);
-            if (recContainer && !row.container) {
-                row.container = recContainer;
-            }
-            // Only populate hostPid from supervision record for containerized peers whose container matches
-            // — never let a stale record's childPid override a live native peer's row.pid.
-            if (
-                isPodmanRecord &&
-                recContainer &&
-                row.container === recContainer &&
-                !row.hostPid &&
-                Number.isInteger((record as any).childPid) &&
-                (record as any).childPid > 0
-            ) {
-                row.hostPid = (record as any).childPid;
-            }
-        }
-        return rows;
-    };
+    const attachCreatedBy = (rows: RegistryRow[], records = readSupervisionRecords()): RegistryRow[] =>
+        attachSupervisionMeta(rows, records);
 
     const ownProject = (): string => {
         const activeProj = String(flagValues.get("project") ?? "").trim();

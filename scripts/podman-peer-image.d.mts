@@ -120,7 +120,7 @@ export declare function prepareSandboxWorkspace(opts: {
   cname: string;
   execFileSync?: (...args: any[]) => any;
   logger?: ReturnType<typeof createPodmanLogger>;
-}): { workspaceDir: string; cloned: boolean; revived: boolean };
+}): { workspaceDir: string; cloned: boolean; revived: boolean; backupPath?: string | null };
 export declare function buildPodmanRunArgs(opts: PodmanRunArgsOptions): string[];
 export declare function isPidAlive(pid: unknown): boolean;
 export declare function readBuildLock(lockPath: string): Record<string, any> | null;

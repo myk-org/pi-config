@@ -7,10 +7,10 @@ import * as pidashReact from "../../../extensions/pidash/pidash-ui/node_modules/
 import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import { createRoot, type Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
 import { resolvePidashHost } from "../../../extensions/pidash/pidash.ts";
-import { resolvePidiffHost, resolvePidiffListenHost } from "../../../extensions/pidiff/pidiff.ts";
-import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
+import { resolvePidiffHost, resolvePidiffPortOverride } from "../../../extensions/pidiff/pidiff.ts";
 import { isLoopbackAddress, registerPidashSession, type PiClient } from "../../../scripts/pidash-session-state.ts";
 import { createDaemonServer } from "../../../scripts/daemon-shared.ts";
+import { WebSocket } from "ws";
 import fs from "node:fs";
 import os from "node:os";
 import type { SessionInfo } from "../../../extensions/shared/types.ts";
@@ -64,54 +64,111 @@ describe("Native daemon host resolution", () => {
     assert.equal(resolvePidiffHost({ PI_PIDIFF_HOST: "host.containers.internal" }), "host.containers.internal");
   });
 
-  it("defaults resolvePidiffListenHost to 127.0.0.1 when sandbox is off", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pidiff-listen-"));
-    setGlobalSettingsPath(path.join(tmpDir, "global.json"));
-    try {
-      clearSettingsCache();
-      assert.equal(resolvePidiffListenHost(tmpDir), "127.0.0.1");
-    } finally {
-      setGlobalSettingsPath(null);
-      clearSettingsCache();
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+  it("parses valid PI_PIDIFF_PORT override", () => {
+    assert.equal(resolvePidiffPortOverride({ PI_PIDIFF_PORT: "19290" }), 19290);
+    assert.equal(resolvePidiffPortOverride({ PI_PIDIFF_PORT: "0" }), null);
+    assert.equal(resolvePidiffPortOverride({}), null);
   });
 
-  it("returns 0.0.0.0 from resolvePidiffListenHost when coms_peer_sandbox is podman", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pidiff-listen-podman-"));
-    const globalFile = path.join(tmpDir, "global.json");
-    fs.writeFileSync(globalFile, JSON.stringify({ coms_peer_sandbox: "podman" }));
-    setGlobalSettingsPath(globalFile);
-    try {
-      clearSettingsCache();
-      assert.equal(resolvePidiffListenHost(tmpDir), "0.0.0.0");
-    } finally {
-      setGlobalSettingsPath(null);
-      clearSettingsCache();
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects non-loopback HTTP requests when allowRequest denies remoteAddress", async () => {
+  it("rejects unauthenticated requests when allowRequest enforces bearer token", async () => {
+    const expectedToken = "host-issued-test-token"; // pragma: allowlist secret
     const daemon = createDaemonServer({
       port: 0,
       uiDir: os.tmpdir(),
       uiName: "test-ui",
       log: () => {},
-      allowRequest: (_pathname, remoteAddress) => remoteAddress === "10.99.99.99",
+      allowRequest: (pathname, _remoteAddress, req) => {
+        if (pathname !== "/api/health" && pathname !== "/ws/pi") return false;
+        return req.headers["x-pidiff-token"] === expectedToken;
+      },
       onPiMessage: () => {},
       onPiClose: () => {},
     });
     await new Promise<void>((resolve) => daemon.server.listen(0, "127.0.0.1", resolve));
     try {
       const addr = daemon.server.address() as { port: number };
-      const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
-      assert.equal(res.status, 403);
+      const deniedHttp = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+      assert.equal(deniedHttp.status, 403);
+
+      const allowedHttp = await fetch(`http://127.0.0.1:${addr.port}/api/health`, {
+        headers: { "x-pidiff-token": expectedToken },
+      });
+      assert.equal(allowedHttp.status, 200);
+
+      const deniedWs = await new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/ws/pi`);
+        ws.once("unexpected-response", (_req, res) => resolve(res.statusCode === 403));
+        ws.once("open", () => { ws.close(); resolve(false); });
+        ws.once("error", () => resolve(true));
+      });
+      assert.equal(deniedWs, true);
+
+      const allowedWs = await new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/ws/pi`, {
+          headers: { "x-pidiff-token": expectedToken },
+        });
+        ws.once("open", () => { ws.close(); resolve(true); });
+        ws.once("error", () => resolve(false));
+      });
+      assert.equal(allowedWs, true);
+
       assert.equal(isLoopbackAddress("192.168.1.50"), false);
       assert.equal(isLoopbackAddress("127.0.0.1"), true);
     } finally {
       await new Promise<void>((resolve) => daemon.server.close(() => resolve()));
     }
+  });
+});
+
+describe("Standalone daemon zero-TUI runtime import boundary", () => {
+  function collectTransitiveRuntimeImports(entryFile: string): string[] {
+    const visited = new Set<string>();
+    const externalPackages = new Set<string>();
+    const queue = [path.resolve(entryFile)];
+
+    // Match runtime `import ... from "..."` and `export ... from "..."` (skipping `import type` / `export type`).
+    const specRe = /^\s*(?:import|export)\s+(?!type\b)[\s\S]*?\bfrom\s+["']([^"']+)["']/gm;
+
+    while (queue.length > 0) {
+      const current = queue.pop()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      if (!fs.existsSync(current)) continue;
+      const src = fs.readFileSync(current, "utf8");
+      for (const match of src.matchAll(specRe)) {
+        const spec = match[1];
+        if (!spec) continue;
+        if (spec.startsWith("node:")) continue;
+        if (!spec.startsWith(".")) {
+          externalPackages.add(spec);
+          continue;
+        }
+        const dir = path.dirname(current);
+        const base = path.resolve(dir, spec);
+        const candidates = [
+          base,
+          base.replace(/\.js$/, ".ts"),
+          base.replace(/\.js$/, ".mjs"),
+          `${base}.ts`,
+          `${base}.mjs`,
+        ];
+        const resolved = candidates.find((c) => fs.existsSync(c) && fs.statSync(c).isFile());
+        if (resolved) queue.push(resolved);
+      }
+    }
+    return [...externalPackages].sort();
+  }
+
+  it("keeps scripts/pidash-server.ts free of transitive @earendil-works/pi-tui runtime imports", () => {
+    const externals = collectTransitiveRuntimeImports("scripts/pidash-server.ts");
+    assert.equal(externals.some((pkg) => pkg.startsWith("@earendil-works/pi-tui")), false, `unexpected pi-tui import: ${externals.join(", ")}`);
+    assert.equal(externals.some((pkg) => pkg.startsWith("@earendil-works/pi-coding-agent")), false, `unexpected pi-coding-agent import: ${externals.join(", ")}`);
+  });
+
+  it("keeps extensions/coms/coms-registry.ts free of transitive @earendil-works/pi-tui runtime imports", () => {
+    const externals = collectTransitiveRuntimeImports("extensions/coms/coms-registry.ts");
+    assert.equal(externals.some((pkg) => pkg.startsWith("@earendil-works/pi-tui")), false, `unexpected pi-tui import: ${externals.join(", ")}`);
+    assert.equal(externals.some((pkg) => pkg.startsWith("@earendil-works/pi-coding-agent")), false, `unexpected pi-coding-agent import: ${externals.join(", ")}`);
   });
 });
 

@@ -33,11 +33,11 @@ const DEFAULT_RECONNECT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_RESTART_WAIT_MS = 1_000;
 
 let cachedWsCtor: any = null;
-function defaultCreateWebSocket(url: string): any {
+function defaultCreateWebSocket(url: string, headers?: Record<string, string>): any {
   if (!cachedWsCtor) {
     cachedWsCtor = createRequire(import.meta.url)("ws");
   }
-  return new cachedWsCtor(url);
+  return headers && Object.keys(headers).length > 0 ? new cachedWsCtor(url, { headers }) : new cachedWsCtor(url);
 }
 
 // ── Health check ────────────────────────────────────────────────────
@@ -61,10 +61,10 @@ export function parseHealth(body: string): { running: boolean; degraded: boolean
   }
 }
 
-export function checkHealth(port: number, host = "127.0.0.1"): Promise<boolean> {
+export function checkHealth(port: number, host = "127.0.0.1", headers?: Record<string, string>): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.request(
-      { hostname: host, port, path: "/api/health", timeout: HEALTH_CHECK_TIMEOUT_MS },
+      { hostname: host, port, path: "/api/health", timeout: HEALTH_CHECK_TIMEOUT_MS, ...(headers ? { headers } : {}) },
       (res) => {
         let body = "";
         res.on("data", (d) => { body += d; });
@@ -408,6 +408,8 @@ export interface DaemonClientAdapter<TConnectData = void> {
   port?: number;
   /** Daemon host for HTTP health probes and WebSocket connections (default: `"127.0.0.1"`). */
   host?: string;
+  /** Optional HTTP headers sent on WebSocket upgrade (e.g. `x-pidiff-token` for authenticated container peers). */
+  wsHeaders?: Record<string, string>;
   /** Optional readiness guard before `connect()` runs (e.g. pidiff requires `lockDir`). */
   canConnect?: (ctx: any) => boolean;
   /**
@@ -466,7 +468,7 @@ export interface DaemonClientAdapter<TConnectData = void> {
   reconnectPollIntervalMs?: number;
   heartbeatIntervalMs?: number;
   restartWaitMs?: number;
-  createWebSocket?: (url: string) => any;
+  createWebSocket?: (url: string, headers?: Record<string, string>) => any;
   probeHealth?: (port: number) => Promise<boolean>;
   waitReady?: (port: number, maxWaitSeconds: number, onLog: (msg: string) => void) => Promise<boolean>;
   sleep?: (ms: number) => Promise<void>;
@@ -518,7 +520,7 @@ export function createDaemonClient<TConnectData = void>(
   const restartWaitMs = adapter.restartWaitMs ?? DEFAULT_RESTART_WAIT_MS;
   const daemonHost = (adapter.host || "").trim() || "127.0.0.1";
   const createWs = adapter.createWebSocket ?? defaultCreateWebSocket;
-  const probeHealth = adapter.probeHealth ?? ((port: number) => checkHealth(port, daemonHost));
+  const probeHealth = adapter.probeHealth ?? ((port: number) => checkHealth(port, daemonHost, adapter.wsHeaders));
   const waitReady = adapter.waitReady ?? ((port, maxWaitSeconds, onLog) => waitForDaemon(port, maxWaitSeconds, onLog, probeHealth));
   const sleep = adapter.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const shouldConnectCtx = adapter.shouldConnectCtx ?? ((ctx: any) => ctx?.mode === "tui");
@@ -729,7 +731,7 @@ export function createDaemonClient<TConnectData = void>(
       }
 
       adapter.log.debug(`connecting WebSocket to ${daemonHost}:${port}...`);
-      const wsClient = createWs(`ws://${daemonHost}:${port}/ws/pi`);
+      const wsClient = createWs(`ws://${daemonHost}:${port}/ws/pi`, adapter.wsHeaders);
       activeSocket = wsClient;
 
       wsClient.on("open", () => {

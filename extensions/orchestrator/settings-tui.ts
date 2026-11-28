@@ -23,6 +23,7 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
   EMPTY_VALUE_SENTINEL,
   SETTINGS_KEYS,
+  type SettingsKeyDef,
   type SettingSource,
   type SettingsScope,
   type SettingsSourceSnapshot,
@@ -140,11 +141,27 @@ function formatItemLabel(
   theme: Theme,
   showCategoryTag: boolean,
   categoryLabel?: string,
+  isGlobalOnlyInProject = false,
 ): string {
+  if (isGlobalOnlyInProject) {
+    const catSuffix = showCategoryTag ? ` [${categoryLabel ?? getCategoryLabelForKey(key)}]` : "";
+    return theme.fg("dim", `${source} ${key}${catSuffix} (global-only)`);
+  }
   const glyph = sourceGlyph(source, theme);
   if (!showCategoryTag) return `${glyph} ${key}`;
   const cat = categoryLabel ?? getCategoryLabelForKey(key);
   return `${glyph} ${key} ${theme.fg("dim", `[${cat}]`)}`;
+}
+
+function formatItemValue(
+  key: string,
+  value: unknown,
+  def: SettingsKeyDef,
+  theme: Theme,
+  isGlobalOnlyInProject: boolean,
+): string {
+  const displayValue = formatValue(key, value, def);
+  return isGlobalOnlyInProject ? theme.fg("dim", displayValue) : displayValue;
 }
 
 export function refreshItem(
@@ -159,9 +176,10 @@ export function refreshItem(
   if (!def) return;
   const resolved = resolveSettingForScope(cwd, item.id, editScope);
   if (!resolved) return;
-  const displayValue = formatValue(item.id, resolved.value, def);
+  const isGlobalOnlyInProject = Boolean(def.global_only && editScope === "project");
+  const displayValue = formatItemValue(item.id, resolved.value, def, theme, isGlobalOnlyInProject);
   // Mutate in-place — SettingsList stores items array by reference (verified in pi-tui source)
-  item.label = formatItemLabel(item.id, resolved.source, theme, showCategoryTag, categoryLabel);
+  item.label = formatItemLabel(item.id, resolved.source, theme, showCategoryTag, categoryLabel, isGlobalOnlyInProject);
   item.currentValue = displayValue;
 }
 
@@ -216,11 +234,12 @@ export function buildCategoryItems(
     // Strictly respect active editScope: Global never leaks Project overrides.
     const resolved = resolveSettingForScope(cwd, key, editScope, snapshot);
     if (!resolved) continue;
-    const displayValue = formatValue(key, resolved.value, def);
+    const isGlobalOnlyInProject = Boolean(def.global_only && editScope === "project");
+    const displayValue = formatItemValue(key, resolved.value, def, theme, isGlobalOnlyInProject);
 
     const item: SettingItem = {
       id: key,
-      label: formatItemLabel(key, resolved.source, theme, showCategoryTag, category.label),
+      label: formatItemLabel(key, resolved.source, theme, showCategoryTag, category.label, isGlobalOnlyInProject),
       currentValue: displayValue,
       description: [
         def.description,
@@ -510,6 +529,7 @@ export class SettingsOverlay implements Component {
   private currentItems: SettingItem[];
   private allSearchItemsCache: SettingItem[] | null;
   private cachedAvailableAgents?: string[];
+  private statusBanner: { text: string; level: "warning" | "error" | "info" } | null = null;
   private cachedWidth?: number;
   private cachedLines?: string[];
 
@@ -573,6 +593,14 @@ export class SettingsOverlay implements Component {
     return this.allSearchItemsCache;
   }
 
+  private setStatusBanner(text: string, level: "warning" | "error" | "info"): void {
+    this.statusBanner = { text, level };
+  }
+
+  private clearStatusBanner(): void {
+    this.statusBanner = null;
+  }
+
   private createSettingsList(items: SettingItem[], isSearchMode: boolean): SettingsList {
     const rows = this.tui.terminal.rows || 30;
     const maxVisible = Math.max(5, Math.min(20, rows - 13));
@@ -586,7 +614,9 @@ export class SettingsOverlay implements Component {
         const item = this.currentItems.find((i) => i.id === id);
 
         if (SETTINGS_KEYS[id]?.global_only && this.editScope === "project") {
-          this.notify(`${id} is global-only — press Tab to switch to Global scope`, "error");
+          const msg = `${id} is global-only — press Tab to switch to Global scope`;
+          log.debug("settings_global_only_blocked", { key: id, scope: this.editScope, action: "change" });
+          this.setStatusBanner(msg, "warning");
           if (item) refreshItem(item, this.cwd, this.editScope, this.theme, isSearchMode, this.getCategoryLabelFor(id));
           this.invalidate();
           this.tui.requestRender();
@@ -595,7 +625,9 @@ export class SettingsOverlay implements Component {
 
         const parsedResult = parseSettingInput(id, newValue);
         if (!parsedResult.ok) {
-          this.notify(`Invalid value for ${id}: ${parsedResult.error}`, "error");
+          const msg = `Invalid value for ${id}: ${parsedResult.error}`;
+          this.setStatusBanner(msg, "error");
+          this.notify(msg, "error");
           if (item) refreshItem(item, this.cwd, this.editScope, this.theme, isSearchMode, this.getCategoryLabelFor(id));
           this.invalidate();
           this.tui.requestRender();
@@ -608,12 +640,14 @@ export class SettingsOverlay implements Component {
           const msg = result.reason === "corrupt"
             ? `Failed to save: settings file is corrupt (${result.file})`
             : `Failed to write settings: ${result.error || "unknown error"}`;
+          this.setStatusBanner(msg, "error");
           this.notify(msg, "error");
           if (item) refreshItem(item, this.cwd, this.editScope, this.theme, isSearchMode, this.getCategoryLabelFor(id));
           this.invalidate();
           this.tui.requestRender();
           return;
         }
+        this.clearStatusBanner();
         // Array-valued settings (e.g. dangerous_command_allowlist) log only
         // their entry COUNT — entries may contain inline credentials, and the
         // settings log must not copy them out of the settings file.
@@ -705,6 +739,7 @@ export class SettingsOverlay implements Component {
     if (matchesKey(data, Key.tab)) {
       this.editScope = this.editScope === "project" ? "global" : "project";
       this.allSearchItemsCache = null;
+      this.clearStatusBanner();
       log.debug("settings_scope_toggled", { scope: this.editScope, query: this.searchQuery });
       this.rebuild();
       this.tui.requestRender();
@@ -716,6 +751,7 @@ export class SettingsOverlay implements Component {
       if (matchesKey(data, Key.escape)) {
         if (this.hasRawSearch) {
           this.searchInput.setValue("");
+          this.clearStatusBanner();
           this.rebuild();
           this.tui.requestRender();
         } else {
@@ -726,6 +762,7 @@ export class SettingsOverlay implements Component {
       if (matchesKey(data, Key.up) || data === "k") {
         this.categoryIndex = (this.categoryIndex - 1 + this.categories.length) % this.categories.length;
         if (this.hasRawSearch) this.searchInput.setValue("");
+        this.clearStatusBanner();
         this.rebuild();
         this.tui.requestRender();
         return;
@@ -733,12 +770,14 @@ export class SettingsOverlay implements Component {
       if (matchesKey(data, Key.down) || data === "j") {
         this.categoryIndex = (this.categoryIndex + 1) % this.categories.length;
         if (this.hasRawSearch) this.searchInput.setValue("");
+        this.clearStatusBanner();
         this.rebuild();
         this.tui.requestRender();
         return;
       }
       if (matchesKey(data, Key.right) || matchesKey(data, Key.enter) || data === "l" || data === "/") {
         this.focusPane = "items";
+        this.clearStatusBanner();
         this.invalidate();
         this.tui.requestRender();
         return;
@@ -753,6 +792,7 @@ export class SettingsOverlay implements Component {
     if (matchesKey(data, Key.escape)) {
       if (this.hasRawSearch) {
         this.searchInput.setValue("");
+        this.clearStatusBanner();
         this.rebuild();
         this.tui.requestRender();
       } else {
@@ -764,6 +804,7 @@ export class SettingsOverlay implements Component {
     // Left arrow (when search is empty) switches focus to the left category sidebar.
     if (!this.hasRawSearch && matchesKey(data, Key.left)) {
       this.focusPane = "sidebar";
+      this.clearStatusBanner();
       this.invalidate();
       this.tui.requestRender();
       return;
@@ -774,11 +815,21 @@ export class SettingsOverlay implements Component {
       if (!this.hasRawSearch) {
         const selectedItem = state.displayItems[state.selectedIndex];
         if (selectedItem) {
+          if (SETTINGS_KEYS[selectedItem.id]?.global_only && this.editScope === "project") {
+            const msg = `${selectedItem.id} is global-only — press Tab to switch to Global scope`;
+            log.debug("settings_global_only_blocked", { key: selectedItem.id, scope: this.editScope, action: "delete" });
+            this.setStatusBanner(msg, "warning");
+            this.invalidate();
+            this.tui.requestRender();
+            return;
+          }
+          this.clearStatusBanner();
           const delResult = deleteFromScope(selectedItem.id, this.editScope, this.cwd);
           if (!delResult.ok) {
             const msg = delResult.reason === "corrupt"
               ? `Failed to delete: settings file is corrupt (${delResult.file})`
               : `Failed to delete: ${delResult.error || "unknown error"}`;
+            this.setStatusBanner(msg, "error");
             this.notify(msg, "error");
           } else if (delResult.changed === false) {
             this.notify(`${selectedItem.id} is not set in ${this.editScope} scope`, "info");
@@ -802,15 +853,32 @@ export class SettingsOverlay implements Component {
       }
     }
 
-    // List navigation & activation go directly to SettingsList.
+    // List activation: block global_only edits directly on Project scope with an inline warning.
+    if (matchesKey(data, Key.enter) || (data === " " && !this.hasRawSearch)) {
+      const selectedItem = state.displayItems[state.selectedIndex];
+      if (selectedItem && SETTINGS_KEYS[selectedItem.id]?.global_only && this.editScope === "project") {
+        const msg = `${selectedItem.id} is global-only — press Tab to switch to Global scope`;
+        log.debug("settings_global_only_blocked", { key: selectedItem.id, scope: this.editScope, action: "edit" });
+        this.setStatusBanner(msg, "warning");
+        this.invalidate();
+        this.tui.requestRender();
+        return;
+      }
+      this.clearStatusBanner();
+      this.settingsList.handleInput?.(data);
+      this.invalidate();
+      this.tui.requestRender();
+      return;
+    }
+
+    // List navigation goes directly to SettingsList and clears transient warnings.
     if (
       matchesKey(data, Key.up) ||
       matchesKey(data, Key.down) ||
       matchesKey(data, Key.pageUp) ||
-      matchesKey(data, Key.pageDown) ||
-      matchesKey(data, Key.enter) ||
-      (data === " " && !this.hasRawSearch)
+      matchesKey(data, Key.pageDown)
     ) {
+      this.clearStatusBanner();
       this.settingsList.handleInput?.(data);
       this.invalidate();
       this.tui.requestRender();
@@ -821,6 +889,7 @@ export class SettingsOverlay implements Component {
     const previousQuery = this.searchInput.getValue();
     this.searchInput.handleInput(data);
     if (this.searchInput.getValue() !== previousQuery) {
+      this.clearStatusBanner();
       this.rebuild();
     } else {
       this.invalidate();
@@ -949,7 +1018,7 @@ export class SettingsOverlay implements Component {
     lines.push(truncateToWidth(`  ${headerLeft}  ${scopeBadge}  ${modeSummary}`, width));
 
     const divider = theme.fg("border", "│");
-    const bodyHeight = Math.max(6, rows - 6);
+    const bodyHeight = Math.max(6, rows - (this.statusBanner ? 7 : 6));
 
     if (state.hasActiveSubmenu || innerWidth < 50) {
       // Submenu open (or ultra-narrow terminal): full inner width for comfortable editing
@@ -1011,6 +1080,21 @@ export class SettingsOverlay implements Component {
         theme.fg("border", "─".repeat(rightWidth)) +
         theme.fg("border", "╯"),
       );
+    }
+
+    // ── Inline transient warning/status banner ──
+    if (this.statusBanner) {
+      const icon = this.statusBanner.level === "error"
+        ? "✖"
+        : this.statusBanner.level === "warning"
+          ? "⚠"
+          : "ℹ";
+      const color = this.statusBanner.level === "error"
+        ? "error"
+        : this.statusBanner.level === "warning"
+          ? "warning"
+          : "accent";
+      lines.push(truncateToWidth(`  ${theme.fg(color, `${icon} ${this.statusBanner.text}`)}`, width));
     }
 
     // ── Footer legend + context-aware hints ──

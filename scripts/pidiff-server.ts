@@ -10,6 +10,7 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -322,14 +323,22 @@ function isLoopbackAddr(addr: string | undefined): boolean {
   return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
-function isPrivateOrContainerAddr(addr: string | undefined): boolean {
-  if (!addr) return false;
-  if (isLoopbackAddr(addr)) return true;
-  const v4 = addr.startsWith("::ffff:") ? addr.slice(7) : addr;
-  return /^(?:10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.)/.test(v4) || /^(?:fe80:|fc|fd)/i.test(addr);
+function constantTimeTokenMatch(provided: string | undefined, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const a = Buffer.from(provided, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
-const listenAddress = (process.env.PI_PIDIFF_LISTEN_HOST || "").trim() || "127.0.0.1";
+const rawListenHost = (process.env.PI_PIDIFF_LISTEN_HOST || "").trim();
+const pidiffAuthToken = (process.env.PI_PIDIFF_AUTH_TOKEN || "").trim();
+// Refuse non-loopback binding unless a host-issued bearer token is configured.
+const listenAddress = rawListenHost && rawListenHost !== "127.0.0.1" && pidiffAuthToken
+  ? rawListenHost
+  : "127.0.0.1";
+if (rawListenHost && rawListenHost !== "127.0.0.1" && !pidiffAuthToken) {
+  log("PI_PIDIFF_LISTEN_HOST set without PI_PIDIFF_AUTH_TOKEN — falling back to loopback 127.0.0.1");
+}
 
 const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, start } = createDaemonServer({
   port,
@@ -337,18 +346,27 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
   uiName: "pidiff-ui",
   log,
   listenAddress,
-  // When bound beyond loopback for opt-in Podman sandbox peers, keep browser UI and /api/sessions
-  // strictly loopback-only; allow private/container gateway clients ONLY on /api/health and /ws/pi
-  // (where register additionally enforces exact PROJECT_CWD match).
+  // Browser UI, /ws/browser, and /api/sessions stay strictly loopback-only.
+  // Non-loopback clients on /api/health and /ws/pi MUST present the host-issued x-pidiff-token.
   allowRequest: listenAddress === "127.0.0.1"
     ? undefined
-    : (pathname, remoteAddress) => {
+    : (pathname, remoteAddress, req) => {
         if (isLoopbackAddr(remoteAddress)) return true;
-        return (pathname === "/api/health" || pathname === "/ws/pi") && isPrivateOrContainerAddr(remoteAddress);
+        if (pathname !== "/api/health" && pathname !== "/ws/pi") return false;
+        const headerVal = req.headers["x-pidiff-token"];
+        const token = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+        return constantTimeTokenMatch(token, pidiffAuthToken);
       },
 
   onPiMessage: (ws, parsed, getPiClient, setPiClient) => {
     if (parsed.type === "register") {
+      if (listenAddress !== "127.0.0.1") {
+        const remoteAddr = ws?._socket?.remoteAddress as string | undefined;
+        if (!isLoopbackAddr(remoteAddr) && !constantTimeTokenMatch(typeof parsed.authToken === "string" ? parsed.authToken : undefined, pidiffAuthToken)) {
+          log(`register rejected: invalid or missing authToken from ${remoteAddr || "unknown"}`);
+          return;
+        }
+      }
       const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
       const cwd = parsed.cwd || "";
       if (!cwd) { log(`register rejected: empty cwd from ${sessionId}`); return; }

@@ -444,53 +444,119 @@ export function prepareSandboxWorkspace(opts) {
 
   if (matchesSource) {
     log.info("sandbox_workspace_reused", { sourceCwd: resolvedSource, workspaceDir, headSha: sourceHead });
-    return { workspaceDir, cloned: false, revived: false };
+    return { workspaceDir, cloned: false, revived: false, backupPath: null };
   }
 
   fs.mkdirSync(sandboxDir, { recursive: true, mode: 0o700 });
-  fs.rmSync(workspaceDir, { recursive: true, force: true });
-  // --no-hardlinks copies Git object storage so container writes cannot modify shared host object inodes.
-  execFn("git", ["clone", "--no-hardlinks", resolvedSource, workspaceDir], {
-    stdio: "ignore",
-    timeout: 120_000,
-  });
 
-  const httpsOrigin = resolveHostOriginHttpsUrl(resolvedSource, execFn);
-  if (httpsOrigin) {
-    try {
-      execFn("git", ["remote", "set-url", "origin", httpsOrigin], {
-        cwd: workspaceDir,
-        stdio: "ignore",
-        timeout: 5000,
-      });
-    } catch (err) {
-      log.warn("sandbox_origin_rewrite_failed", { error: err?.message ?? String(err) });
+  // Clone into a separate staging directory first so a failed clone NEVER erases an existing workspace.
+  const stagingDir = path.join(sandboxDir, `workspace.staging.${process.pid}.${Date.now()}`);
+  fs.rmSync(stagingDir, { recursive: true, force: true });
+  try {
+    // --no-hardlinks copies Git object storage so container writes cannot modify shared host object inodes.
+    execFn("git", ["clone", "--no-hardlinks", resolvedSource, stagingDir], {
+      stdio: "ignore",
+      timeout: 120_000,
+    });
+
+    const httpsOrigin = resolveHostOriginHttpsUrl(resolvedSource, execFn);
+    if (httpsOrigin) {
+      try {
+        execFn("git", ["remote", "set-url", "origin", httpsOrigin], {
+          cwd: stagingDir,
+          stdio: "ignore",
+          timeout: 5000,
+        });
+      } catch (err) {
+        log.warn("sandbox_origin_rewrite_failed", { error: err?.message ?? String(err) });
+      }
+    } else {
+      // Strip local filesystem origin path if host origin could not be safely normalized to HTTPS
+      try {
+        execFn("git", ["remote", "remove", "origin"], {
+          cwd: stagingDir,
+          stdio: "ignore",
+          timeout: 5000,
+        });
+      } catch { /* ignore */ }
     }
-  } else {
-    // Strip local filesystem origin path if host origin could not be safely normalized to HTTPS
-    try {
-      execFn("git", ["remote", "remove", "origin"], {
-        cwd: workspaceDir,
-        stdio: "ignore",
-        timeout: 5000,
-      });
-    } catch { /* ignore */ }
-  }
 
-  writeJsonAtomic(markerPath, {
-    sourceCwd: resolvedSource,
-    headSha: sourceHead,
-    project,
-    cname,
-    clonedAt: new Date().toISOString(),
-  });
-  log.info("sandbox_workspace_cloned", {
-    sourceCwd: resolvedSource,
-    workspaceDir,
-    headSha: sourceHead,
-    httpsOrigin: Boolean(httpsOrigin),
-  });
-  return { workspaceDir, cloned: true, revived: false };
+    // Check if the previous workspace has uncommitted changes or unpushed local commits before replacing it.
+    let backupPath = null;
+    let cleanOldDir = null;
+    if (fs.existsSync(workspaceDir)) {
+      let hasUnsavedWork = false;
+      if (hasExistingClone) {
+        try {
+          const dirty = String(execFn("git", ["status", "--porcelain"], {
+            cwd: workspaceDir,
+            encoding: "utf8",
+            timeout: 5000,
+            stdio: ["ignore", "pipe", "ignore"],
+          })).trim();
+          const unpushed = String(execFn("git", ["log", "--branches", "--not", "--remotes", "--oneline"], {
+            cwd: workspaceDir,
+            encoding: "utf8",
+            timeout: 5000,
+            stdio: ["ignore", "pipe", "ignore"],
+          })).trim();
+          hasUnsavedWork = dirty.length > 0 || unpushed.length > 0;
+        } catch {
+          // If git inspection fails on an existing dir, preserve it as a backup rather than deleting blindly.
+          hasUnsavedWork = true;
+        }
+      } else {
+        hasUnsavedWork = fs.readdirSync(workspaceDir).length > 0;
+      }
+
+      if (hasUnsavedWork) {
+        backupPath = path.join(sandboxDir, `workspace.${Date.now()}.bak`);
+        fs.renameSync(workspaceDir, backupPath);
+        log.warn("sandbox_workspace_backed_up", {
+          previousWorkspace: workspaceDir,
+          backupPath,
+          reason: "uncommitted_or_unpushed_work",
+        });
+      } else {
+        cleanOldDir = path.join(sandboxDir, `workspace.old.${process.pid}.${Date.now()}`);
+        fs.renameSync(workspaceDir, cleanOldDir);
+      }
+    }
+
+    try {
+      fs.renameSync(stagingDir, workspaceDir);
+    } catch (renameErr) {
+      // Roll back previous workspace if swap fails
+      const restoreFrom = backupPath || cleanOldDir;
+      if (restoreFrom && fs.existsSync(restoreFrom) && !fs.existsSync(workspaceDir)) {
+        try { fs.renameSync(restoreFrom, workspaceDir); } catch { /* ignore */ }
+      }
+      throw renameErr;
+    }
+
+    if (cleanOldDir) {
+      try { fs.rmSync(cleanOldDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+
+    writeJsonAtomic(markerPath, {
+      sourceCwd: resolvedSource,
+      headSha: sourceHead,
+      project,
+      cname,
+      clonedAt: new Date().toISOString(),
+    });
+    log.info("sandbox_workspace_cloned", {
+      sourceCwd: resolvedSource,
+      workspaceDir,
+      headSha: sourceHead,
+      httpsOrigin: Boolean(httpsOrigin),
+      ...(backupPath ? { backupPath } : {}),
+    });
+    return { workspaceDir, cloned: true, revived: false, backupPath };
+  } catch (err) {
+    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 export function buildPodmanRunArgs(opts) {

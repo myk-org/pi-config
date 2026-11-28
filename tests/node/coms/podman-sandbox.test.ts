@@ -40,7 +40,7 @@ import {
 } from "../../../extensions/coms/coms-peers.ts";
 import { buildPeerInfoRow } from "../../../extensions/coms/coms-drilldown.ts";
 import { buildComsPeersPayload } from "../../../extensions/coms/coms-shared.ts";
-import { executePeerKillEntry } from "../../../extensions/coms/coms-wrapper.ts";
+import { attachSupervisionMeta, executePeerKillEntry } from "../../../extensions/coms/coms-wrapper.ts";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
 const tempDirs: string[] = [];
@@ -480,6 +480,49 @@ describe("Sandbox workspace isolation", () => {
     assert.equal(revived.cloned, false);
     assert.equal(fs.readFileSync(path.join(revived.workspaceDir, "uncommitted.txt"), "utf8"), "keep-me\n");
   });
+
+  it("preserves existing workspace intact when replacement git clone fails", () => {
+    const repoA = makeTempDir("pi-repo-keep-a-");
+    const repoB = makeTempDir("pi-repo-keep-b-");
+    const sandboxDir = makeTempDir("pi-sb-keep-");
+    initTempGitRepo(repoA, "existing.txt", "keep\n");
+    initTempGitRepo(repoB, "new.txt", "new\n");
+
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repoA, project: "proj", cname: "w1" });
+    assert.throws(() => {
+      prepareSandboxWorkspace({
+        sandboxDir,
+        sourceCwd: repoB,
+        project: "proj",
+        cname: "w1",
+        execFileSync: (cmd: string, args: string[], opts: any) => {
+          if (args[0] === "clone") throw new Error("simulated clone failure");
+          return execFileSync(cmd, args, opts);
+        },
+      });
+    }, /simulated clone failure/);
+    assert.equal(fs.readFileSync(path.join(first.workspaceDir, "existing.txt"), "utf8"), "keep\n");
+  });
+
+  it("backs up existing workspace to .bak when source HEAD moves over uncommitted edits", () => {
+    const repo = makeTempDir("pi-repo-dirty-");
+    const sandboxDir = makeTempDir("pi-sb-dirty-");
+    initTempGitRepo(repo, "file.txt", "v1\n");
+
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1" });
+    fs.writeFileSync(path.join(first.workspaceDir, "peer-wip.txt"), "unsaved-work\n");
+
+    // Advance source repo HEAD
+    fs.writeFileSync(path.join(repo, "file.txt"), "v2\n");
+    execFileSync("git", ["add", "file.txt"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "v2"], { cwd: repo, stdio: "ignore" });
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1" });
+    assert.equal(second.cloned, true);
+    assert.ok(second.backupPath && second.backupPath.endsWith(".bak"));
+    assert.equal(fs.readFileSync(path.join(second.backupPath!, "peer-wip.txt"), "utf8"), "unsaved-work\n");
+    assert.equal(fs.readFileSync(path.join(second.workspaceDir, "file.txt"), "utf8"), "v2\n");
+  });
 });
 
 describe("File-locked background pre-warm", () => {
@@ -768,6 +811,7 @@ describe("Container-aware peer kill", () => {
     const ok = executePeerKillEntry(
       { name: "box", project: "proj", signalPid: 4000, container: verifiedBoxContainer, reason: "supervisor" },
       {
+        isSupervisorProcess: () => true,
         removeContainer: (c) => removed.push(c),
         killPid: (pid, sig) => killed.push([pid, sig]),
       },
@@ -775,6 +819,83 @@ describe("Container-aware peer kill", () => {
     assert.equal(ok, true);
     assert.deepEqual(killed, [[4000, "SIGTERM"]]);
     assert.deepEqual(removed, []);
+  });
+
+  it("falls back to container removal without signalling a reused non-supervisor PID", () => {
+    const removed: string[] = [];
+    const killed: Array<[number, string]> = [];
+    const ok = executePeerKillEntry(
+      { name: "box", project: "proj", signalPid: 4000, container: verifiedBoxContainer, reason: "supervisor" },
+      {
+        isSupervisorProcess: () => false,
+        removeContainer: (c) => removed.push(c),
+        killPid: (pid, sig) => killed.push([pid, sig]),
+      },
+    );
+    assert.equal(ok, true);
+    assert.deepEqual(killed, []);
+    assert.deepEqual(removed, [verifiedBoxContainer]);
+  });
+
+  it("never attaches stale Podman container or hostPid onto a live native peer row", () => {
+    const nativeRow: RegistryRow = {
+      project: "proj",
+      name: "box",
+      pid: process.pid,
+      cwd: "/tmp/work",
+      purpose: "native",
+      endpoint: "/tmp/a.sock",
+      busy: false,
+      queueDepth: 0,
+      contextUsedPct: 0,
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      container: null,
+      hostPid: null,
+    };
+    const stalePodmanRecord = {
+      cname: "box",
+      project: "proj",
+      createdBy: "agent",
+      pid: 999999,
+      childPid: 888888,
+      container: verifiedBoxContainer,
+      sandbox: "podman",
+      startedAt: new Date().toISOString(),
+    };
+    attachSupervisionMeta([nativeRow], [stalePodmanRecord]);
+    assert.equal(nativeRow.container, null);
+    assert.equal(nativeRow.hostPid, null);
+  });
+
+  it("attaches hostPid when peer itself reports matching container identity", () => {
+    const ctrRow: RegistryRow = {
+      project: "proj",
+      name: "box",
+      pid: 0,
+      cwd: "/tmp/work",
+      purpose: "sandbox",
+      endpoint: "/tmp/a.sock",
+      busy: false,
+      queueDepth: 0,
+      contextUsedPct: 0,
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      container: verifiedBoxContainer,
+      hostPid: null,
+    };
+    const podmanRecord = {
+      cname: "box",
+      project: "proj",
+      createdBy: "agent",
+      pid: 4000,
+      childPid: 4001,
+      container: verifiedBoxContainer,
+      sandbox: "podman",
+      startedAt: new Date().toISOString(),
+    };
+    attachSupervisionMeta([ctrRow], [podmanRecord]);
+    assert.equal(ctrRow.hostPid, 4001);
   });
 
   it("falls back to container removal when no live supervisor is available", () => {
@@ -892,5 +1013,122 @@ describe("Container-aware peer kill", () => {
       { name: "main", project: "proj" },
     );
     assert.equal(payload.peers[0].container, verifiedBoxContainer);
+  });
+});
+
+describe("Podman supervisor container ID lifecycle", () => {
+  it("removes exited container by immutable containerId on natural podman wait exit", async () => {
+    const tmpHome = makeTempDir("pi-sup-home-");
+    const repoDir = makeTempDir("pi-sup-repo-");
+    const binDir = makeTempDir("pi-sup-bin-");
+    const comsDir = path.join(tmpHome, ".pi", "coms");
+    const podmanLog = path.join(tmpHome, "podman-calls.log");
+    initTempGitRepo(repoDir);
+
+    const fakeCid = "deadbeef".repeat(8);
+    const fakePodman = path.join(binDir, "podman");
+    fs.writeFileSync(
+      fakePodman,
+      `#!/usr/bin/env bash
+echo "$@" >> "${podmanLog}"
+if [ "$1" = "run" ]; then
+  echo "${fakeCid}"
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  echo "$$"
+  exit 0
+fi
+if [ "$1" = "wait" ]; then
+  echo "0"
+  exit 0
+fi
+exit 0
+`,
+      { mode: 0o755 },
+    );
+
+    const supervisorScript = path.join(REPO_ROOT, "scripts", "coms-peer-supervisor.mjs");
+    execFileSync(
+      process.execPath,
+      [supervisorScript, "exit-peer", "--project", "demo", "--cwd", repoDir, "--sandbox", "podman", "--image", "localhost/pi-peer:111122223333"],
+      {
+        env: { ...process.env, HOME: tmpHome, PI_COMS_DIR: comsDir, PATH: `${binDir}:${process.env.PATH}` },
+        timeout: 15_000,
+      },
+    );
+
+    const calls = fs.readFileSync(podmanLog, "utf8");
+    assert.match(calls, new RegExp(`rm -f -- ${fakeCid}`));
+    const state = JSON.parse(fs.readFileSync(path.join(comsDir, "peers", "exit-peer@demo.json"), "utf8"));
+    assert.equal(state.exitCode, 0);
+    assert.equal(state.containerId, fakeCid);
+  });
+
+  it("targets only its own containerId when an older supervisor receives SIGTERM after replacement", async () => {
+    const tmpHome = makeTempDir("pi-sup-race-home-");
+    const repoDir = makeTempDir("pi-sup-race-repo-");
+    const binDir = makeTempDir("pi-sup-race-bin-");
+    const comsDir = path.join(tmpHome, ".pi", "coms");
+    const podmanLog = path.join(tmpHome, "podman-race.log");
+    initTempGitRepo(repoDir);
+
+    const oldCid = "1111111111111111111111111111111111111111111111111111111111111111";
+    const fakePodman = path.join(binDir, "podman");
+    fs.writeFileSync(
+      fakePodman,
+      `#!/usr/bin/env bash
+echo "$@" >> "${podmanLog}"
+if [ "$1" = "run" ]; then
+  echo "${oldCid}"
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  echo "${process.pid}"
+  exit 0
+fi
+if [ "$1" = "wait" ]; then
+  sleep 30
+  exit 0
+fi
+exit 0
+`,
+      { mode: 0o755 },
+    );
+
+    const { spawn } = await import("node:child_process");
+    const supervisorScript = path.join(REPO_ROOT, "scripts", "coms-peer-supervisor.mjs");
+    const child = spawn(
+      process.execPath,
+      [supervisorScript, "race-peer", "--project", "demo", "--cwd", repoDir, "--sandbox", "podman", "--image", "localhost/pi-peer:111122223333"],
+      {
+        env: { ...process.env, HOME: tmpHome, PI_COMS_DIR: comsDir, PATH: `${binDir}:${process.env.PATH}` },
+        stdio: "ignore",
+      },
+    );
+
+    const statePath = path.join(comsDir, "peers", "race-peer@demo.json");
+    for (let i = 0; i < 40; i++) {
+      if (fs.existsSync(statePath)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.equal(fs.existsSync(statePath), true, "expected initial supervisor state file");
+
+    // Simulate a replacement supervisor taking ownership of the state file
+    const replacementRecord = { cname: "race-peer", project: "demo", pid: 999999, containerId: "222222222222" };
+    fs.writeFileSync(statePath, JSON.stringify(replacementRecord, null, 2));
+
+    child.kill("SIGTERM");
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 10_000);
+      child.once("exit", () => { clearTimeout(t); resolve(); });
+    });
+
+    const calls = fs.readFileSync(podmanLog, "utf8");
+    // Older supervisor cleaned up ONLY its own oldCid, never invoked stop/rm on the reusable name after replacement
+    assert.match(calls, new RegExp(`rm -f -- ${oldCid}`));
+    const afterRecord = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(afterRecord.pid, 999999);
+    assert.equal(afterRecord.containerId, "222222222222");
   });
 });

@@ -14,7 +14,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getSetting } from "../orchestrator/project-settings.js";
 import { createLogger } from "../shared/logger.js";
-import { isFreshHeartbeat, type RegistryRow } from "./coms-peers.js";
+import { isFreshHeartbeat, type RegistryRow } from "./coms-registry-core.js";
 import type { PeerWorkloadCounts } from "./coms-workload.js";
 
 const log = createLogger("coms");

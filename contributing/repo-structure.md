@@ -112,6 +112,7 @@ pi-config/
 │   ├── coms/                        # Inter-agent communication extension (standalone)
 │   │   ├── index.ts                 # Entry point — registers coms
 │   │   ├── coms-wrapper.ts          # On-demand `/coms` controller — drives `ComsPeerRuntime` and `ComsRegistry` directly (lifecycle, reload, inventory, pidash)
+│   │   ├── coms-registry-core.ts    # Pure zero-TUI registry types and helpers (`RegistryRow`, `SupervisionRecord`, `isFreshHeartbeat`, `pickSupervisionRecord`) safe for standalone daemons
 │   │   ├── coms-registry.ts         # Unified peer registry, supervision inventory, socket probes (`probeStaleSocket`, `probeAlive`), and stale/orphan pruning
 │   │   ├── coms-p2p.ts              # Instantiable P2P peer runtime (`createComsPeerRuntime`, sockets, queue drain, tools incl. `coms_local_queue`, inbound queue overlay)
 │   │   ├── coms-shared.ts           # Shared utilities: flag parser, state persistence, active-tool sync, response formatting, inbound bundling

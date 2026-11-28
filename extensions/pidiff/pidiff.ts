@@ -56,18 +56,10 @@ export function resolvePidiffHost(env: Record<string, string | undefined> = proc
   return configured || "127.0.0.1";
 }
 
-/**
- * Resolve bind address for a locally spawned `pidiff-server` (#1512).
- * Preserves `127.0.0.1` loopback-only binding when Podman peer sandboxing is off,
- * and binds `0.0.0.0` (with loopback-only browser ACL in `pidiff-server.ts`) only when
- * `coms_peer_sandbox` is `"podman"` so containerized peers can reach `host.containers.internal`.
- */
-export function resolvePidiffListenHost(cwd: string): string {
-  try {
-    return getSetting(cwd, "coms_peer_sandbox") === "podman" ? "0.0.0.0" : "127.0.0.1";
-  } catch {
-    return "127.0.0.1";
-  }
+/** Resolve optional explicit PiDiff port override (used when connecting to an authenticated host daemon). */
+export function resolvePidiffPortOverride(env: Record<string, string | undefined> = process.env): number | null {
+  const raw = Number.parseInt((env.PI_PIDIFF_PORT || "").trim(), 10);
+  return Number.isInteger(raw) && raw > 0 && raw <= 65535 ? raw : null;
 }
 
 /**
@@ -133,41 +125,41 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
   function doSpawn(port: number, cwd: string): void {
     ensureUiBuilt(import.meta.url, "pidiff-ui", debugLog);
-    const listenHost = resolvePidiffListenHost(cwd);
+    // Keep ordinary host pidiff daemons strictly bound to loopback 127.0.0.1.
     spawnDaemon({
       serverScript: "pidiff-server.ts",
       logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidiff-server.log"),
-      env: {
-        PI_PIDIFF_PORT: String(port),
-        PI_PIDIFF_CWD: cwd,
-        ...(listenHost !== "127.0.0.1" ? { PI_PIDIFF_LISTEN_HOST: listenHost } : {}),
-      },
+      env: { PI_PIDIFF_PORT: String(port), PI_PIDIFF_CWD: cwd },
       log: debugLog,
     });
   }
 
   const pidiffHost = resolvePidiffHost(process.env);
-  const probePidiffHealth = (port: number) => checkHealth(port, pidiffHost);
+  const pidiffPortOverride = resolvePidiffPortOverride(process.env);
+  const pidiffAuthToken = (process.env.PI_PIDIFF_AUTH_TOKEN || "").trim();
+  const pidiffHeaders = pidiffAuthToken ? { "x-pidiff-token": pidiffAuthToken } : undefined;
+  const probePidiffHealth = (port: number) => checkHealth(port, pidiffHost, pidiffHeaders);
 
   const client = createDaemonClient(pi, {
     name: "pidiff",
     settingKey: "pidiff_enable",
     statusKey: "8-diff",
     host: pidiffHost,
+    ...(pidiffAuthToken ? { wsHeaders: { "x-pidiff-token": pidiffAuthToken } } : {}),
     log,
     shouldAutoSpawn: () => pidiffHost === "127.0.0.1",
 
     canConnect() {
-      return Boolean(lockDir);
+      return Boolean(lockDir || pidiffPortOverride);
     },
 
     findRunningPort() {
-      const preferred = activePort || readLockfile(lockDir, legacyLockDir)?.port || 0;
+      const preferred = activePort || pidiffPortOverride || readLockfile(lockDir, legacyLockDir)?.port || 0;
       return findRunningPidiffPort(lockDir, legacyLockDir, preferred, probePidiffHealth);
     },
 
     getStatusPort() {
-      return activePort || readLockfile(lockDir, legacyLockDir)?.port || null;
+      return activePort || pidiffPortOverride || readLockfile(lockDir, legacyLockDir)?.port || null;
     },
 
     async acquireSpawnLock(ctx) {
@@ -226,6 +218,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         sessionId: `${process.pid}:${ctx.cwd}`,
         cwd: ctx.cwd,
         branch: getGitBranch(ctx.cwd),
+        ...(pidiffAuthToken ? { authToken: pidiffAuthToken } : {}),
       }));
     },
 

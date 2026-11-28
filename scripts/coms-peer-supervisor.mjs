@@ -302,6 +302,7 @@ function startPodmanPeer() {
   let cid = "";
   try {
     cid = execFileSync("podman", runArgs, { encoding: "utf8", env: containerEnv, timeout: 60_000 }).trim();
+    if (!cid) throw new Error("podman run returned an empty container ID");
   } catch (err) {
     const msg = err?.stderr ? String(err.stderr).trim() : (err?.message ?? String(err));
     log.error("podman_run_failed", { containerName, imageTag, error: msg });
@@ -311,11 +312,14 @@ function startPodmanPeer() {
     );
     process.exit(1);
   }
+  // Retain the exact container ID returned by THIS supervisor's `podman run` so stop/wait/rm
+  // can NEVER affect a replacement container that later reuses `containerName`.
+  const containerId = cid;
 
   let hostPid = null;
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      const raw = execFileSync("podman", ["inspect", "-f", "{{.State.Pid}}", "--", containerName], {
+      const raw = execFileSync("podman", ["inspect", "-f", "{{.State.Pid}}", "--", containerId], {
         encoding: "utf8",
         timeout: 5000,
       }).trim();
@@ -332,6 +336,7 @@ function startPodmanPeer() {
     childPid: hostPid,
     cwd: workspacePath,
     container: containerName,
+    containerId,
     image: imageTag,
     sandbox: "podman",
   };
@@ -340,7 +345,7 @@ function startPodmanPeer() {
     cname,
     project,
     containerName,
-    cid: cid.slice(0, 12),
+    cid: containerId.slice(0, 12),
     hostPid,
     imageTag,
     workspacePath,
@@ -352,13 +357,26 @@ function startPodmanPeer() {
   let forced = false;
   let forceTimer = null;
   let exited = false;
+  let containerRemoved = false;
+
+  const removeOwnContainer = () => {
+    if (containerRemoved) return;
+    containerRemoved = true;
+    try {
+      execFileSync("podman", ["rm", "-f", "--", containerId], { stdio: "ignore", timeout: 10_000 });
+      log.debug("podman_container_removed", { containerName, cid: containerId.slice(0, 12) });
+    } catch { /* already removed */ }
+  };
 
   const finalize = (code, signal) => {
     if (exited) return;
     exited = true;
     clearInterval(pollTimer);
     if (forceTimer) clearTimeout(forceTimer);
-    log.info("podman_peer_exited", { containerName, code, signal, forced });
+    // Always remove THIS supervisor's exited container (by immutable containerId) so stopped
+    // containers never accumulate or block `pruneStalePeerImages`.
+    removeOwnContainer();
+    log.info("podman_peer_exited", { containerName, cid: containerId.slice(0, 12), code, signal, forced });
     const { owned, preservedSessionId } = preserveSessionAndCheckOwner();
     if (!owned) process.exit(0);
     writeStateRecord(baseFields, {
@@ -377,34 +395,34 @@ function startPodmanPeer() {
     stopping = true;
     stopSignal = signal;
     stoppedAt = new Date().toISOString();
+    const { owned } = preserveSessionAndCheckOwner();
+    if (!owned) {
+      log.info("podman_stop_skipped_not_owner", { containerName, cid: containerId.slice(0, 12), signal });
+      // Still clean up ONLY our own containerId (never touching the replacement's containerName).
+      removeOwnContainer();
+      process.exit(0);
+    }
     const stopSeconds = Math.max(1, Math.ceil(STOP_TIMEOUT_MS / 1000));
-    log.info("podman_peer_stopping_graceful", { containerName, signal, stopSeconds });
+    log.info("podman_peer_stopping_graceful", { containerName, cid: containerId.slice(0, 12), signal, stopSeconds });
 
-    // Orderly stop first (`podman stop -t N -- <container>` sends SIGTERM to init -> entrypoint
-    // closes Pi stdin & stops gracefully), then clean up container and finalize after exit.
-    const stopper = spawn("podman", ["stop", "-t", String(stopSeconds), "--", containerName], {
+    // Orderly stop targeting immutable containerId (never reusable containerName).
+    const stopper = spawn("podman", ["stop", "-t", String(stopSeconds), "--", containerId], {
       stdio: "ignore",
     });
     stopper.on("exit", () => {
-      try {
-        execFileSync("podman", ["rm", "-f", "--", containerName], { stdio: "ignore", timeout: 10_000 });
-      } catch { /* already removed */ }
+      removeOwnContainer();
       finalize(0, signal);
     });
     stopper.on("error", () => {
       forced = true;
-      try {
-        execFileSync("podman", ["rm", "-f", "--", containerName], { stdio: "ignore", timeout: 10_000 });
-      } catch { /* already removed */ }
+      removeOwnContainer();
       finalize(0, signal);
     });
 
     forceTimer = setTimeout(() => {
       forced = true;
-      log.warn("podman_peer_stop_escalated", { containerName, timeoutMs: STOP_TIMEOUT_MS });
-      try {
-        execFileSync("podman", ["rm", "-f", "--", containerName], { stdio: "ignore", timeout: 10_000 });
-      } catch { /* already gone */ }
+      log.warn("podman_peer_stop_escalated", { containerName, cid: containerId.slice(0, 12), timeoutMs: STOP_TIMEOUT_MS });
+      removeOwnContainer();
       finalize(0, signal);
     }, STOP_TIMEOUT_MS + 3000);
     forceTimer.unref?.();
@@ -414,7 +432,7 @@ function startPodmanPeer() {
   process.on("SIGINT", () => stopContainer("SIGINT"));
   process.on("SIGHUP", () => stopContainer("SIGHUP"));
 
-  const waiter = spawn("podman", ["wait", "--", containerName], { stdio: ["ignore", "pipe", "ignore"] });
+  const waiter = spawn("podman", ["wait", "--", containerId], { stdio: ["ignore", "pipe", "ignore"] });
   let waitOut = "";
   waiter.stdout.on("data", (d) => { waitOut += String(d); });
   waiter.on("exit", () => {
