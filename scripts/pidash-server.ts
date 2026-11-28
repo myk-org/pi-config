@@ -34,11 +34,9 @@ import {
   type PiClient,
 } from "./pidash-session-state.ts";
 import { setupDiscordBot } from "./pidash-discord.ts";
+import { createPidashApiRouter } from "./pidash-api.ts";
 import { applyActivityEvent, initialActivityState, shouldAcceptActivityEvent } from "../extensions/pidash/activity-state.ts";
 import { createLogger } from "../extensions/shared/logger.ts";
-import { ComsRegistry } from "../extensions/coms/coms-registry.ts";
-import { pickSupervisionRecord } from "../extensions/coms/coms-registry-core.ts";
-import { readBuildStatus } from "./podman-peer-image.mjs";
 
 const activityLog = createLogger("pidash");
 const serverLog = createLogger("pidash-server");
@@ -73,6 +71,9 @@ let asyncRegistry: ReturnType<typeof createAsyncAgentRegistry>;
 const browserRemoteAddrMap = new WeakMap<any, string>();
 // Per-session learned git repository root (used to scope minimal worktrees-changed notices)
 const sessionRepoRootMap = new Map<string, string>();
+// Per-session live running sync subagents (bounded, populated from `async-status` frames)
+const MAX_SYNC_AGENTS_PER_SESSION = 50;
+const sessionSyncAgentsMap = new Map<string, import("./pidash-session-state.ts").ActiveAsyncAgentInfo[]>();
 
 function getActiveSessions(): SessionInfo[] {
   return Array.from(piClients.values()).map(c => c.session).filter(s => s.active);
@@ -161,6 +162,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     piClient.session.streaming = false;
     piClient.session.working = false;
     sessionRepoRootMap.delete(piClient.session.sessionId);
+    sessionSyncAgentsMap.delete(piClient.session.sessionId);
     resetSessionViewState(piClient); // Clear viewState to prevent cross-session leakage
     clearPendingUiRequests(piClient);
     broadcastToBrowsers({ type: "session_updated", session: piClient.session });
@@ -170,6 +172,7 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
 
   if (parsed.type === "session_shutdown" && piClient) {
     const reason = parsed.reason || "unknown";
+    sessionSyncAgentsMap.delete(piClient.session.sessionId);
     dismissAllViewAsks(piClient.viewState);
     clearPendingUiRequests(piClient);
     log(`session shutdown: ${piClient.session.sessionId}, reason: ${reason}`);
@@ -240,6 +243,32 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
       });
     }, { type: "worktrees-changed", sourceSessionId });
     return;
+  }
+
+  // #1508: capture live running sync subagent jobs pushed via `async-status` frames
+  if (parsed.type === "async-status" && piClient && Array.isArray(parsed.jobs)) {
+    const sid = piClient.session.sessionId;
+    const liveSync: import("./pidash-session-state.ts").ActiveAsyncAgentInfo[] = [];
+    for (const job of parsed.jobs) {
+      if (liveSync.length >= MAX_SYNC_AGENTS_PER_SESSION) break;
+      if (!job || job.mode !== "sync" || job.status !== "running" || typeof job.id !== "string") continue;
+      const agentName = typeof job.agent === "string" ? job.agent : "agent";
+      liveSync.push({
+        id: job.id,
+        name: typeof job.name === "string" && job.name ? job.name : agentName,
+        agent: agentName,
+        mode: "sync",
+        task: typeof job.task === "string" ? job.task : "",
+        cwd: typeof job.cwd === "string" ? job.cwd : piClient.session.cwd,
+        sessionId: sid,
+        taskId: typeof job.taskId === "string" && job.taskId ? job.taskId : null,
+        startedAt: typeof job.startedAt === "number" && Number.isFinite(job.startedAt) ? job.startedAt : Date.now(),
+        currentTool: typeof job.currentTool === "string" && job.currentTool ? job.currentTool : null,
+        text: "",
+      });
+    }
+    if (liveSync.length > 0) sessionSyncAgentsMap.set(sid, liveSync);
+    else sessionSyncAgentsMap.delete(sid);
   }
 
   // Forward pi event to browsers watching this session + buffer
@@ -326,7 +355,16 @@ function handleBrowserMessage(ws: any, parsed: any): void {
   });
 }
 
-const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, start } = createDaemonServer({
+const pidashApiRouter = createPidashApiRouter({
+  getPort: () => port,
+  getPiClients: () => piClients,
+  getBrowserCount: () => browserClients.size,
+  getAsyncAgents: () => asyncRegistry ? asyncRegistry.agents.values() : [],
+  getSyncAgents: () => Array.from(sessionSyncAgentsMap.values()).flat(),
+  getStartupError: () => getStartupError(),
+});
+
+const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, getStartupError, start } = createDaemonServer({
   port,
   uiDir: resolveUiDir(process.argv[1], import.meta.url, "..", "extensions", "pidash", "pidash-ui", "dist"),
   uiName: "pidash-ui",
@@ -335,60 +373,12 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
   // Pidash binds to 0.0.0.0 — accept localhost + private/LAN IPs (RFC 1918 + link-local)
   originPattern: /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|\[::1\])(:\d+)?$/,
 
-  extraApiRoutes: (url, req, res) => {
-    if (url.pathname === "/api/peers" || url.pathname === "/api/podman-build-status") {
-      if (!isLoopbackAddress(req.socket?.remoteAddress)) {
-        log(`rejected non-loopback ${url.pathname} request from ${req.socket?.remoteAddress || "unknown"}`);
-        res.writeHead(403, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "localhost access required" }));
-        return true;
-      }
-    }
-    if (url.pathname === "/api/peers") {
-      try {
-        const reg = ComsRegistry.forCwd();
-        const records = reg.readSupervisionRecords();
-        const rows = reg.readLiveRows().map((row) => {
-          const rec = pickSupervisionRecord(records, row);
-          const container = row.container ?? (typeof rec?.container === "string" && rec.container.trim() ? rec.container.trim() : null);
-          const hostPid = (container && rec?.container === container && Number.isInteger(rec?.childPid) && rec.childPid > 0)
-            ? rec.childPid
-            : (row.hostPid ?? null);
-          return {
-            name: row.name,
-            project: row.project,
-            pid: hostPid ?? row.pid,
-            ...(hostPid ? { hostPid } : {}),
-            ...(container ? { container } : {}),
-            cwd: row.cwd,
-            purpose: row.purpose,
-            busy: row.busy,
-            queueDepth: row.queueDepth,
-            contextUsedPct: row.contextUsedPct,
-            startedAt: row.startedAt,
-            heartbeatAt: row.heartbeatAt,
-          };
-        });
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(rows));
-      } catch (err: any) {
-        serverLog.warn("api_peers_failed", { error: err?.message ?? String(err) });
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "failed to read coms peers" }));
-      }
-      return true;
-    }
-    if (url.pathname === "/api/podman-build-status") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(readBuildStatus()));
-      return true;
-    }
-    return false;
-  },
+  extraApiRoutes: pidashApiRouter,
 
   onPiMessage: handlePiMessage,
 
   onPiClose: (piClient, ws) => {
+    if (piClient.ws === ws) sessionSyncAgentsMap.delete(piClient.session.sessionId);
     disconnectPidashSession(piClient, ws, "close", event => {
       log(`session disconnected: ${piClient.session.sessionId} (kept as inactive)`);
       broadcastToBrowsers(event);
@@ -396,6 +386,7 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
   },
 
   onPiError: (piClient, ws) => {
+    if (piClient.ws === ws) sessionSyncAgentsMap.delete(piClient.session.sessionId);
     disconnectPidashSession(piClient, ws, "error", event => {
       log(`session errored: ${piClient.session.sessionId} (kept as inactive)`);
       broadcastToBrowsers(event);
@@ -491,6 +482,7 @@ const cleanupInterval = setInterval(() => {
     if (!client.session.active && now - client.session.lastActivity > 5 * 60 * 1000) {
       piClients.delete(sessionId);
       sessionRepoRootMap.delete(sessionId);
+      sessionSyncAgentsMap.delete(sessionId);
       log(`cleaned up stale session: ${sessionId}`);
       broadcastToBrowsers({ type: "session_removed", sessionId });
     }

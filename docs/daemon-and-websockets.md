@@ -53,6 +53,36 @@ Each job keeps status, prompts, and output under a unique directory in the proje
 
 Token streams and tool activity originate inside the `pi` session. Extensions forward those events over the daemon WebSocket so the React UI can update live. The daemon also exposes session lists and other small HTTP APIs for the UI — the hot path for streaming remains WebSockets, not REST polling.
 
+### Loopback-only read-only `/api/*` JSON surface
+
+In addition to `GET /api/health` and `GET /api/sessions`, `pidash` exposes 15 read-only HTTP JSON endpoints (`scripts/pidash-api.ts`) so external scripts, status bars (Waybar, `statuspage.py`), and monitoring tools can query live `pi-config` runtime state without scraping internal `.pi/` files:
+
+| Endpoint | Query parameters | Summary |
+|----------|------------------|---------|
+| `GET /api/peers` | `project=<slug\|*>`, `format=array` | Live COMS peer counts (`total`, `busy`, `idle`) and per-peer metadata (`name`, `project`, `busy`, `contextUsedPct`, `queueDepth`, `workload`, `cwd`, `model`, `purpose`, `pid`, `hostPid`, `container`, `alive`, `startedAt`, `heartbeatAt`). Pass `format=array` for the legacy bare-array shape. |
+| `GET /api/worktrees` | `cwd=<repo>` | Git worktree count, `ghostDirCount`, and per-worktree branch/head/dirty/changedFiles/main/active COMS peers |
+| `GET /api/tasks` | `cwd=<repo>`, `session=<id>`, `assignee=<user\|llm\|all>` | Open/pending/in-progress/completed/`userPending` (`[you]`) task counts and summary rows |
+| `GET /api/agents` | `session=<id>` | Live running async/sync subagents tracked on `/ws/async` (`id`, `name`, `agent`, `mode`, `status`, `elapsedMs`, `currentTool`, `cwd`, `taskId`) |
+| `GET /api/crons` | `cwd=<repo>` | Active and paused durable scheduled crons (`id`, `description`, `intervalSeconds`, `persist`, `paused`, `quietOnNoop`, `lastOutcome`, `lastRunAt`) |
+| `GET /api/lsp` | `cwd=<repo>` | `enabled`, installed/missing language servers on `PATH`, and active broker sockets per worktree (strictly read-only; zero server spawning) |
+| `GET /api/settings` | `cwd=<repo>`, `category=<cat>`, `only_overrides=true` | Per-scope `effective`/`project`/`global`/`env`/`default`/`source`/`global_only` breakdown with secret keys masked and inline credentials redacted |
+| `GET /api/memory` | `cwd=<repo>` | Topic count, token budget `%`, last dream watermark timestamp, auto-dream config, and pending promotions count |
+| `GET /api/review` | `cwd=<repo>` | Review loop state (`enabled`, `status` `clean`/`findings`/`needed`, `lastReviewedSha`, `cycle`, `findingsCount`) |
+| `GET /api/trail` | `cwd=<repo>`, `session=<id>` | Trail index status (`indexed`/`stale`/`missing`), file/node counts, and session token savings |
+| `GET /api/skills` | `cwd=<repo>` | Loaded skills plus adopted (`skill-maintenance: auto`) vs unmarked adoptable lists |
+| `GET /api/daemons` | `cwd=<repo>` | Health and ports for `pidash`, `pidiff`, and `pi-sidecar` (when active) |
+| `GET /api/security` | `cwd=<repo>` | Read-only policy posture counts/flags only (`secret_obfuscation`, `restricted_folders`, `tool_permissions`, `turn_snapshots`, `advisor`; never secret values or paths) |
+| `GET /api/version` | — | Installed `pi`, `MIN_PI_VERSION`, `pi-orchestrator-config`, `myk-pi-tools`, and Node versions |
+| `GET /api/status` | `cwd=<repo>`, `project=<slug\|*>` | Combined JSON snapshot aggregating sessions and all 14 domains in one request |
+| `GET /api/podman-build-status` | — | Current rootless Podman peer image pre-warm build status |
+
+**Security guarantees:**
+
+- Requests from non-loopback addresses, non-loopback `Host` headers (DNS rebinding), or non-loopback `Origin` headers receive HTTP `403` (the daemon binds to `0.0.0.0` for browser UI access, but the `/api/*` state surface is strictly `127.0.0.1` / `localhost` / `::1` only).
+- Non-`GET` methods (including `OPTIONS`) receive HTTP `405` (`Allow: GET`).
+- Responses set `Cache-Control: no-store` and restrict CORS `Access-Control-Allow-Origin` to loopback origins only.
+- Strictly read-only: SQLite databases are opened with `{ readOnly: true }`, missing `.pi/` state directories are never created, legacy files are never migrated, and raw `auth.json`, HMAC keys, `secrets.jsonc`, private transcripts/tool outputs, raw cron prompts, and any LSP/LLM/MCP/network side effects are excluded.
+
 Side-panel parity commands (`tasks-list`, `worktrees-list`, `worktrees-detail`, `worktrees-prune`, `worktrees-remove`, `coms-peers`, `memory-status`, `mcp-list`, `settings-get`/`settings-set`) route through `pidash-command` frames to the watched session. Worktree operations in `extensions/pidash/browser-ops.ts` reuse `extensions/orchestrator/worktree.ts` and `worktree-helpers.ts` directly (single source of truth for dirty counts, active COMS peer detection, open GitHub PR links, `git status --short` details, `git worktree prune -v`, and server-side guarded removal). The daemon verifies watched-session targeting for worktree commands, restricts destructive worktree mutations (`worktrees-prune`, `worktrees-remove`) to loopback clients, and fans out minimal repository-scoped `worktrees-changed` invalidation notices (including from TUI `orchestrator:worktrees-changed`) so browsers watching the same repository refetch their own view without broadcasting paths or metadata across projects.
 
 ## How it Affects the User

@@ -41,6 +41,7 @@
     "extensions/pitasks/",
     "extensions/reload-flag/",
     "scripts/pidash-server.ts",
+    "scripts/pidash-api.ts",
     "scripts/pidash-session-state.ts",
     "scripts/pidiff-server.ts",
     "scripts/pidiff-git-diff.ts",

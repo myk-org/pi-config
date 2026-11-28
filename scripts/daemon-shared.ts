@@ -225,6 +225,10 @@ export function createDaemonServer(opts: DaemonServerOptions) {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url || "/", `http://localhost:${port}`);
 
+    // Let daemon-specific API routes run before generic CORS/OPTIONS shortcuts so
+    // loopback-only and GET-only endpoints enforce 403/405 on OPTIONS too.
+    if (extraApiRoutes && extraApiRoutes(url, req, res)) return;
+
     const origin = req.headers.origin || "";
     const allowedOrigin = (origin.match(originPattern) ? origin : `http://localhost:${port}`);
     res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
@@ -250,8 +254,6 @@ export function createDaemonServer(opts: DaemonServerOptions) {
       res.end(JSON.stringify(sessions));
       return;
     }
-
-    if (extraApiRoutes && extraApiRoutes(url, req, res)) return;
 
     serveUi(url.pathname, res, { uiDir, name: uiName, log });
   });
@@ -437,5 +439,16 @@ export function createDaemonServer(opts: DaemonServerOptions) {
     process.on("SIGINT", handleShutdownSignal);
   }
 
-  return { server, piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, piWss, browserWss, start };
+  return {
+    server,
+    piClients,
+    browserClients,
+    browserWatchMap,
+    broadcastToBrowsers,
+    sendToMatchingBrowsers,
+    piWss,
+    browserWss,
+    getStartupError: () => startupError,
+    start,
+  };
 }

@@ -236,6 +236,7 @@ pi-config/
 │   ├── remap-node-identity.sh       # Container init: remap `node` to PI_HOST_UID/GID (sourced by init-entrypoint.sh)
 │   ├── httpd.py                     # HTTP file server for file preview (used by rules/45-file-preview.md)
 │   ├── pidash-server.ts             # Pidash daemon (WebSocket hub for all pi sessions + Discord bot)
+│   ├── pidash-api.ts                # Loopback-only read-only HTTP JSON /api/* surface for pidash (15 endpoints)
 │   ├── pidiff-server.ts             # Pidiff per-project server (diff hub with review comments, one per project cwd)
 │   ├── pidiff-git-diff.ts           # Batched git cat-file blob reader, diff status parser, and worktree list parser
 │   ├── pidiff-git-ignore.ts         # Chokidar gitignore filter (top-level dirs vs nested prefixes)

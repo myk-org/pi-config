@@ -10,9 +10,13 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Task, TaskAssignee, TaskCompletedBy, TaskStatus, TaskStoreData } from "./types.js";
 import { createLogger } from "../shared/logger.js";
-import { taskAssigneeRank } from "./tasks-view.js";
 
 const log = createLogger("pitasks");
+
+/** The owner's tasks sort above the agent's within a status group (#1090). */
+export function taskAssigneeRank(task: { assignee?: string }): number {
+	return task.assignee === "user" ? 0 : 1;
+}
 
 function sortById(a: Task, b: Task): number {
 	return Number(a.id) - Number(b.id);

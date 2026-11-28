@@ -24,20 +24,26 @@ import { isBrowserDispatch } from "../shared/live-ctx.js";
 import {
   SETTINGS_KEYS,
   type SettingMutation,
-  type SettingSource,
   type SettingsKeyDef,
   type SettingsScope,
   cloneDefaultValue,
   getCachedSettingsLayers,
   getFilePathForScope,
-  getSettingEnvValue,
   isOrderSensitiveDeepEqual,
   readSettingsFile,
   resolveSetting,
   updateSettingsTransaction,
   validateSetting,
 } from "./project-settings.js";
-import { CATEGORIES, maskSettingValue, sanitizeSettingValueForModel } from "./settings-tui-helpers.js";
+import {
+  CATEGORIES,
+  buildSettingBreakdown,
+  maskSettingValue,
+  sanitizeSettingValueForModel,
+  type SettingBreakdown,
+} from "./settings-tui-helpers.js";
+
+export { buildSettingBreakdown, type SettingBreakdown };
 
 const log = createLogger("settings_tools");
 
@@ -74,24 +80,6 @@ export const PROTECTED_SETTING_KEYS: ReadonlySet<string> = new Set([
   "allow_push_to_protected_branches",
   "secret_obfuscation",
 ]);
-
-export interface SettingBreakdown {
-  key: string;
-  category: string;
-  type: string;
-  description: string;
-  global_only: boolean;
-  env_var: string | null;
-  source: SettingSource;
-  effective: unknown;
-  scopes: {
-    env: unknown;
-    project: unknown;
-    global: unknown;
-    default: unknown;
-  };
-  set_in: Array<"project" | "global" | "env">;
-}
 
 /**
  * Serialize any value or key as a single-line escaped JSON literal so embedded newlines,
@@ -263,66 +251,6 @@ function formatObjectDiffLines(
     ? `Change (reset ${oldKeys.length} key(s) -> unset):`
     : `Change (${hadOld ? `${oldKeys.length} key(s)` : "unset"} -> ${newKeys.length} key(s)):`;
   return [header, ...diffLines];
-}
-
-/** Build a structured per-scope breakdown for a single known setting key (model-safe redacted). */
-export function buildSettingBreakdown(
-  cwd: string,
-  key: string,
-  layers?: { global: Record<string, unknown>; project: Record<string, unknown> },
-): SettingBreakdown | null {
-  const def = SETTINGS_KEYS[key];
-  if (!def) return null;
-
-  const resolvedLayers = layers ?? (getCachedSettingsLayers(cwd, { verifyFresh: true }) as {
-    global: Record<string, unknown>;
-    project: Record<string, unknown>;
-  });
-
-  const hasProject = !def.global_only && resolvedLayers.project[key] !== undefined;
-  const hasGlobal = resolvedLayers.global[key] !== undefined;
-  const envRaw = getSettingEnvValue(key);
-  const hasEnv = envRaw !== undefined;
-  const defaultVal = cloneDefaultValue(def);
-
-  let source: SettingSource;
-  let effectiveRaw: unknown;
-  if (hasProject) {
-    source = "P";
-    effectiveRaw = resolvedLayers.project[key];
-  } else if (hasGlobal) {
-    source = "G";
-    effectiveRaw = resolvedLayers.global[key];
-  } else if (hasEnv) {
-    source = "E";
-    effectiveRaw = envRaw;
-  } else {
-    source = "D";
-    effectiveRaw = defaultVal;
-  }
-
-  const setIn: Array<"project" | "global" | "env"> = [];
-  if (hasProject) setIn.push("project");
-  if (hasGlobal) setIn.push("global");
-  if (hasEnv) setIn.push("env");
-
-  return {
-    key,
-    category: def.group || "Other",
-    type: def.type,
-    description: def.description,
-    global_only: def.global_only === true,
-    env_var: def.env ?? null,
-    source,
-    effective: sanitizeSettingValueForModel(key, effectiveRaw, def),
-    scopes: {
-      env: hasEnv ? sanitizeSettingValueForModel(key, envRaw, def) : null,
-      project: hasProject ? sanitizeSettingValueForModel(key, resolvedLayers.project[key], def) : null,
-      global: hasGlobal ? sanitizeSettingValueForModel(key, resolvedLayers.global[key], def) : null,
-      default: sanitizeSettingValueForModel(key, defaultVal, def),
-    },
-    set_in: setIn,
-  };
 }
 
 /** Build the complete, un-truncated, control-escaped user-facing permission prompt for `settings_set`. */

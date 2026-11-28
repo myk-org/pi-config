@@ -914,6 +914,8 @@ export function registerAsyncAgents(
             task: j.task,
             status: j.status,
             startedAt: j.startedAt,
+            cwd: j.cwd ?? "",
+            taskId: j.taskId ?? null,
             mode: "async" as const,
           })),
           ...syncRuns.map(r => ({
@@ -923,6 +925,8 @@ export function registerAsyncAgents(
             task: r.task,
             status: "running" as const,
             startedAt: r.startedAt,
+            cwd: r.cwd,
+            taskId: null,
             mode: "sync" as const,
             currentTool: r.currentTool,
           })),
@@ -1595,13 +1599,19 @@ export function registerAsyncAgents(
 
     const inv = getPiInvocation(piArgs);
 
+    const startedAt = Date.now();
+
     // Write config for the runner
     const configPath = path.join(PROJECT_TMP_DIR, `async-cfg-${id}.json`);
     fs.writeFileSync(configPath, JSON.stringify({
       id,
+      name: options?.name || agentName,
       agent: agentName,
+      mode: "async",
       task,
       cwd,
+      taskId: options?.taskId ?? null,
+      startedAt,
       model: effectiveModel,
       contextWindow: getLiveAsyncCtx()?.model?.contextWindow || 0,
       resultPath,
@@ -1645,8 +1655,8 @@ export function registerAsyncAgents(
       fullTask: task,
       status: "queued",
       workerDir,
-      startedAt: Date.now(),
-      updatedAt: Date.now(),
+      startedAt,
+      updatedAt: startedAt,
       fireAndForget: options?.fireAndForget,
       cronTaskId: options?.cronTaskId || undefined,
       quietOnNoop: options?.quietOnNoop === true || undefined,
@@ -2446,6 +2456,12 @@ export function registerAsyncAgents(
   // sync rows, so a name here is an async job's name and must never stop a sync child.
   pi.events.on("pidash:async-kill", (target: unknown) => {
     if (typeof target === "string") killAsyncAgent(target, "user");
+  });
+
+  // Replay live async + sync subagent snapshot whenever pidash reconnects so running sync
+  // children remain visible on /api/agents and /api/status without waiting for a new event.
+  pi.events.on("pidash:request-async-status", () => {
+    updateAsyncWidget();
   });
 
   // ── pi-subagents RPC compatibility bridge ──────────────────────────────

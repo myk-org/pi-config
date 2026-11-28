@@ -8,9 +8,13 @@
 import {
   EMPTY_VALUE_SENTINEL,
   SETTINGS_KEYS,
+  cloneDefaultValue,
+  getCachedSettingsLayers,
   getFilePathForScope,
+  getSettingEnvValue,
   parseSettingInput,
   readSettingsFile,
+  type SettingSource,
   type SettingsKeyDef,
 } from "./project-settings.js";
 import { createLogger } from "../shared/logger.js";
@@ -114,6 +118,84 @@ export function sanitizeSettingValueForModel(key: string, value: unknown, def?: 
 /** Return the schema category label for a setting key. */
 export function getCategoryLabelForKey(key: string): string {
   return SETTINGS_KEYS[key]?.group || "Other";
+}
+
+export interface SettingBreakdown {
+  key: string;
+  category: string;
+  type: string;
+  description: string;
+  global_only: boolean;
+  env_var: string | null;
+  source: SettingSource;
+  effective: unknown;
+  scopes: {
+    env: unknown;
+    project: unknown;
+    global: unknown;
+    default: unknown;
+  };
+  set_in: Array<"project" | "global" | "env">;
+}
+
+/** Build a structured per-scope breakdown for a single known setting key (model/API-safe redacted). */
+export function buildSettingBreakdown(
+  cwd: string,
+  key: string,
+  layers?: { global: Record<string, unknown>; project: Record<string, unknown> },
+): SettingBreakdown | null {
+  const def = SETTINGS_KEYS[key];
+  if (!def) return null;
+
+  const resolvedLayers = layers ?? (getCachedSettingsLayers(cwd, { verifyFresh: true }) as {
+    global: Record<string, unknown>;
+    project: Record<string, unknown>;
+  });
+
+  const hasProject = !def.global_only && resolvedLayers.project[key] !== undefined;
+  const hasGlobal = resolvedLayers.global[key] !== undefined;
+  const envRaw = getSettingEnvValue(key);
+  const hasEnv = envRaw !== undefined;
+  const defaultVal = cloneDefaultValue(def);
+
+  let source: SettingSource;
+  let effectiveRaw: unknown;
+  if (hasProject) {
+    source = "P";
+    effectiveRaw = resolvedLayers.project[key];
+  } else if (hasGlobal) {
+    source = "G";
+    effectiveRaw = resolvedLayers.global[key];
+  } else if (hasEnv) {
+    source = "E";
+    effectiveRaw = envRaw;
+  } else {
+    source = "D";
+    effectiveRaw = defaultVal;
+  }
+
+  const setIn: Array<"project" | "global" | "env"> = [];
+  if (hasProject) setIn.push("project");
+  if (hasGlobal) setIn.push("global");
+  if (hasEnv) setIn.push("env");
+
+  return {
+    key,
+    category: def.group || "Other",
+    type: def.type,
+    description: def.description,
+    global_only: def.global_only === true,
+    env_var: def.env ?? null,
+    source,
+    effective: sanitizeSettingValueForModel(key, effectiveRaw, def),
+    scopes: {
+      env: hasEnv ? sanitizeSettingValueForModel(key, envRaw, def) : null,
+      project: hasProject ? sanitizeSettingValueForModel(key, resolvedLayers.project[key], def) : null,
+      global: hasGlobal ? sanitizeSettingValueForModel(key, resolvedLayers.global[key], def) : null,
+      default: sanitizeSettingValueForModel(key, defaultVal, def),
+    },
+    set_in: setIn,
+  };
 }
 
 /** Compute the visible slice `[start, end)` of a scrollable category sidebar. */

@@ -320,4 +320,39 @@ describe("pidash extension UI forwarding (#1331)", () => {
       assert.deepEqual(frames.slice(beforeAttempt), []);
     });
   });
+
+  it("replays running sync subagent status after replay_complete on reconnect", async () => {
+    await withPidashHarness(async ({ events, emitPi, frames, dropActiveSocket, waitForReplayComplete }) => {
+      const runningSyncJob = {
+        id: "sync-reconnect-1",
+        name: "python-expert",
+        agent: "python-expert",
+        mode: "sync",
+        status: "running",
+        startedAt: Date.now() - 2_000,
+        cwd: process.cwd(),
+      };
+      events.on("pidash:request-async-status", () => {
+        events.emit("pidash:async-status", { count: 1, agents: "python-expert", jobs: [runningSyncJob] });
+      });
+
+      await dropActiveSocket();
+      const beforeReconnect = frames.length;
+      emitPi("tool_result", { toolName: "read" });
+      await waitForReplayComplete(2);
+      await waitFor(
+        () =>
+          frames
+            .slice(beforeReconnect)
+            .some((f) => f.type === "async-status" && Array.isArray(f.jobs) && f.jobs.some((j: any) => j.id === "sync-reconnect-1")),
+        "replayed sync async-status after reconnect",
+      );
+
+      const reconnectFrames = frames.slice(beforeReconnect);
+      const replayCompleteIdx = reconnectFrames.findIndex((f) => f.type === "replay_complete");
+      const syncIdx = reconnectFrames.findIndex((f) => f.type === "async-status");
+      assert.ok(replayCompleteIdx >= 0);
+      assert.ok(syncIdx > replayCompleteIdx);
+    });
+  });
 });
