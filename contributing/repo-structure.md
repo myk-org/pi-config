@@ -80,6 +80,7 @@ pi-config/
 │   │   ├── session-search.ts            # Keyword search over past conversation summaries (SQLite-backed via state-db.ts)
 │   │   ├── session-spill.ts             # Session JSONL spill writer (<session-dir>/local/<N>.log) & content-addressed blob store (~/.pi/blobs/<sha256>) (#1420)
 │   │   ├── pre-compaction-elision.ts    # Deterministic zero-LLM-cost mechanical elision of old bulky tool results via context hook (#1421)
+│   │   ├── auto-compact.ts              # Opt-in percentage-based LLM auto-compaction trigger on agent_settled (`auto_compact_threshold_pct`, #1486)
 │   │   ├── magic-keywords.ts            # Per-turn thinking magic keywords (`ultrathink` / `chillax`) with strict prose-only parser and single-turn restore (#1418)
 │   │   ├── advisor.ts                   # Opt-in background read-only advisor/watchdog model (`advisor_enabled`, `advisor_model` provider/model-id, `advisor_interval_turns`) (#1419)
 │   │   ├── lsp.ts                       # Opt-in zero-dep JSON-RPC 2.0 stdio LSP client, shared per-worktree broker client, circuit breaker, & lazy TUI install prompt (`lsp_enabled`, `lsp_servers`) (#1445)
@@ -159,7 +160,8 @@ pi-config/
 │   │   ├── live-ctx.ts              # isLiveExtensionCtx / resolveSessionStartCtx / firstLiveExtensionCtx
 │   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive, streamLoopAborted) with auto-pruning (#1364, #1374)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
-│   │   ├── pi-agent-dir.ts          # resolvePiAgentDir helper (used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery)
+│   │   ├── pi-agent-dir.ts          # resolvePiAgentDir, extractAgentDirFromArgv, normalizeAgentDir, withPropagatedPiAgentDirEnv helpers (Pi 1.7.0 `--agent-dir` + `PI_CODING_AGENT_DIR`, used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery, subagent-child-spec, coms-wrapper)
+│   │   ├── pi-agent-dir-parser.mjs  # Shared value-aware `--agent-dir` argv parser & tilde/path normalizer (consumed by pi-agent-dir.ts and scripts/coms-peer-supervisor.mjs; typed via pi-agent-dir-parser.d.mts)
 │   │   ├── secret-patterns.mjs      # Shared built-in credential regexes & env-var secret filters (consumed by secret-obfuscation.ts and scripts/diagnostic-report-collect.mjs; typed via secret-patterns.d.mts)
 │   │   ├── tool-namespaces.ts       # Shared Pi 1.6 ToolNamespace definitions (memory, coms, tasks, trail, runtime) and read-only annotation constant
 │   │   ├── compact-message-renderer.ts # Shared compact 1-line / Ctrl+O expandable TUI message renderer primitives (`extractSummaryLine`, `createCompactOneLineComponent`, `createExpandedCustomBox`)

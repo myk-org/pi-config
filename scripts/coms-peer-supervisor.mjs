@@ -7,7 +7,7 @@
  *
  * There is deliberately no lifetime: a peer lives until someone kills it.
  *
- *   node coms-peer-supervisor.mjs <cname> [--project <p>] [--cwd <dir>] [--purpose <text>] [--session <id|path>]
+ *   node coms-peer-supervisor.mjs <cname> [--project <p>] [--cwd <dir>] [--purpose <text>] [--session <id|path>] [--agent-dir <dir>]
  *
  * State: ~/.pi/coms/peers/<cname>@<project>.json — { cname, pid, childPid, session, project, cwd, startedAt }
  */
@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { extractAgentDirFromArgv, normalizeAgentDir } from "../extensions/shared/pi-agent-dir-parser.mjs";
 
 // Provenance, read before the env is scrubbed below: a supervisor started from an agent's bash
 // tool inherits the parent session id, a human's own shell does not.
@@ -23,17 +24,20 @@ const createdBy = spawnerSessionId ? "agent" : "user";
 
 const [cname, ...rest] = process.argv.slice(2);
 if (!cname) {
-  console.error("usage: coms-peer-supervisor.mjs <cname> [--project p] [--cwd d] [--purpose text]");
+  console.error("usage: coms-peer-supervisor.mjs <cname> [--project p] [--cwd d] [--purpose text] [--agent-dir dir]");
   process.exit(2);
 }
 const flag = (name, fallback = undefined) => {
   const i = rest.indexOf(`--${name}`);
   return i >= 0 && rest[i + 1] ? rest[i + 1] : fallback;
 };
+const SUPERVISOR_VALUE_FLAGS = new Set(["--project", "--cwd", "--purpose", "--session"]);
 const project = flag("project", "default");
 const cwd = flag("cwd", process.cwd());
 const purpose = flag("purpose", "");
 const session = flag("session", "");
+const rawCliAgentDir = extractAgentDirFromArgv(rest, { valueFlags: SUPERVISOR_VALUE_FLAGS });
+const cliAgentDir = rawCliAgentDir ? normalizeAgentDir(rawCliAgentDir) : undefined;
 
 const comsBase = process.env.PI_COMS_DIR && process.env.PI_COMS_DIR.trim()
   ? process.env.PI_COMS_DIR.trim()
@@ -62,6 +66,10 @@ delete env.PI_SUBAGENT_NAME;
 // Mark only the spawned child process as a supervised headless COMS peer so interactive-only
 // tools like ask_user stay disabled on the peer without touching the spawner's environment.
 env.PI_COMS_SUPERVISED_PEER = "1";
+if (cliAgentDir) {
+  env.PI_CODING_AGENT_DIR = cliAgentDir;
+  say(`peer ${cname} using agent dir ${cliAgentDir}`);
+}
 
 const args = ["--mode", "rpc", "--coms", "--cname", cname, "--project", project];
 if (purpose) args.push("--purpose", purpose);

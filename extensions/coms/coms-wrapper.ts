@@ -9,7 +9,6 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
-import * as os from "node:os";
 import { buildPidashComsPeersPayload, parseFlags, persistState, syncComsActiveTools } from "./coms-shared.js";
 import {
     createComsPeerRuntime,
@@ -19,6 +18,7 @@ import {
 } from "./coms-p2p.js";
 import { ComsRegistry, isRegistryRowAlive, resolveComsDir } from "./coms-registry.js";
 import { resolveBridgeSessionKey, setComsActive } from "../shared/session-bridge.js";
+import { resolvePiAgentDir, withPropagatedPiAgentDirEnv } from "../shared/pi-agent-dir.js";
 import { createLogger } from "../shared/logger.js";
 import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import { emitIfLive, isBrowserDispatch, isLiveExtensionCtx } from "../shared/live-ctx.js";
@@ -756,7 +756,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         const here = path.dirname(fileURLToPath(import.meta.url));
         const supervisor = [
             path.join(here, "..", "..", "scripts", "coms-peer-supervisor.mjs"),
-            path.join(os.homedir(), ".pi", "agent", "npm", "node_modules", "pi-orchestrator-config", "scripts", "coms-peer-supervisor.mjs"),
+            path.join(resolvePiAgentDir(), "npm", "node_modules", "pi-orchestrator-config", "scripts", "coms-peer-supervisor.mjs"),
             path.join(liveCtx?.cwd || process.cwd(), "scripts", "coms-peer-supervisor.mjs"),
         ].map(candidate => path.resolve(candidate)).find(candidate => existsSync(candidate)) ?? "";
         const resolvedProject = params.project ?? ownProject();
@@ -772,7 +772,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             return { ok: false, pid: null, message: plan.message };
         }
         try {
-            const env = { ...process.env };
+            const env = withPropagatedPiAgentDirEnv(process.env);
             const configuredComsDir = getRegistry().comsDir;
             if (configuredComsDir) env.PI_COMS_DIR = configuredComsDir;
             const child = spawn(plan.command[0]!, plan.command.slice(1), { detached: true, stdio: "ignore", env });

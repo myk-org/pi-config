@@ -69,6 +69,7 @@ export interface SettingsKeyPayload {
   enum?: string[];
   min?: number;
   max?: number;
+  allow_zero?: boolean;
   globalOnly?: boolean;
   /** Value stored in the scope's file (undefined = not set there). */
   stored: unknown;
@@ -113,6 +114,7 @@ export function buildSettingsPayload(cwd: string, scope: unknown): SettingsPaylo
         enum: def.enum,
         min: def.min,
         max: def.max,
+        allow_zero: def.allow_zero,
         ...(def.global_only ? { globalOnly: true } : {}),
         stored: key in stored ? stored[key] : undefined,
         effective: resolved?.value,

@@ -201,6 +201,35 @@ describe("validateSettingValue", () => {
     assert.equal(validateSettingValue("review_loop_max_cycles", 3), null);
   });
 
+  it("accepts 0 or 20..99 for auto_compact_threshold_pct", () => {
+    assert.equal(validateSettingValue("auto_compact_threshold_pct", 0), null);
+    assert.equal(validateSettingValue("auto_compact_threshold_pct", 20), null);
+    assert.equal(validateSettingValue("auto_compact_threshold_pct", 99), null);
+  });
+
+  it("rejects invalid bounds for auto_compact_threshold_pct", () => {
+    assert.ok(validateSettingValue("auto_compact_threshold_pct", 1));
+    assert.ok(validateSettingValue("auto_compact_threshold_pct", 19));
+    assert.ok(validateSettingValue("auto_compact_threshold_pct", -1));
+    assert.ok(validateSettingValue("auto_compact_threshold_pct", 100));
+    assert.ok(validateSettingValue("auto_compact_threshold_pct", 50.5));
+  });
+
+  it("exposes allow_zero metadata in settings payload for auto_compact_threshold_pct", () => {
+    const dir = tempProject();
+    try {
+      const payload = buildSettingsPayload(dir, "project");
+      const entry = payload.keys.find((k) => k.key === "auto_compact_threshold_pct");
+      assert.ok(entry);
+      assert.equal(entry!.min, 20);
+      assert.equal(entry!.max, 99);
+      assert.equal(entry!.allow_zero, true);
+      assert.equal(entry!.default, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("agent_overrides requires an object", () => {
     assert.match(validateSettingValue("agent_overrides", "worker")!, /object/);
     assert.equal(validateSettingValue("agent_overrides", { worker: { model: "x" } }), null);

@@ -713,3 +713,56 @@ def test_tool_permissions_empty_dict_and_all_empty_selectors_return_default(
     assert settings_commands._parse_tool_permissions({}) == {}
     assert settings_commands._parse_tool_permissions({"   ": "allow"}) is None
     assert get_setting("tool_permissions", cwd=_isolated_settings) == {}
+
+
+def test_auto_compact_threshold_pct_default_is_zero(_isolated_settings: Path) -> None:
+    assert get_setting("auto_compact_threshold_pct", cwd=_isolated_settings) == 0
+
+
+@pytest.mark.parametrize("valid_value", [0, 20, 75, 99])
+def test_auto_compact_threshold_pct_accepts_valid_file_values(
+    _isolated_settings: Path,
+    valid_value: int,
+) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir(exist_ok=True)
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({"auto_compact_threshold_pct": valid_value}),
+        encoding="utf-8",
+    )
+    assert get_setting("auto_compact_threshold_pct", cwd=_isolated_settings) == valid_value
+
+
+@pytest.mark.parametrize("invalid_value", [-1, 1, 19, 100, 50.5, True, "75"])
+def test_auto_compact_threshold_pct_rejects_invalid_file_values(
+    _isolated_settings: Path,
+    invalid_value: object,
+) -> None:
+    pi_dir = _isolated_settings / ".pi"
+    pi_dir.mkdir(exist_ok=True)
+    (pi_dir / "pi-config-settings.json").write_text(
+        json.dumps({"auto_compact_threshold_pct": invalid_value}),
+        encoding="utf-8",
+    )
+    assert get_setting("auto_compact_threshold_pct", cwd=_isolated_settings) == 0
+
+
+@pytest.mark.parametrize(("env_raw", "expected"), [("0", 0), ("20", 20), ("85", 85), ("99", 99)])
+def test_auto_compact_threshold_pct_env_override(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env_raw: str,
+    expected: int,
+) -> None:
+    monkeypatch.setenv("PI_AUTO_COMPACT_THRESHOLD_PCT", env_raw)
+    assert get_setting("auto_compact_threshold_pct", cwd=_isolated_settings) == expected
+
+
+@pytest.mark.parametrize("env_raw", ["-1", "1", "19", "100", "50.5", "abc"])
+def test_auto_compact_threshold_pct_rejects_invalid_env_values(
+    _isolated_settings: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    env_raw: str,
+) -> None:
+    monkeypatch.setenv("PI_AUTO_COMPACT_THRESHOLD_PCT", env_raw)
+    assert get_setting("auto_compact_threshold_pct", cwd=_isolated_settings) == 0

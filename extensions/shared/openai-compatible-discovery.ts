@@ -120,7 +120,7 @@ export function formatOpenAiCompatibleDiscoverySummary(
   return `Providers: ${providerId} (${discoveredModelCount})`;
 }
 
-/** Match pi's getModelsPath(): PI_CODING_AGENT_DIR, then ~/.pi/agent/models.json. */
+/** Match pi's getModelsPath(): `--agent-dir`, then `PI_CODING_AGENT_DIR`, then `~/.pi/agent/models.json`. */
 export function resolveOpenAiCompatibleModelsPath(
   agentDir?: string | null,
 ): string {

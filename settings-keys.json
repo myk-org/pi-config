@@ -765,6 +765,16 @@
     "max": 500000,
     "group": "Session"
   },
+  "auto_compact_threshold_pct": {
+    "description": "Opt-in context window usage percentage that triggers LLM auto-compaction on agent_settled (0 disables and uses Pi's default token reserve; 20-99 triggers compaction when usage reaches >= N%)",
+    "type": "int",
+    "env": "PI_AUTO_COMPACT_THRESHOLD_PCT",
+    "default": 0,
+    "min": 20,
+    "max": 99,
+    "allow_zero": true,
+    "group": "Session"
+  },
   "magic_keywords": {
     "description": "Enable per-turn magic keywords (ultrathink / chillax) in user prose to temporarily raise or lower thinking effort for one turn",
     "type": "bool",

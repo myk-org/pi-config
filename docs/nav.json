@@ -5,6 +5,7 @@
       "name": "Getting Started",
       "pages": [
         "quickstart",
+        "features",
         "configuration"
       ]
     },
