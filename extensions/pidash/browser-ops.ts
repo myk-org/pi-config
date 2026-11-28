@@ -486,19 +486,27 @@ export async function loadWorktreeDetailPayload(
   }
 }
 
-/** Run `git worktree prune -v` via the shared `runWorktreePrune` helper. */
+/** Run `git worktree prune -v` and `.worktrees/` ghost cleanup via the shared `runWorktreePrune` helper. */
 export async function pruneWorktreesOp(
   cwd: string,
-  deps: Pick<WorktreeDeps, "runGitAsync" | "onWorktreesChanged"> = {},
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "onWorktreesChanged" | "logger"> = {},
 ): Promise<WorktreeOpResult> {
   try {
     const res = await runWorktreePrune(cwd, deps);
-    log.info("browser_worktree_prune", { cwd, ok: res.ok, pruned: res.pruned.length });
+    log.info("browser_worktree_prune", {
+      cwd,
+      ok: res.ok,
+      pruned: res.pruned.length,
+      removedGhosts: res.removedGhosts.length,
+      skippedGhosts: res.skippedGhosts.length,
+    });
     return {
       op: "prune",
       ok: res.ok,
       message: res.message,
       pruned: res.pruned,
+      removedGhosts: res.removedGhosts,
+      skippedGhosts: res.skippedGhosts,
     };
   } catch (e: any) {
     const error = e?.message || String(e);
@@ -508,6 +516,8 @@ export async function pruneWorktreesOp(
       ok: false,
       message: `Worktree prune failed: ${error}`,
       pruned: [],
+      removedGhosts: [],
+      skippedGhosts: [],
     };
   }
 }

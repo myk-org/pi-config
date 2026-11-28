@@ -3,16 +3,19 @@
  * Built on openListDetailOverlay / OverlayScrollDetail.
  */
 
+import { lstatSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
+import * as path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { hyperlink } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { isBrowserDispatch, isLiveExtensionCtx } from "../shared/live-ctx.js";
-import { createLogger } from "../shared/logger.js";
+import { createLogger, type Logger } from "../shared/logger.js";
 import { TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import {
   countLinkedWorktrees,
   invalidateWorktreeCache,
   listWorktreesCheckedAsync,
+  normalizePathForMatch,
   runGitAsync,
   type GitAsyncRunner,
   type OpenPr,
@@ -28,6 +31,7 @@ import {
 import {
   attachPeersToWorktrees,
   canRemoveWorktree,
+  classifyGhostWorktreeDir,
   copyTextToClipboard,
   displayWorktreePath,
   fetchOpenPrsByBranchAsync,
@@ -37,6 +41,7 @@ import {
   formatWorktreeTable,
   formatWorktreeTags,
   inspectLiveComsPeers,
+  type GhostPruneResult,
   type PeerInspectionResult,
   type WorktreePeerInfo,
   type WorktreeView,
@@ -54,6 +59,7 @@ export interface WorktreeDeps {
   copyToClipboard?: (text: string) => Promise<{ ok: boolean; method?: string; error?: string }>;
   openOverlay?: typeof openListDetailOverlay;
   onWorktreesChanged?: () => void;
+  logger?: Logger;
 }
 
 function safeNotify(
@@ -303,32 +309,395 @@ export function buildWorktreeDetailLines(
   return lines;
 }
 
-/** Run `git worktree prune -v`, invalidate caches, and notify listeners. */
+const GHOST_CLEANUP_PREFIX = ".pi-ghost-cleanup-";
+
+function isPathRegisteredOrAncestor(realTarget: string, registeredRealpaths: readonly string[]): boolean {
+  const prefix = realTarget.endsWith(path.sep) ? realTarget : `${realTarget}${path.sep}`;
+  for (const reg of registeredRealpaths) {
+    if (reg === realTarget || reg.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function isRealPathInside(realChild: string, realParent: string): boolean {
+  const prefix = realParent.endsWith(path.sep) ? realParent : `${realParent}${path.sep}`;
+  return realChild.startsWith(prefix) && path.dirname(realChild) === realParent;
+}
+
+/**
+ * Atomically isolate a verified ghost directory via same-parent rename before final
+ * allowlist re-classification and recursive removal, preventing TOCTOU symlink swaps.
+ */
+function isolateAndRemoveGhostDir(
+  dirPath: string,
+  expectedRealPath: string,
+  logger: Logger,
+): { removed: boolean; entries?: string[]; skipReason?: string } {
+  let st;
+  try {
+    st = lstatSync(dirPath);
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return { removed: false };
+    return { removed: false, skipReason: "stat_failed" };
+  }
+  if (st.isSymbolicLink()) return { removed: false, skipReason: "symlink" };
+  if (!st.isDirectory()) return { removed: false, skipReason: "not_dir" };
+
+  let realDir: string;
+  try {
+    realDir = realpathSync(dirPath);
+  } catch {
+    return { removed: false, skipReason: "realpath_failed" };
+  }
+  if (realDir !== expectedRealPath) {
+    logger.warn("worktree_ghost_path_changed", { path: dirPath, expectedRealPath, actualRealPath: realDir });
+    return { removed: false, skipReason: "path_changed" };
+  }
+
+  const preCls = classifyGhostWorktreeDir(realDir);
+  if (!preCls.safe) {
+    return { removed: false, skipReason: preCls.reason };
+  }
+
+  const stagingPath = path.join(
+    path.dirname(realDir),
+    `${GHOST_CLEANUP_PREFIX}${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  try {
+    renameSync(realDir, stagingPath);
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return { removed: false };
+    logger.warn("worktree_ghost_remove_failed", { path: realDir, error: e?.message || String(e) });
+    return { removed: false, skipReason: "rename_failed" };
+  }
+
+  const isolatedCls = classifyGhostWorktreeDir(stagingPath);
+  if (!isolatedCls.safe) {
+    try {
+      renameSync(stagingPath, realDir);
+    } catch (restoreErr: any) {
+      logger.warn("worktree_ghost_restore_failed", {
+        stagingPath,
+        target: realDir,
+        error: restoreErr?.message || String(restoreErr),
+      });
+    }
+    return { removed: false, skipReason: isolatedCls.reason };
+  }
+
+  try {
+    rmSync(stagingPath, { recursive: true, force: true });
+    return { removed: true, entries: isolatedCls.entries };
+  } catch (e: any) {
+    logger.warn("worktree_ghost_remove_failed", { path: realDir, error: e?.message || String(e) });
+    return { removed: false, skipReason: "rm_failed" };
+  }
+}
+
+/**
+ * Sweep unregistered `.pi/` / `graft`-only ghost directories directly under `<repoRoot>/.worktrees/`.
+ * Fails closed if `git worktree list --porcelain` fails or COMS peer state cannot be verified;
+ * never follows symlinks, never escapes `.worktrees/`, never touches registered worktrees,
+ * active `cwd`, live COMS peer directories, or directories containing any non-allowlisted entry.
+ */
+export async function pruneOrphanedWorktreeShells(
+  cwd: string,
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "logger"> = {},
+): Promise<GhostPruneResult> {
+  const runner = deps.runGitAsync ?? runGitAsync;
+  const logger = deps.logger ?? log;
+  const listed = await listWorktreesCheckedAsync(cwd, {
+    includeDirty: false,
+    forceRefresh: true,
+    runGitAsync: runner,
+  });
+  if (!listed.ok) {
+    const error = listed.error || "git worktree list failed";
+    logger.warn("worktree_ghost_prune_list_failed", { cwd, error });
+    return { ok: false, removed: [], skipped: [], error };
+  }
+  if (listed.entries.length === 0) {
+    return { ok: true, removed: [], skipped: [] };
+  }
+
+  const mainEntry =
+    listed.entries.find((e) => e.isMain && !e.bare) ?? listed.entries.find((e) => !e.bare);
+  if (!mainEntry) {
+    return { ok: true, removed: [], skipped: [] };
+  }
+
+  let realRepoRoot: string;
+  try {
+    realRepoRoot = realpathSync(path.resolve(mainEntry.path));
+  } catch (e: any) {
+    if (e?.code === "ENOENT" || e?.code === "ENOTDIR") {
+      return { ok: true, removed: [], skipped: [] };
+    }
+    const error = e?.message || String(e);
+    return { ok: false, removed: [], skipped: [], error };
+  }
+
+  const worktreesDir = path.join(realRepoRoot, ".worktrees");
+  let wtDirStat;
+  try {
+    wtDirStat = lstatSync(worktreesDir);
+  } catch (e: any) {
+    if (e?.code === "ENOENT" || e?.code === "ENOTDIR") {
+      return { ok: true, removed: [], skipped: [] };
+    }
+    const error = e?.message || String(e);
+    return { ok: false, removed: [], skipped: [], error };
+  }
+  if (wtDirStat.isSymbolicLink() || !wtDirStat.isDirectory()) {
+    return { ok: true, removed: [], skipped: [] };
+  }
+
+  let realWorktreesDir: string;
+  let childNames: string[];
+  try {
+    realWorktreesDir = realpathSync(worktreesDir);
+    childNames = readdirSync(realWorktreesDir).sort();
+  } catch (e: any) {
+    const error = e?.message || String(e);
+    return { ok: false, removed: [], skipped: [], error };
+  }
+  if (childNames.length === 0) {
+    return { ok: true, removed: [], skipped: [] };
+  }
+
+  const peerInspection: PeerInspectionResult = deps.inspectLivePeers
+    ? deps.inspectLivePeers(cwd, { strict: true })
+    : deps.readLivePeers
+      ? { peers: deps.readLivePeers(cwd), verified: true }
+      : inspectLiveComsPeers(cwd, { strict: true });
+  if (!peerInspection.verified) {
+    const error = peerInspection.error || "COMS registry unreadable";
+    logger.warn("worktree_ghost_prune_peers_unverified", { cwd, error });
+    return { ok: false, removed: [], skipped: [], error };
+  }
+  const livePeerCwds = peerInspection.peers
+    .filter((p) => Boolean(p.cwd))
+    .map((p) => normalizePathForMatch(p.cwd));
+
+  const registeredRealpaths: string[] = [];
+  const registeredResolved = new Set<string>();
+  for (const entry of listed.entries) {
+    registeredResolved.add(path.resolve(entry.path));
+    registeredRealpaths.push(normalizePathForMatch(entry.path));
+  }
+  const realCwd = normalizePathForMatch(cwd);
+
+  const removed: string[] = [];
+  const skipped: string[] = [];
+
+  for (const name of childNames) {
+    if (name.startsWith(GHOST_CLEANUP_PREFIX)) continue;
+    const childPath = path.join(realWorktreesDir, name);
+    let st;
+    try {
+      st = lstatSync(childPath);
+    } catch (e: any) {
+      if (e?.code === "ENOENT") continue;
+      skipped.push(name);
+      continue;
+    }
+
+    if (st.isSymbolicLink()) {
+      if (!registeredResolved.has(path.resolve(childPath))) {
+        logger.warn("worktree_ghost_skip_symlink", { name, path: childPath });
+        skipped.push(name);
+      }
+      continue;
+    }
+    if (!st.isDirectory()) continue;
+
+    let realChild: string;
+    try {
+      realChild = realpathSync(childPath);
+    } catch {
+      skipped.push(name);
+      continue;
+    }
+
+    if (!isRealPathInside(realChild, realWorktreesDir)) {
+      skipped.push(name);
+      continue;
+    }
+
+    if (isPathRegisteredOrAncestor(realChild, registeredRealpaths)) {
+      continue;
+    }
+
+    const childPrefix = realChild.endsWith(path.sep) ? realChild : `${realChild}${path.sep}`;
+    if (realCwd === realChild || realCwd.startsWith(childPrefix)) {
+      logger.warn("worktree_ghost_skip_current_cwd", { name, path: realChild, cwd: realCwd });
+      skipped.push(name);
+      continue;
+    }
+
+    if (livePeerCwds.some((pCwd) => pCwd === realChild || pCwd.startsWith(childPrefix))) {
+      logger.warn("worktree_ghost_skip_live_peer", { name, path: realChild });
+      skipped.push(name);
+      continue;
+    }
+
+    const outcome = isolateAndRemoveGhostDir(childPath, realChild, logger);
+    if (outcome.removed) {
+      removed.push(name);
+      logger.info("worktree_ghost_removed", { name, path: realChild, entries: outcome.entries });
+    } else if (outcome.skipReason) {
+      logger.info("worktree_ghost_skip_unsafe", {
+        name,
+        path: realChild,
+        reason: outcome.skipReason,
+      });
+      skipped.push(name);
+    }
+  }
+
+  return { ok: true, removed, skipped };
+}
+
+async function cleanupRemovedWorktreeGhost(
+  cwd: string,
+  targetPath: string,
+  expectedRealTarget: string | null,
+  runner: GitAsyncRunner,
+  logger: Logger,
+): Promise<{ cleaned: boolean; entries?: string[]; skipReason?: string }> {
+  let st;
+  try {
+    st = lstatSync(targetPath);
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return { cleaned: false };
+    return { cleaned: false, skipReason: "stat_failed" };
+  }
+  if (st.isSymbolicLink()) {
+    logger.warn("worktree_ghost_path_changed", { path: targetPath, reason: "symlink" });
+    return { cleaned: false, skipReason: "symlink" };
+  }
+  if (!st.isDirectory()) {
+    return { cleaned: false, skipReason: "not_dir" };
+  }
+
+  let realTarget: string;
+  try {
+    realTarget = realpathSync(targetPath);
+  } catch {
+    return { cleaned: false, skipReason: "realpath_failed" };
+  }
+  if (expectedRealTarget === null || realTarget !== expectedRealTarget) {
+    logger.warn("worktree_ghost_path_changed", {
+      path: targetPath,
+      expectedRealTarget,
+      actualRealTarget: realTarget,
+    });
+    return { cleaned: false, skipReason: "path_changed" };
+  }
+
+  const realCwd = normalizePathForMatch(cwd);
+  const targetPrefix = realTarget.endsWith(path.sep) ? realTarget : `${realTarget}${path.sep}`;
+  if (realCwd === realTarget || realCwd.startsWith(targetPrefix)) {
+    return { cleaned: false, skipReason: "current_cwd" };
+  }
+
+  const recheck = await listWorktreesCheckedAsync(cwd, {
+    includeDirty: false,
+    forceRefresh: true,
+    runGitAsync: runner,
+  });
+  if (!recheck.ok) {
+    logger.warn("worktree_ghost_prune_list_failed", { cwd, error: recheck.error });
+    return { cleaned: false, skipReason: "list_failed" };
+  }
+
+  const registeredRealpaths = recheck.entries.map((e) => normalizePathForMatch(e.path));
+  if (isPathRegisteredOrAncestor(realTarget, registeredRealpaths)) {
+    return { cleaned: false, skipReason: "still_registered" };
+  }
+
+  const outcome = isolateAndRemoveGhostDir(targetPath, expectedRealTarget, logger);
+  if (!outcome.removed) {
+    if (outcome.skipReason) {
+      logger.info("worktree_remove_ghost_skip_unsafe", {
+        path: realTarget,
+        reason: outcome.skipReason,
+      });
+    }
+    return { cleaned: false, skipReason: outcome.skipReason };
+  }
+  return { cleaned: true, entries: outcome.entries };
+}
+
+/** Run `git worktree prune -v`, sweep safe unregistered `.pi/` ghost folders under `.worktrees/`, invalidate caches, and notify listeners. */
 export async function runWorktreePrune(
   cwd: string,
-  deps: Pick<WorktreeDeps, "runGitAsync" | "onWorktreesChanged"> = {},
-): Promise<{ ok: boolean; pruned: string[]; message: string }> {
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "onWorktreesChanged" | "logger"> = {},
+): Promise<{
+  ok: boolean;
+  pruned: string[];
+  removedGhosts: string[];
+  skippedGhosts: string[];
+  message: string;
+}> {
   const runner = deps.runGitAsync ?? runGitAsync;
+  const logger = deps.logger ?? log;
   const res = await runner(["worktree", "prune", "-v"], cwd);
-  const parsed = formatPruneResult(res.stdout, res.stderr ?? "", res.code);
-  if (parsed.ok) {
-    invalidateWorktreeCache(cwd);
-    deps.onWorktreesChanged?.();
+  if (res.code !== 0) {
+    const failed = formatPruneResult(res.stdout, res.stderr ?? "", res.code);
+    const detail = (res.stderr || res.stdout || "git worktree prune failed").trim();
+    logger.error("worktree_prune", {
+      ok: false,
+      code: res.code,
+      detail,
+      pruned: 0,
+      removedGhosts: 0,
+      skippedGhosts: 0,
+    });
+    return failed;
   }
-  log.info("worktree_prune", { ok: parsed.ok, pruned: parsed.pruned.length });
+
+  const ghosts = await pruneOrphanedWorktreeShells(cwd, {
+    runGitAsync: runner,
+    readLivePeers: deps.readLivePeers,
+    inspectLivePeers: deps.inspectLivePeers,
+    logger,
+  });
+  const parsed = formatPruneResult(res.stdout, res.stderr ?? "", res.code, ghosts);
+  invalidateWorktreeCache(cwd);
+  deps.onWorktreesChanged?.();
+  if (parsed.ok) {
+    logger.info("worktree_prune", {
+      ok: true,
+      pruned: parsed.pruned.length,
+      removedGhosts: parsed.removedGhosts.length,
+      skippedGhosts: parsed.skippedGhosts.length,
+    });
+  } else {
+    logger.error("worktree_prune", {
+      ok: false,
+      error: ghosts.error,
+      pruned: parsed.pruned.length,
+      removedGhosts: parsed.removedGhosts.length,
+      skippedGhosts: parsed.skippedGhosts.length,
+    });
+  }
   return parsed;
 }
 
 /**
  * Guarded `git worktree remove <path>` — re-verifies clean state and live COMS peers
  * right before executing git so state cannot drift between UI render and confirmation.
+ * If git unregisters the worktree but leaves a `.pi/`/`graft`-only ghost directory behind
+ * on disk, cleans up the safe ghost directory cleanly.
  */
 export async function executeGuardedWorktreeRemove(
   cwd: string,
   targetPath: string,
-  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "onWorktreesChanged"> = {},
-): Promise<{ ok: boolean; message: string }> {
+  deps: Pick<WorktreeDeps, "runGitAsync" | "readLivePeers" | "inspectLivePeers" | "onWorktreesChanged" | "logger"> = {},
+): Promise<{ ok: boolean; message: string; cleanedGhost?: boolean }> {
   const runner = deps.runGitAsync ?? runGitAsync;
+  const logger = deps.logger ?? log;
   const freshViews = await loadWorktreeViews(cwd, deps, true, { includePrs: false, strictPeers: true });
   const fresh = freshViews.find((w) => w.path === targetPath);
   if (!fresh) {
@@ -338,19 +707,62 @@ export async function executeGuardedWorktreeRemove(
   }
   const guard = canRemoveWorktree(fresh);
   if (!guard.allowed) {
-    log.info("worktree_remove_blocked", { path: targetPath, reason: guard.reason });
+    logger.info("worktree_remove_blocked", { path: targetPath, reason: guard.reason });
     return { ok: false, message: guard.reason };
   }
+
+  let expectedRealTarget: string | null = null;
+  try {
+    const preSt = lstatSync(targetPath);
+    if (!preSt.isSymbolicLink() && preSt.isDirectory()) {
+      expectedRealTarget = realpathSync(targetPath);
+    }
+  } catch {
+    expectedRealTarget = null;
+  }
+
   const res = await runner(["worktree", "remove", targetPath], cwd);
+  const cleanup = await cleanupRemovedWorktreeGhost(cwd, targetPath, expectedRealTarget, runner, logger);
+
   if (res.code !== 0) {
+    if (cleanup.cleaned) {
+      invalidateWorktreeCache(cwd);
+      deps.onWorktreesChanged?.();
+      logger.info("worktree_removed_with_ghost_cleanup", {
+        path: targetPath,
+        branch: fresh.branch,
+        gitExitCode: res.code,
+        leftoverEntries: cleanup.entries,
+      });
+      return {
+        ok: true,
+        cleanedGhost: true,
+        message: `Removed worktree (cleaned ${cleanup.entries?.join("/") || ".pi"} leftovers): ${displayWorktreePath(targetPath, cwd)}`,
+      };
+    }
     const detail = (res.stderr || res.stdout || "git worktree remove failed").trim();
-    log.warn("worktree_remove_failed", { path: targetPath, detail });
+    logger.warn("worktree_remove_failed", {
+      path: targetPath,
+      detail,
+      ...(cleanup.skipReason ? { ghostSkipReason: cleanup.skipReason } : {}),
+    });
     return { ok: false, message: `Failed to remove worktree: ${detail}` };
   }
+
   invalidateWorktreeCache(cwd);
   deps.onWorktreesChanged?.();
-  log.info("worktree_removed", { path: targetPath, branch: fresh.branch });
-  return { ok: true, message: `Removed worktree: ${displayWorktreePath(targetPath, cwd)}` };
+  logger.info("worktree_removed", {
+    path: targetPath,
+    branch: fresh.branch,
+    ...(cleanup.cleaned ? { cleanedGhost: true, leftoverEntries: cleanup.entries } : {}),
+  });
+  return {
+    ok: true,
+    ...(cleanup.cleaned ? { cleanedGhost: true } : {}),
+    message: cleanup.cleaned
+      ? `Removed worktree (cleaned ${cleanup.entries?.join("/") || ".pi"} leftovers): ${displayWorktreePath(targetPath, cwd)}`
+      : `Removed worktree: ${displayWorktreePath(targetPath, cwd)}`,
+  };
 }
 
 /** Interactive list → detail overlay for `/worktree`. */
@@ -675,10 +1087,11 @@ export function registerWorktree(pi: ExtensionAPI, deps: WorktreeDeps = {}): voi
     namespace: TOOL_NAMESPACES.runtime,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     description:
-      "Inspect git worktrees (path, branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata.",
+      "Inspect git worktrees (path, branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata and unregistered .pi/ ghost directories under .worktrees/.",
     parameters: Type.Object({
       action: Type.Union([Type.Literal("list"), Type.Literal("prune")], {
-        description: "'list' to list git worktrees with dirty counts, PRs, and active COMS peers; 'prune' to run git worktree prune -v.",
+        description:
+          "'list' to list git worktrees with dirty counts, PRs, and active COMS peers; 'prune' to run git worktree prune -v and sweep unregistered .pi/ or graft-only ghost directories under .worktrees/.",
       }),
     }),
     async execute(_callId, params, _signal, _onUpdate, ctx) {
@@ -694,7 +1107,13 @@ export function registerWorktree(pi: ExtensionAPI, deps: WorktreeDeps = {}): voi
       }
       if (params.action === "prune") {
         const res = await runWorktreePrune(cwd, effectiveDeps);
-        log.info("worktree_status_tool_prune", { cwd, ok: res.ok, pruned: res.pruned.length });
+        log.info("worktree_status_tool_prune", {
+          cwd,
+          ok: res.ok,
+          pruned: res.pruned.length,
+          removedGhosts: res.removedGhosts.length,
+          skippedGhosts: res.skippedGhosts.length,
+        });
         return {
           content: [{ type: "text" as const, text: res.message }],
           details: { action: "prune", ...res },
