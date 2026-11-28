@@ -57,6 +57,27 @@ export interface RegistryEntry {
 	host_pid?: number | null;
 }
 
+/**
+ * Resolve `project` as a direct single-component child of `projectsDir`, returning `null`
+ * on empty strings, `.`, `..`, path separators, NUL bytes, or any parent-directory escape.
+ * Ordinary directory names containing `..` (such as `foo..bar`) are allowed.
+ */
+export function resolveSafeProjectDir(projectsDir: string, project: string): string | null {
+	if (
+		!project ||
+		project === "." ||
+		project === ".." ||
+		project.includes("/") ||
+		project.includes("\\") ||
+		project.includes("\0")
+	) {
+		return null;
+	}
+	const root = path.resolve(projectsDir);
+	const resolved = path.resolve(root, project);
+	return path.dirname(resolved) === root ? resolved : null;
+}
+
 /** Resolve the effective COMS root directory for `cwd` via project settings, falling back to `~/.pi/coms`. */
 export function resolveComsDir(cwd = process.cwd()): string {
 	try {
@@ -252,13 +273,14 @@ export class ComsRegistry {
 	}
 
 	reloadQueuePath(project: string, sessionId: string): string {
-		if (project.includes("/") || project.includes("\\") || project.includes("..")) {
+		const projectDir = resolveSafeProjectDir(this.projectsDir(), project);
+		if (!projectDir) {
 			throw new Error(`Invalid project: ${project}`);
 		}
 		if (sessionId.includes("/") || sessionId.includes("\\") || sessionId.includes("..")) {
 			throw new Error(`Invalid session_id: ${sessionId}`);
 		}
-		return path.join(this.comsDir, "projects", project, `reload-queue-${sessionId}.json`);
+		return path.join(projectDir, `reload-queue-${sessionId}.json`);
 	}
 
 	makeEndpoint(sessionId: string): string {

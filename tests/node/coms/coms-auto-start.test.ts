@@ -100,6 +100,7 @@ function createFakePi(flags: Record<string, unknown> = {}) {
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, Function>();
 	const customEntries: any[] = [];
+	const messages: any[] = [];
 	const listeners = new Map<string, Set<(data?: any) => void>>();
 	// Mirror real Pi ExtensionAPI: registerFlag stores defaults that getFlag returns when unset.
 	const flagStore = new Map<string, unknown>(Object.entries(flags));
@@ -147,7 +148,9 @@ function createFakePi(flags: Record<string, unknown> = {}) {
 		appendEntry(customType: string, data: any) {
 			customEntries.push({ type: "custom", customType, data });
 		},
-		sendMessage() {},
+		sendMessage(msg: any) {
+			messages.push(msg);
+		},
 		events,
 	};
 
@@ -156,6 +159,7 @@ function createFakePi(flags: Record<string, unknown> = {}) {
 		tools,
 		handlers,
 		customEntries,
+		messages,
 		getActiveTools: () => [...activeTools],
 	};
 }
@@ -460,6 +464,47 @@ describe("coms_auto_start interactive lifecycle (#1503)", { concurrency: false }
 		assert.equal(reg.runtime.isActive(), true);
 		assert.equal(reg.runtime.getSelf()?.name, "foo..bar");
 		assert.equal(reg.runtime.getSelf()?.project, expectedCwdProject(workspace));
+	});
+
+	it("preserves queued inbound messages across /reload for a double-dot repo name", async () => {
+		resetAmbientComsEnv();
+		const { workspace, comsDir } = makeNamedWorkspace("foo..bar");
+		const receiverSessionId = "sess-dotdot-recv";
+		const w1 = createFakePi();
+		registerIsolatedComs(w1.pi, comsDir, receiverSessionId);
+		const ctx1 = makeSessionCtx(workspace, receiverSessionId, { entries: w1.customEntries });
+		await w1.handlers.get("session_start")!({ reason: "startup" }, ctx1);
+
+		const sender = createFakePi();
+		registerIsolatedComs(sender.pi, comsDir, "sess-dotdot-send");
+		const senderCtx = makeSessionCtx(workspace, "sess-dotdot-send", { entries: sender.customEntries });
+		await sender.handlers.get("session_start")!({ reason: "startup" }, senderCtx);
+
+		const sent = await sender.tools.get("coms_send").execute("send-dotdot", {
+			target: "foo..bar",
+			prompt: "survive dotdot reload",
+		});
+		const msgId = sent.details.msg_id as string;
+		const waitDeadline = Date.now() + 4_000;
+		while (!w1.messages.some((m) => m?.details?.msg_id === msgId) && Date.now() < waitDeadline) {
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		assert.ok(w1.messages.some((m) => m?.details?.msg_id === msgId), "receiver got initial inbound");
+
+		await w1.handlers.get("session_shutdown")!({ type: "session_shutdown", reason: "reload" }, ctx1);
+		const midStatus = await sender.tools.get("coms_get").execute("get-mid", { msg_id: msgId });
+		assert.equal(midStatus.details.status, "pending");
+
+		const w2 = createFakePi();
+		registerIsolatedComs(w2.pi, comsDir, receiverSessionId);
+		const ctx2 = makeSessionCtx(workspace, receiverSessionId, { entries: w1.customEntries });
+		await w2.handlers.get("session_start")!({ type: "session_start", reason: "reload" }, ctx2);
+
+		const restoreDeadline = Date.now() + 4_000;
+		while (!w2.messages.some((m) => m?.details?.msg_id === msgId) && Date.now() < restoreDeadline) {
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		assert.ok(w2.messages.some((m) => m?.details?.msg_id === msgId), "reloaded session restored queued inbound");
 	});
 
 	it("suffixes cname with -2 when another live peer holds repo basename", async () => {

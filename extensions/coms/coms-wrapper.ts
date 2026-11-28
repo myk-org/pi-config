@@ -16,7 +16,7 @@ import {
     type ComsPeerFlagOverrides,
     type ComsPeerRuntime,
 } from "./coms-p2p.js";
-import { ComsRegistry, isRegistryRowAlive, probeAlive, resolveComsDir, type RegistryEntry } from "./coms-registry.js";
+import { ComsRegistry, isRegistryRowAlive, probeAlive, resolveComsDir, resolveSafeProjectDir, type RegistryEntry } from "./coms-registry.js";
 import { resolveBridgeSessionKey, setComsActive } from "../shared/session-bridge.js";
 import { resolvePiAgentDir, withPropagatedPiAgentDirEnv } from "../shared/pi-agent-dir.js";
 import { createLogger } from "../shared/logger.js";
@@ -98,19 +98,8 @@ async function acquireAutoStartProjectLock(
     project: string,
     timeoutMs: number = AUTO_START_LOCK_TIMEOUT_MS,
 ): Promise<(() => void) | null> {
-    if (
-        !project ||
-        project === "." ||
-        project === ".." ||
-        project.includes("/") ||
-        project.includes("\\") ||
-        project.includes("\0")
-    ) {
-        return null;
-    }
-    const projectsRoot = path.resolve(registry.projectsDir());
-    const projectDir = path.resolve(projectsRoot, project);
-    if (path.dirname(projectDir) !== projectsRoot) return null;
+    const projectDir = resolveSafeProjectDir(registry.projectsDir(), project);
+    if (!projectDir) return null;
     try {
         registry.ensureProjectDirs(project);
     } catch {
