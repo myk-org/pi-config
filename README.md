@@ -64,7 +64,7 @@ Single extension that provides:
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Task tracking** | Structured task lists for multi-step workflows — live widget (`expanded` ↔ `collapsed` 1-line header via `alt+t`), `[you]`/`[llm]` assignee tags, live `[⏳ ...]` badges for bound async subagents, zero-arg `/tasks` TUI (`Space` multi-select for `s` start, `d` done, `x` delete, plus `n` add, `e` edit, `f` mine/all), progress tracking, reminder nudges (owned, based on [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) MIT). `PI_TASK_SCOPE` selects `.pi/tasks/tasks-<sessionId>.json` (`session`, default) or `.pi/tasks/tasks.json` (`project`); `PI_TASKS` sets an explicit store file, a bare list id under `~/.pi/tasks/<id>.json`, or `off` for in-memory only |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
-| **Inter-agent communication** | P2P (`/coms`) agent communication — compact 1-line TUI renderers (`Ctrl+O` expands) for `coms-inbound`, `coms-response`, `coms-peer-joined`, and `coms-peer-left`, zero-arg TUI overlay (`1`/`2` Roster & Activity Log, `r` revive stopped supervised peers, `f` scope, `q` inbound queue, `Space` multi-select `m`/`r`/`x`, `X` kill all, `Enter` drilldown) and LLM tools (`coms_start`/`coms_stop`/`coms_*`) |
+| **Inter-agent communication** | P2P (`/coms`) agent communication — auto-registers interactive TUI sessions by default (`coms_auto_start: true`, `PI_COMS_AUTO_START`), compact 1-line TUI renderers (`Ctrl+O` expands) for `coms-inbound`, `coms-response`, `coms-peer-joined`, and `coms-peer-left`, zero-arg TUI overlay (`1`/`2` Roster & Activity Log, `r` revive stopped supervised peers, `f` scope, `q` inbound queue, `Space` multi-select `m`/`r`/`x`, `X` kill all, `Enter` drilldown) and LLM tools (`coms_start`/`coms_stop`/`coms_*`) |
 | **Slash commands** | `/pr-review`, `/issue-review`, `/release`, `/review-local`, `/review-status`, `/forget-approvals`, `/query-db`, `/async`, `/cron`, `/tasks`, `/worktree`, `/adopt-skill`, `/status`, `/qa`, `/undo`, `/redo`, `/remember`, `/coms`, `/pi-config-settings` |
 | **GitHub autocomplete** | Type `#` in the editor to get issue/PR suggestions from the current repo — lazy-loaded, 5min cache |
 | **Command arg completions** | Tab-complete arguments for slash commands — branches for `/review-local`, PR numbers for `/pr-review`, and more |
@@ -124,7 +124,9 @@ for `git-expert` to commit.
 
 ### Inter-Agent Communication (coms)
 
-P2P local agent communication (direct Unix sockets, no server needed). Activate via `coms_start` tool or `pi --coms`; inspect and manage peers and the inbound queue via zero-arg `/coms`:
+P2P local agent communication (direct Unix sockets, no server needed). Interactive TUI sessions auto-register by default
+(`coms_auto_start: true`, override with `PI_COMS_AUTO_START=0`); you can also activate via `coms_start` or `pi --coms`
+and inspect or manage peers and the inbound queue via zero-arg `/coms`:
 
 **Tools available once activated:**
 

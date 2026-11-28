@@ -16,10 +16,12 @@ import {
     type ComsPeerFlagOverrides,
     type ComsPeerRuntime,
 } from "./coms-p2p.js";
-import { ComsRegistry, isRegistryRowAlive, resolveComsDir } from "./coms-registry.js";
+import { ComsRegistry, isRegistryRowAlive, probeAlive, resolveComsDir, resolveSafeProjectDir, type RegistryEntry } from "./coms-registry.js";
 import { resolveBridgeSessionKey, setComsActive } from "../shared/session-bridge.js";
 import { resolvePiAgentDir, withPropagatedPiAgentDirEnv } from "../shared/pi-agent-dir.js";
 import { createLogger } from "../shared/logger.js";
+import { acquireTokenFileLock } from "../shared/file-lock.js";
+import { isPiOneshotInvocation } from "../shared/oneshot.js";
 import { READ_ONLY_LOCAL_ANNOTATIONS, TOOL_NAMESPACES } from "../shared/tool-namespaces.js";
 import { emitIfLive, isBrowserDispatch, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
@@ -59,6 +61,119 @@ import { createTailHistoryReader } from "./coms-history.js";
 import { requestDescribe } from "./coms-describe.js";
 
 const log = createLogger("coms");
+
+const AUTO_START_SESSION_REASONS = new Set(["startup", "new", "resume", "fork"]);
+const MAX_AUTO_START_BASE_LEN = 56;
+const MAX_PEER_NAME_LEN = 64;
+const MAX_AUTO_START_NAME_ATTEMPTS = 256;
+const MAX_AUTO_START_COLLISION_RETRIES = 10;
+const AUTO_START_LOCK_POLL_MS = 25;
+const AUTO_START_LOCK_TIMEOUT_MS = 3_000;
+
+/**
+ * Derive a sanitized default COMS peer base name from `cwd` (e.g. `/path/to/rootcoz` → `rootcoz`).
+ * Guarantees `[A-Za-z0-9][A-Za-z0-9._-]*` within 56 chars so `-2`, `-3`, ... suffixes stay <= 64 chars.
+ */
+export function deriveAutoStartBaseName(cwd: string): string {
+    const raw = path.basename(path.resolve(cwd || process.cwd())).trim();
+    const cleaned = raw
+        .replace(/[^A-Za-z0-9._-]+/g, "-")
+        .replace(/^[^A-Za-z0-9]+/, "")
+        .slice(0, MAX_AUTO_START_BASE_LEN)
+        .replace(/[-.]+$/, "");
+    return cleaned || "session";
+}
+
+function hasExplicitCliProjectFlag(argv: string[] = process.argv): boolean {
+    for (let i = 2; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === "--project" && typeof argv[i + 1] === "string" && argv[i + 1]!.trim()) return true;
+        if (typeof arg === "string" && arg.startsWith("--project=") && arg.slice("--project=".length).trim()) return true;
+    }
+    return false;
+}
+
+async function acquireAutoStartProjectLock(
+    registry: ComsRegistry,
+    project: string,
+    timeoutMs: number = AUTO_START_LOCK_TIMEOUT_MS,
+): Promise<(() => void) | null> {
+    const projectDir = resolveSafeProjectDir(registry.projectsDir(), project);
+    if (!projectDir) return null;
+    try {
+        registry.ensureProjectDirs(project);
+    } catch {
+        return null;
+    }
+    const lockPath = path.join(projectDir, ".autostart.lock");
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (true) {
+        const release = acquireTokenFileLock(lockPath, { attempts: 1, uniqueClaim: true });
+        if (release) return release;
+        if (Date.now() >= deadline) {
+            log.warn("coms_auto_start_lock_timeout", { project, lockPath });
+            return null;
+        }
+        await new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, AUTO_START_LOCK_POLL_MS);
+            t.unref?.();
+        });
+    }
+}
+
+async function isEntryLiveForNameCollision(entry: RegistryEntry): Promise<boolean> {
+    if (typeof entry.endpoint !== "string" || !entry.endpoint) return false;
+    const pingEp = `${entry.endpoint}.ping`;
+    const hasPing = process.platform === "win32" || existsSync(pingEp);
+    const hasMain = process.platform === "win32" || existsSync(entry.endpoint);
+    if (hasPing && await probeAlive(pingEp)) return true;
+    if (hasMain && await probeAlive(entry.endpoint)) return true;
+    return false;
+}
+
+/**
+ * Pick the cleanest available auto-start peer name for `project`: `baseName`, or
+ * `baseName-2`, `baseName-3`, ... only when a DIFFERENT live peer already holds that name.
+ * Returns `null` when every candidate within `maxAttempts` is occupied or already tried.
+ */
+export async function resolveAutoStartName(
+    registry: ComsRegistry,
+    project: string,
+    baseName: string,
+    excludeSessionId?: string,
+    alreadyTried?: ReadonlySet<string>,
+    maxAttempts: number = MAX_AUTO_START_NAME_ATTEMPTS,
+): Promise<string | null> {
+    const entries = registry.readEntries(project).filter(
+        (entry) => !excludeSessionId || entry.coms_session_id !== excludeSessionId,
+    );
+    const byName = new Map<string, RegistryEntry[]>();
+    for (const entry of entries) {
+        const list = byName.get(entry.name);
+        if (list) list.push(entry);
+        else byName.set(entry.name, [entry]);
+    }
+    const bound = Math.max(1, Math.floor(maxAttempts));
+    for (let suffix = 1; suffix <= bound; suffix++) {
+        const suffixStr = suffix === 1 ? "" : `-${suffix}`;
+        const maxBase = MAX_PEER_NAME_LEN - suffixStr.length;
+        if (maxBase < 1) break;
+        const trimmedBase = baseName.slice(0, maxBase).replace(/[-.]+$/, "") || "session";
+        const candidate = `${trimmedBase}${suffixStr}`;
+        if (alreadyTried?.has(candidate)) continue;
+        const matches = byName.get(candidate);
+        if (!matches || matches.length === 0) return candidate;
+        let takenByLive = false;
+        for (const entry of matches) {
+            if (await isEntryLiveForNameCollision(entry)) {
+                takenByLive = true;
+                break;
+            }
+        }
+        if (!takenByLive) return candidate;
+    }
+    return null;
+}
 
 function mapToFlagOverrides(values: Map<string, any>): ComsPeerFlagOverrides {
     const out: ComsPeerFlagOverrides = {};
@@ -218,6 +333,8 @@ export interface RegisterComsOptions {
     registerSignalHandlers?: boolean;
     /** Override reload-handoff queue TTL in ms (primarily for isolated tests). */
     reloadQueueTtlMs?: number;
+    /** Override per-project auto-start lock acquisition timeout in ms (primarily for isolated tests). */
+    autoStartLockTimeoutMs?: number;
 }
 
 export interface RegisteredComs {
@@ -231,6 +348,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     let flagValues = new Map<string, any>();
     let extra: Record<string, any> = {};
     let activation: Promise<{ ok: boolean; message: string }> | null = null;
+    let pendingShutdown: Promise<void> | null = null;
     let liveCtx: any = null;
     let cachedRegistry: ComsRegistry | null = null;
     let cachedHistoryReader: { path: string; reader: ReturnType<typeof createTailHistoryReader> } | null = null;
@@ -508,9 +626,90 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         }
     };
 
-    // Single session_start handler: prunes stale registry entries, handles reload reactivation,
-    // resets state on fresh startup, and supports `pi --coms` autostart.
+    const shouldAutoStartComs = (evt: any, ctx: any): boolean => {
+        const reason = evt?.reason;
+        if (typeof reason !== "string" || !AUTO_START_SESSION_REASONS.has(reason)) {
+            log.debug("coms_auto_start_skipped", { reason: "session_reason", evtReason: reason ?? null });
+            return false;
+        }
+        if (process.env.PI_SUBAGENT_CHILD === "1") {
+            log.debug("coms_auto_start_skipped", { reason: "subagent_child" });
+            return false;
+        }
+        if (process.env.PI_COMS_SUPERVISED_PEER === "1") {
+            log.debug("coms_auto_start_skipped", { reason: "supervised_peer" });
+            return false;
+        }
+        if (ctx?.mode !== "tui" || ctx?.hasUI !== true) {
+            log.debug("coms_auto_start_skipped", {
+                reason: "non_tui",
+                mode: ctx?.mode ?? null,
+                hasUI: Boolean(ctx?.hasUI),
+            });
+            return false;
+        }
+        if (isPiOneshotInvocation()) {
+            log.debug("coms_auto_start_skipped", { reason: "oneshot_argv" });
+            return false;
+        }
+        const cwd = ctx?.cwd || process.cwd();
+        let enabled = false;
+        try {
+            enabled = getSetting(cwd, "coms_auto_start") === true;
+        } catch (err: unknown) {
+            log.warn("coms_auto_start_setting_read_failed", {
+                cwd,
+                error: err instanceof Error ? err.message : String(err),
+            });
+            return false;
+        }
+        if (!enabled) {
+            log.debug("coms_auto_start_skipped", { reason: "setting_disabled", cwd });
+            return false;
+        }
+        return true;
+    };
+
+    const collectCliFlagParts = (opts: { includeCname?: boolean; includeProject?: boolean } = {}): string[] => {
+        const flagParts: string[] = [];
+        const flagNames: Array<"cname" | "purpose" | "project" | "color"> = [];
+        if (opts.includeCname) flagNames.push("cname");
+        flagNames.push("purpose");
+        if (opts.includeProject) flagNames.push("project");
+        flagNames.push("color");
+        for (const flagName of flagNames) {
+            const value = pi.getFlag(flagName);
+            if (typeof value === "string" && value) flagParts.push(`--${flagName}`, value);
+        }
+        if (pi.getFlag("explicit") === true) flagParts.push("--explicit");
+        return flagParts;
+    };
+
+    const readLastPersistedComsState = (ctx: any): { active: boolean; flags: Record<string, any>; extra: Record<string, any> } | null => {
+        const entries = ctx?.sessionManager?.getEntries?.() ?? [];
+        let last: { active: boolean; flags: Record<string, any>; extra: Record<string, any> } | null = null;
+        for (const entry of entries) {
+            if (entry.type === "custom" && entry.customType === PERSIST_KEY) {
+                last = {
+                    active: entry.data?.active === true,
+                    flags: entry.data?.flags || {},
+                    extra: entry.data?.extra || {},
+                };
+            }
+        }
+        return last;
+    };
+
+    // Single session_start handler: awaits prior shutdown teardown, prunes stale registry entries,
+    // handles reload reactivation (honoring explicit coms_stop and coms_auto_start=false), resets
+    // state on fresh startup/new/resume/fork, and supports both `pi --coms` and `coms_auto_start`.
     pi.on("session_start", async (evt: any, ctx: any) => {
+        if (pendingShutdown) {
+            try { await pendingShutdown; } catch { /* already logged */ }
+        }
+        if (activation) {
+            try { await activation; } catch { /* already logged */ }
+        }
         liveCtx = ctx;
         ensurePidashRegistration();
         try {
@@ -526,26 +725,52 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         }
 
         if (evt?.reason === "reload") {
-            let wasActive = false;
-            let savedFlags: Record<string, any> = {};
-            let savedExtra: Record<string, any> = {};
-            const entries = ctx?.sessionManager?.getEntries?.() ?? [];
-            for (const entry of entries) {
-                if (entry.type === "custom" && entry.customType === PERSIST_KEY) {
-                    wasActive = entry.data?.active === true;
-                    savedFlags = entry.data?.flags || {};
-                    savedExtra = entry.data?.extra || {};
-                }
-            }
+            const lastState = readLastPersistedComsState(ctx);
+            const wasActive = lastState?.active === true;
+            const savedFlags = lastState?.flags || {};
+            const savedExtra = lastState?.extra || {};
             if (wasActive) {
-                flagValues = new Map(Object.entries(savedFlags));
-                extra = savedExtra;
                 const savedOrigin: ComsActivationOrigin =
-                    savedExtra?.origin === "tool" || savedExtra?.origin === "cli" ? savedExtra.origin : "slash";
+                    savedExtra?.origin === "tool" || savedExtra?.origin === "cli" || savedExtra?.origin === "auto"
+                        ? savedExtra.origin
+                        : "slash";
                 const savedSessionId =
                     typeof savedExtra?.comsSessionId === "string" && savedExtra.comsSessionId
                         ? savedExtra.comsSessionId
                         : undefined;
+                if (savedOrigin === "auto") {
+                    const cwd = ctx?.cwd || process.cwd();
+                    let autoEnabled = false;
+                    try {
+                        autoEnabled = getSetting(cwd, "coms_auto_start") === true;
+                    } catch (err: unknown) {
+                        log.warn("coms_auto_start_setting_read_failed", {
+                            cwd,
+                            error: err instanceof Error ? err.message : String(err),
+                        });
+                    }
+                    if (!autoEnabled) {
+                        active = false;
+                        flagValues = new Map();
+                        extra = {};
+                        syncComsActive(false, ctx);
+                        syncComsActiveTools(pi, gatedTools, false);
+                        persistCurrentState();
+                        const reloadProject = typeof savedFlags.project === "string" && savedFlags.project ? savedFlags.project : ownProject();
+                        const reloadSessionId = savedSessionId ?? options.sessionId ?? (globalThis as any).__piConfigSessionId;
+                        try {
+                            await runtime.stop({
+                                reason: "setting_disabled_on_reload",
+                                project: reloadProject,
+                                ...(typeof reloadSessionId === "string" && reloadSessionId ? { sessionId: reloadSessionId } : {}),
+                            });
+                        } catch { /* best-effort */ }
+                        log.debug("coms_auto_start_skipped", { reason: "setting_disabled_on_reload", cwd });
+                        return;
+                    }
+                }
+                flagValues = new Map(Object.entries(savedFlags));
+                extra = savedExtra;
                 try {
                     const self = await runtime.start(ctx, {
                         flags: mapToFlagOverrides(flagValues),
@@ -590,49 +815,170 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             return;
         }
 
+        // Ensure any still-active runtime from a prior session (e.g. /new, /resume, /fork without
+        // a preceding session_shutdown) finishes tearing down its socket and registry entry before
+        // collision-checking the new name.
+        if (runtime.isActive()) {
+            try {
+                await runtime.stop({ reason: typeof evt?.reason === "string" && evt.reason ? evt.reason : "session_switch" });
+            } catch (err) {
+                log.warn("coms_session_switch_stop_failed", {
+                    reason: evt?.reason ?? null,
+                    error: err instanceof Error ? err.message : String(err),
+                });
+            }
+        }
+
+        const priorPersisted = evt?.reason === "resume" || evt?.reason === "fork"
+            ? readLastPersistedComsState(ctx)
+            : null;
+        const stoppedByUserInSession =
+            priorPersisted?.active === false && priorPersisted?.extra?.stoppedByUser === true;
+
         active = false;
+        flagValues = new Map();
+        extra = {};
         syncComsActive(false, ctx);
         syncComsActiveTools(pi, gatedTools, false);
-        persistCurrentState();
 
         // `pi --coms …`: a headless peer boots itself, no slash command and no terminal.
         if (pi.getFlag("coms") === true) {
-            const flagParts: string[] = [];
-            for (const flagName of ["cname", "purpose", "project", "color"] as const) {
-                const value = pi.getFlag(flagName);
-                if (typeof value === "string" && value) flagParts.push(`--${flagName}`, value);
-            }
-            if (pi.getFlag("explicit") === true) flagParts.push("--explicit");
+            const flagParts = collectCliFlagParts({ includeCname: true, includeProject: true });
             log.info("coms autostart from --coms", { args: flagParts.join(" ") });
             const result = await activateComs(flagParts, ctx, "cli");
-            if (!result.ok) log.warn("coms_autostart_failed", { message: result.message });
+            if (!result.ok) {
+                persistCurrentState();
+                log.warn("coms_autostart_failed", { message: result.message });
+            }
+            return;
         }
+
+        if (stoppedByUserInSession) {
+            extra = { stoppedByUser: true };
+            persistCurrentState();
+            log.debug("coms_auto_start_skipped", { reason: "user_stopped", evtReason: evt?.reason });
+            return;
+        }
+
+        if (shouldAutoStartComs(evt, ctx)) {
+            const cwd = ctx?.cwd || process.cwd();
+            // `coms-p2p.ts` registers `--project` with default `"default"`, which `pi.getFlag("project")`
+            // returns even when `--project` was omitted on CLI. Only honor `"default"` if explicitly passed.
+            const rawFlagProject = pi.getFlag("project");
+            const trimmedFlagProject = typeof rawFlagProject === "string" ? rawFlagProject.trim() : "";
+            const explicitProject =
+                trimmedFlagProject && (trimmedFlagProject !== "default" || hasExplicitCliProjectFlag())
+                    ? trimmedFlagProject
+                    : "";
+            const project = explicitProject || cwd.replace(/^[\\/]+/, "").replace(/[\\/]+/g, "__");
+            if (!project) {
+                log.debug("coms_auto_start_skipped", { reason: "root_cwd", cwd });
+                persistCurrentState();
+                return;
+            }
+            const optionalCliFlags = collectCliFlagParts({ includeCname: false, includeProject: false });
+            const registry = getRegistry(cwd);
+            const releaseLock = await acquireAutoStartProjectLock(registry, project, options.autoStartLockTimeoutMs);
+            if (!releaseLock) {
+                log.warn("coms_auto_start_lock_unavailable", { project, cwd });
+                persistCurrentState();
+                return;
+            }
+            let started = false;
+            const triedNames = new Set<string>();
+            const baseName = deriveAutoStartBaseName(cwd);
+            try {
+                const explicitCname = pi.getFlag("cname");
+                if (typeof explicitCname === "string" && explicitCname.trim()) {
+                    const cname = explicitCname.trim();
+                    const flagParts = ["--cname", cname, "--project", project, ...optionalCliFlags];
+                    const result = await activateComs(flagParts, ctx, "auto");
+                    if (result.ok) {
+                        started = true;
+                        log.info("coms_auto_started", { name: cname, project, reason: evt?.reason });
+                    } else {
+                        log.warn("coms_auto_start_failed", { name: cname, project, message: result.message });
+                    }
+                } else {
+                    const selfSessionId = options.sessionId ?? (globalThis as any).__piConfigSessionId;
+                    for (let attempt = 0; attempt < MAX_AUTO_START_COLLISION_RETRIES; attempt++) {
+                        const candidate = await resolveAutoStartName(
+                            registry,
+                            project,
+                            baseName,
+                            typeof selfSessionId === "string" && selfSessionId ? selfSessionId : undefined,
+                            triedNames,
+                        );
+                        if (!candidate) {
+                            log.warn("coms_auto_start_capacity_reached", {
+                                baseName,
+                                project,
+                                maxAttempts: MAX_AUTO_START_NAME_ATTEMPTS,
+                            });
+                            break;
+                        }
+                        const flagParts = ["--cname", candidate, "--project", project, ...optionalCliFlags];
+                        const result = await activateComs(flagParts, ctx, "auto");
+                        if (result.ok) {
+                            started = true;
+                            log.info("coms_auto_started", { name: candidate, project, reason: evt?.reason });
+                            break;
+                        }
+                        if (result.message.includes("already taken by a live peer")) {
+                            triedNames.add(candidate);
+                            log.debug("coms_auto_start_name_collision_retry", { candidate, project, attempt: attempt + 1 });
+                            continue;
+                        }
+                        log.warn("coms_auto_start_failed", { name: candidate, project, message: result.message });
+                        break;
+                    }
+                }
+            } finally {
+                releaseLock();
+            }
+            if (!started) {
+                if (triedNames.size >= MAX_AUTO_START_COLLISION_RETRIES) {
+                    log.warn("coms_auto_start_exhausted", { baseName, project, attempts: triedNames.size });
+                }
+                persistCurrentState();
+            }
+            return;
+        }
+
+        persistCurrentState();
     });
 
     pi.on("session_shutdown", async (evt: any, ctx: any) => {
-        clearPodmanBuildTimers();
-        if (settingsChangedUnsubscribe) {
-            try { settingsChangedUnsubscribe(); } catch { /* ignore */ }
-            settingsChangedUnsubscribe = null;
-        }
-        if (pidashUnsubscribe) {
-            try { pidashUnsubscribe(); } catch { /* ignore */ }
-            pidashUnsubscribe = null;
-        }
-        const shutdownKey = ctx ? resolveBridgeSessionKey(ctx) : activeSessionKey;
-        try {
-            await runtime.stop({ reason: evt?.reason });
-        } catch (err) {
-            log.warn("coms_shutdown_failed", { error: err instanceof Error ? err.message : String(err) });
-        } finally {
-            if (activeSessionKey) setComsActive(false, activeSessionKey);
-            if (shutdownKey && shutdownKey !== activeSessionKey) setComsActive(false, shutdownKey);
-            activeSessionKey = undefined;
-        }
-        // Keep persisted session state intact so `/reload` sees `active: true` and reactivates.
-        active = false;
-        revivingPeers.clear();
-        cachedHistoryReader = null;
+        const run = (async () => {
+            clearPodmanBuildTimers();
+            if (settingsChangedUnsubscribe) {
+                try { settingsChangedUnsubscribe(); } catch { /* ignore */ }
+                settingsChangedUnsubscribe = null;
+            }
+            if (pidashUnsubscribe) {
+                try { pidashUnsubscribe(); } catch { /* ignore */ }
+                pidashUnsubscribe = null;
+            }
+            const shutdownKey = ctx ? resolveBridgeSessionKey(ctx) : activeSessionKey;
+            try {
+                await runtime.stop({ reason: evt?.reason });
+            } catch (err) {
+                log.warn("coms_shutdown_failed", { error: err instanceof Error ? err.message : String(err) });
+            } finally {
+                if (activeSessionKey) setComsActive(false, activeSessionKey);
+                if (shutdownKey && shutdownKey !== activeSessionKey) setComsActive(false, shutdownKey);
+                activeSessionKey = undefined;
+            }
+            // Keep persisted session state intact so `/reload` sees `active: true` and reactivates.
+            active = false;
+            revivingPeers.clear();
+            cachedHistoryReader = null;
+        })();
+        const tracked = run.finally(() => {
+            if (pendingShutdown === tracked) pendingShutdown = null;
+        });
+        pendingShutdown = tracked;
+        await tracked;
     });
 
     // Activation flag: `pi --coms --cname x --project y` starts the peer at session start, so a
@@ -715,7 +1061,8 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 return { ok: false, message: "📡 coms start failed: no peer socket was created (see ~/.pi/logs/coms)." };
             }
             active = true;
-            extra = { ...extra, origin: entry, ...(self?.sessionId ? { comsSessionId: self.sessionId } : {}) };
+            const { stoppedByUser: _cleared, ...restExtra } = extra;
+            extra = { ...restExtra, origin: entry, ...(self?.sessionId ? { comsSessionId: self.sessionId } : {}) };
             const peerName = String(flagValues.get("cname") ?? self?.name ?? "").trim() || undefined;
             syncComsActive(true, ctx, peerName);
             syncComsActiveTools(pi, gatedTools, true);
@@ -916,6 +1263,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 if (!active) return { content: [{ type: "text" as const, text: "coms is not active." }], details: { ok: true, active: false } };
                 try { await runtime.stop({ reason: "stop" }); } catch (e: unknown) { log.warn("coms_stop shutdown threw", e instanceof Error ? e.message : String(e)); }
                 active = false;
+                extra = { ...extra, stoppedByUser: true };
                 syncComsActive(false, ctx);
                 syncComsActiveTools(pi, gatedTools, false);
                 persistCurrentState();

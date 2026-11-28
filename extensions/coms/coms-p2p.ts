@@ -90,7 +90,12 @@ export const RELOAD_QUEUE_TTL_MS = 60_000;
 
 // ━━ Public Runtime Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export type ComsActivationOrigin = "tool" | "slash" | "cli";
+export type ComsActivationOrigin = "tool" | "slash" | "cli" | "auto";
+
+function normalizeActivationOrigin(origin: unknown): ComsActivationOrigin {
+	if (origin === "tool" || origin === "cli" || origin === "auto") return origin;
+	return "slash";
+}
 
 export interface ComsPeerFlagOverrides {
 	cname?: string;
@@ -2662,8 +2667,7 @@ export function createComsPeerRuntime(
 
 	function getSelf(): ComsPeerSelf | null {
 		if (!identity) return null;
-		const origin: ComsActivationOrigin =
-			identity.origin === "tool" || identity.origin === "cli" ? identity.origin : "slash";
+		const origin = normalizeActivationOrigin(identity.origin);
 		return {
 			sessionId: identity.coms_session_id,
 			name: identity.name,
@@ -2850,9 +2854,8 @@ export function createComsPeerRuntime(
 		// 4. Build + write registry entry atomically.
 		const piSessionId = resolveOwnPiSessionId(ctx);
 		const taskStorePath = resolveOwnTaskStorePath(piSessionId, cwd);
-		/** Which entry point activated coms: the `coms_start` tool, `/coms start`, or `pi --coms`. */
-		const activationOrigin: ComsActivationOrigin =
-			startOptions?.origin === "tool" || startOptions?.origin === "cli" ? startOptions.origin : "slash";
+		/** Which entry point activated coms: `coms_start`, `/coms start`, `pi --coms`, or `coms_auto_start`. */
+		const activationOrigin = normalizeActivationOrigin(startOptions?.origin);
 		const containerName = (process.env.PI_COMS_CONTAINER_NAME || "").trim() || undefined;
 		const hostPidParsed = Number.parseInt((process.env.PI_COMS_HOST_PID || "").trim(), 10);
 		const hostPid = Number.isInteger(hostPidParsed) && hostPidParsed > 0 ? hostPidParsed : undefined;

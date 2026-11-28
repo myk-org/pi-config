@@ -1,6 +1,6 @@
 # Inter-Agent Communication Network
 
-`pi-config` includes an on-demand inter-agent messaging system so multiple Pi sessions can discover each other, exchange prompts, and hand work back and forth without leaving the terminal. You should care because this is what makes peer review loops, planner/worker splits, and background helper sessions feel like one coordinated workspace instead of a pile of disconnected terminals.
+`pi-config` includes a peer-to-peer inter-agent messaging system so multiple Pi sessions can discover each other, exchange prompts, and hand work back and forth without leaving the terminal. Interactive TUI sessions auto-register on COMS by default (`coms_auto_start: true`), making cross-repo sessions discoverable immediately without launching `pi --coms` or calling `coms_start` first.
 
 ## The Big Picture
 
@@ -46,9 +46,16 @@
 
 That is why the pool only shows peers from the same project group by default. The effect for users is simple: start multiple Pi sessions in one repo, and they naturally discover one another. Use `coms_list` with `project: "*"` to see across all projects.
 
-### Named Identities
+### Named Identities & Interactive Auto-Start
 
 Each session registers with a peer identity: name, purpose, model, color, and cwd. The wrapper uses `--cname` for peer naming so it does not conflict with Pi's own `--name` behavior; passing `--name` is rejected with a "use --cname instead of --name" error.
+
+Interactive TUI sessions (`ctx.mode === "tui"` and `ctx.hasUI === true`) auto-register on COMS when `coms_auto_start` is `true` (default; override via `PI_COMS_AUTO_START=0` or `/pi-config-settings` under `Coms`):
+
+- **Default name and collision suffixing:** Uses the sanitized basename of `cwd` (for example `pi-config` or `rootcoz`), suffixing `-2`, `-3`, … only when a different live peer in the same project already holds that name. Stale dead registry entries do not cause suffixing.
+- **Session transitions (`/new`, `/resume`, `/fork`):** Re-registers cleanly on `session_start` for `startup`, `new`, `resume`, and `fork` after ensuring the prior session's socket and registry entry have finished tearing down so `/new` keeps `<repo>` instead of self-colliding to `<repo>-2`.
+- **Stopping and `/reload`:** Calling `coms_stop` tears down the peer and persists stopped state (`active: false`) in session history so `/reload`, `/resume`, and `/fork` keep COMS stopped instead of re-starting it. Disabling `coms_auto_start` (`false` or `PI_COMS_AUTO_START=0`) also stops an auto-registered session on `/reload`.
+- **Skipped environments:** Never auto-starts for subagents (`PI_SUBAGENT_CHILD=1`), supervised headless RPC peers (`PI_COMS_SUPERVISED_PEER=1`), oneshot invocations (`pi -p` / `--mode json`), non-TUI modes, or sessions already started via `pi --coms`.
 
 This is what makes peer lists readable instead of showing only opaque session IDs. A user can target `planner`, `worker`, or another named peer directly rather than guessing which terminal to message.
 

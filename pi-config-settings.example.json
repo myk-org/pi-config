@@ -37,6 +37,7 @@
   "secret_obfuscation": false,
   "task_reminder_cadence_turns": 4,
   "task_headless_idle_reminder_minutes": 2,
+  "coms_auto_start": true,
   "coms_max_hops": 5,
   "coms_timeout_ms": 1800000,
   "coms_dir": "",

@@ -737,6 +737,22 @@ See [Safety Enforcements](safety-enforcements.html) for details.
 
 ## Inter-Agent Communication Keys
 
+### `coms_auto_start`
+
+| Parameter | Type | Default | Environment variable | Description | Effect |
+|---|---|---|---|---|---|
+| `coms_auto_start` | boolean | `true` | `PI_COMS_AUTO_START` | Automatically register interactive Pi sessions on COMS at startup so open sessions across repos can discover and message each other. | Interactive TUI sessions (`ctx.mode === "tui"` with UI) auto-register on `startup`, `/new`, `/resume`, and `/fork` using the sanitized basename of `cwd` (suffixing `-2`, `-3`, … only when a different live peer holds that name). Skips subagents (`PI_SUBAGENT_CHILD=1`), supervised RPC peers (`PI_COMS_SUPERVISED_PEER=1`), oneshot `pi -p`/`--mode json`, and explicit `pi --coms`. Calling `coms_stop` persists stopped state across `/reload`, `/resume`, and `/fork`. Setting `false` or `PI_COMS_AUTO_START=0` also takes effect on `/reload` for auto-registered sessions. |
+
+```json
+{
+  "coms_auto_start": false
+}
+```
+
+```bash
+export PI_COMS_AUTO_START=0
+```
+
 ### `coms_task_heartbeat_ms`
 
 | Parameter | Type | Default | Environment variable | Description | Effect |
