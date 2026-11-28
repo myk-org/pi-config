@@ -257,37 +257,38 @@ describe("sidebar state helpers (#1448)", () => {
     assert.equal(reloaded.at(-1), `s-${MAX_PERSISTED_SESSION_IDS + 24}`);
   });
 
-  it("surfaces archived waiting_for_input sessions in Needs attention", () => {
-    const sAttention = makeSession("s-attn", { name: "Needs Input", activity: "waiting_for_input" });
+  it("keeps waiting_for_input sessions in their existing sidebar buckets without duplication", () => {
+    const sAttention = makeSession("s-attn", { name: "Needs Input", cwd: "/work/app", activity: "waiting_for_input" });
     const sArchivedWaiting = makeSession("s-arch-wait", { name: "Archived Prompt", activity: "waiting_for_input" });
-    const sPinned = makeSession("s-pin", { name: "Pinned Work", activity: "working" });
+    const sPinnedWaiting = makeSession("s-pin", { name: "Pinned Work", activity: "waiting_for_input" });
     const sRegular = makeSession("s-reg", { name: "Regular", cwd: "/work/app" });
     const sArchivedIdle = makeSession("s-arch", { name: "Archived Idle" });
 
     const parts = partitionSidebarSessions(
-      [sRegular, sArchivedIdle, sPinned, sAttention, sArchivedWaiting],
+      [sRegular, sArchivedIdle, sPinnedWaiting, sAttention, sArchivedWaiting],
       {
         pinnedIds: new Set(["s-pin"]),
         archivedIds: new Set(["s-arch", "s-arch-wait"]),
       },
     );
 
-    assert.deepEqual(parts.needsAttention.map((s) => s.sessionId), ["s-arch-wait", "s-attn"]);
+    assert.equal("needsAttention" in parts, false);
     assert.deepEqual(parts.pinned.map((s) => s.sessionId), ["s-pin"]);
-    assert.deepEqual(parts.groups.flatMap((g) => g.sessions.map((s) => s.sessionId)), ["s-reg"]);
+    assert.deepEqual(parts.groups.flatMap((g) => g.sessions.map((s) => s.sessionId)), ["s-reg", "s-attn"]);
     assert.deepEqual(parts.archived.map((s) => s.sessionId), ["s-arch", "s-arch-wait"]);
   });
 
-  it("deduplicates archived attention sessions in flattenSidebarSessions", () => {
+  it("orders pinned, project groups, then archived in flattenSidebarSessions", () => {
+    const sPinned = makeSession("s-pin", { name: "Pinned", cwd: "/work/z" });
     const sArchivedWaiting = makeSession("s-arch-wait", { name: "Archived Prompt", activity: "waiting_for_input" });
     const sRegular = makeSession("s-reg", { name: "Regular", cwd: "/work/app" });
-    const parts = partitionSidebarSessions([sRegular, sArchivedWaiting], {
-      pinnedIds: new Set(),
+    const parts = partitionSidebarSessions([sRegular, sArchivedWaiting, sPinned], {
+      pinnedIds: new Set(["s-pin"]),
       archivedIds: new Set(["s-arch-wait"]),
     });
     assert.deepEqual(
       flattenSidebarSessions(parts).map((s) => s.sessionId),
-      ["s-arch-wait", "s-reg"],
+      ["s-pin", "s-reg", "s-arch-wait"],
     );
   });
 });
@@ -436,15 +437,15 @@ describe("useSidebarSessionFlags hook (#1448)", () => {
   });
 });
 
-describe("SessionSidebar UI sections (#1448)", () => {
-  it("orders Needs attention, Pinned, project groups, then Archived", async () => {
+describe("SessionSidebar UI sections (#1448, #1499)", () => {
+  it("omits the separate Needs attention top section when sessions wait for input", async () => {
     installMockStorage();
     const { container } = installReactDomShim();
     const root = createRoot(container);
     mounted.push(root);
 
     const sessions = [
-      makeSession("s-wait", { name: "Waiting Session", activity: "waiting_for_input" }),
+      makeSession("s-wait", { name: "Waiting Session", cwd: "/work/repo", activity: "waiting_for_input" }),
       makeSession("s-pin", { name: "Pinned Session" }),
       makeSession("s-reg", { name: "Regular Session", cwd: "/work/repo" }),
       makeSession("s-arch", { name: "Hidden Session" }),
@@ -458,7 +459,7 @@ describe("SessionSidebar UI sections (#1448)", () => {
       collapsed: false,
       onToggle: () => {},
       pinnedSessionIds: new Set(["s-pin"]),
-      archivedSessionIds: new Set(["s-arch", "s-wait"]),
+      archivedSessionIds: new Set(["s-arch"]),
       onTogglePin: () => {},
       onToggleArchive: () => {},
     })));
@@ -466,7 +467,256 @@ describe("SessionSidebar UI sections (#1448)", () => {
     const sections = elements(container, "div")
       .map((el) => el.getAttribute("data-section"))
       .filter((s): s is string => Boolean(s));
-    assert.deepEqual(sections, ["needs-attention", "pinned", "archived"]);
+    assert.deepEqual(sections, ["pinned", "archived"]);
+    assert.equal((container.textContent ?? "").includes("Needs attention"), false);
+  });
+
+  it("renders a waiting session row once inside its existing directory group without duplicate keys", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-wait", { name: "Waiting Chat", cwd: "/work/repo", activity: "waiting_for_input" }),
+      makeSession("s-idle", { name: "Idle Chat", cwd: "/work/repo", activity: "idle" }),
+    ];
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions,
+      activeSessionId: null,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    const waitingRows = elements(container, "div").filter((el) => el.getAttribute("data-session-id") === "s-wait");
+    assert.equal(waitingRows.length, 1);
+    assert.equal(waitingRows[0].getAttribute("data-waiting"), "true");
+    assert.match(waitingRows[0].textContent ?? "", /waiting for input/);
+    assert.match(waitingRows[0].getAttribute("class") ?? "", /border-l-cyan-500/);
+  });
+
+  it("shows the inline waiting indicator when surfaced via extraAttentionIds", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-bridged", { name: "Bridged Prompt", cwd: "/work/repo", activity: "idle" }),
+    ];
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions,
+      activeSessionId: "s-bridged",
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(),
+      extraAttentionIds: new Set(["s-bridged"]),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    const row = elements(container, "div").find((el) => el.getAttribute("data-session-id") === "s-bridged");
+    assert.ok(row);
+    assert.equal(row.getAttribute("data-waiting"), "true");
+    assert.match(row.textContent ?? "", /waiting for input/);
+  });
+
+  it("shows an attention count badge on a collapsed directory group header", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-wait", { name: "Waiting Chat", cwd: "/work/alpha", activity: "waiting_for_input" }),
+      makeSession("s-idle", { name: "Idle Chat", cwd: "/work/alpha", activity: "idle" }),
+    ];
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions,
+      activeSessionId: null,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    const groupHeader = elements(container, "div").find(
+      (el) => el.getAttribute("role") === "button" && (el.textContent ?? "").includes("alpha"),
+    );
+    assert.ok(groupHeader);
+    // Expanded group shows inline indicator on the row, not a redundant collapsed badge
+    assert.equal(elements(groupHeader, "span").some((el) => el.getAttribute("data-attention-badge") === "true"), false);
+
+    await act(async () => groupHeader.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    assert.equal(groupHeader.getAttribute("aria-expanded"), "false");
+    const badge = elements(groupHeader, "span").find((el) => el.getAttribute("data-attention-badge") === "true");
+    assert.ok(badge);
+    assert.equal(badge.textContent?.trim(), "1");
+  });
+
+  it("shows an attention count badge on a collapsed Coms section header", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-coms-wait", {
+        name: "Waiting Peer",
+        cwd: "/work/repo",
+        comsProject: "team-proj",
+        comsName: "peer-1",
+        activity: "waiting_for_input",
+      }),
+    ];
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions,
+      activeSessionId: null,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    const comsHeader = elements(container, "div").find(
+      (el) => el.getAttribute("role") === "button" && (el.textContent ?? "").includes("Coms"),
+    );
+    assert.ok(comsHeader);
+    await act(async () => comsHeader.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    assert.equal(comsHeader.getAttribute("aria-expanded"), "false");
+    const badge = elements(comsHeader, "span").find((el) => el.getAttribute("data-attention-badge") === "true");
+    assert.ok(badge);
+    assert.equal(badge.textContent?.trim(), "1");
+  });
+
+  it("shows an attention count badge on the collapsed Archived header for waiting sessions", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-wait", { name: "Waiting Session", activity: "waiting_for_input" }),
+      makeSession("s-arch", { name: "Hidden Session" }),
+    ];
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions,
+      activeSessionId: null,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(["s-arch", "s-wait"]),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    const archHeader = elements(container, "div").find(
+      (el) => el.getAttribute("role") === "button" && (el.textContent ?? "").includes("Archived"),
+    );
+    assert.ok(archHeader);
+    const badge = elements(archHeader, "span").find((el) => el.getAttribute("data-attention-badge") === "true");
+    assert.ok(badge);
+    assert.equal(badge.textContent?.trim(), "1");
+  });
+
+  it("renders a scrollable sidebar session list container with min-h-0", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const manySessions = Array.from({ length: 20 }, (_, i) =>
+      makeSession(`s-${i}`, { name: `Session ${i}`, cwd: `/work/proj-${i % 4}` }),
+    );
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions: manySessions,
+      activeSessionId: null,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    const scrollList = elements(container, "div").find(
+      (el) => el.getAttribute("data-testid") === "sidebar-session-list",
+    );
+    assert.ok(scrollList);
+    const cls = scrollList.getAttribute("class") ?? "";
+    assert.match(cls, /\bflex-1\b/);
+    assert.match(cls, /\bmin-h-0\b/);
+    assert.match(cls, /\boverflow-y-auto\b/);
+    assert.match(cls, /\boverflow-x-hidden\b/);
+    const renderedRows = elements(scrollList, "div").filter((el) => Boolean(el.getAttribute("data-session-id")));
+    assert.equal(renderedRows.length, 20);
+  });
+
+  it("shows an attention count badge on a collapsed Coms sub-project header", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-coms-sub", {
+        name: "Subproject Peer",
+        cwd: "/work/repo",
+        comsProject: "team-proj",
+        comsName: "peer-1",
+        activity: "waiting_for_input",
+      }),
+    ];
+
+    await act(async () => root.render(createElement(SessionSidebar, {
+      sessions,
+      activeSessionId: null,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set(),
+      archivedSessionIds: new Set(),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    })));
+
+    const subHeader = elements(container, "div").find(
+      (el) => el.getAttribute("role") === "button" && (el.textContent ?? "").includes("team-proj"),
+    );
+    assert.ok(subHeader);
+    await act(async () => subHeader.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    assert.equal(subHeader.getAttribute("aria-expanded"), "false");
+    const badge = elements(subHeader, "span").find((el) => el.getAttribute("data-attention-badge") === "true");
+    assert.ok(badge);
+    assert.equal(badge.textContent?.trim(), "1");
   });
 
   it("keeps the Archived section collapsed by default with its count", async () => {

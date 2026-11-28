@@ -1,15 +1,14 @@
 import { useMemo, useState } from "react";
-import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil, Plus, MessagesSquare, Sun, Moon, Pin, PinOff, Archive, ArchiveRestore, AlertCircle } from "lucide-react";
+import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil, Plus, MessagesSquare, Sun, Moon, Pin, PinOff, Archive, ArchiveRestore } from "lucide-react";
 import { Badge } from "@ui/badge";
 import { Button } from "@ui/button";
-import { ScrollArea } from "@ui/scroll-area";
 import { NotificationSettings } from "@/components/NotificationSettings";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, NotificationPreferences } from "@/types";
 import { sessionActivityDisplay } from "@/lib/activity-display";
 import { loadTheme, setTheme, type Theme } from "@/lib/theme";
 import { createLogger } from "@/lib/create-logger";
-import { partitionSidebarSessions } from "@/lib/pidash-ux-helpers";
+import { isSessionWaitingForInput, partitionSidebarSessions } from "@/lib/pidash-ux-helpers";
 
 const log = createLogger("SessionSidebar");
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
@@ -117,13 +116,12 @@ export function SessionSidebar({
     });
   };
   const [theme, setThemeState] = useState<Theme>(() => loadTheme());
-  const { needsAttention, pinned, groups: sortedGroups, archived } = useMemo(
+  const { pinned, groups: sortedGroups, archived } = useMemo(
     () => partitionSidebarSessions(sessions, {
       pinnedIds: pinnedSessionIds ?? EMPTY_SESSION_IDS,
       archivedIds: archivedSessionIds ?? EMPTY_SESSION_IDS,
-      extraAttentionIds,
     }),
-    [sessions, pinnedSessionIds, archivedSessionIds, extraAttentionIds],
+    [sessions, pinnedSessionIds, archivedSessionIds],
   );
 
   // Wrap setter to persist to localStorage
@@ -137,7 +135,22 @@ export function SessionSidebar({
 
   if (collapsed) return null;
 
-  /** One session row — shared by Needs attention, Pinned, directory groups, Coms, and Archived. */
+  const renderAttentionBadge = (waitingCount: number) => {
+    if (waitingCount <= 0) return null;
+    return (
+      <span
+        data-attention-badge="true"
+        className="inline-flex items-center gap-0.5 px-1 rounded-full bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 font-medium shrink-0"
+        title={`${waitingCount} session${waitingCount === 1 ? "" : "s"} waiting for input`}
+        aria-label={`${waitingCount} waiting for input`}
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" aria-hidden="true" />
+        {waitingCount}
+      </span>
+    );
+  };
+
+  /** One session row — shared by Pinned, directory groups, Coms, and Archived. */
   const renderSession = (
     s: SessionInfo,
     opts: { showLocation?: boolean; keyPrefix?: string; compactIndent?: boolean } = {},
@@ -145,16 +158,22 @@ export function SessionSidebar({
     const isActive = s.sessionId === activeSessionId;
     const isPinned = Boolean(pinnedSessionIds?.has(s.sessionId));
     const isArchived = Boolean(archivedSessionIds?.has(s.sessionId));
+    const isWaiting = isSessionWaitingForInput(s, extraAttentionIds);
     const status = sessionActivityDisplay(s);
     const rowKey = opts.keyPrefix ? `${opts.keyPrefix}:${s.sessionId}` : s.sessionId;
     return (
       <div
         key={rowKey}
+        data-session-id={s.sessionId}
+        data-waiting={isWaiting ? "true" : undefined}
         className={cn(
           "group/session py-2 cursor-pointer transition-colors border-b border-border/50 min-w-0",
           opts.compactIndent ? "pl-3 pr-2.5" : "pl-7 pr-2.5",
-          isActive && "bg-accent border-l-3 border-l-primary",
-          !isActive && "hover:bg-accent/30",
+          isActive
+            ? cn("bg-accent border-l-3", isWaiting ? "border-l-cyan-500" : "border-l-primary")
+            : isWaiting
+              ? "bg-cyan-500/10 border-l-3 border-l-cyan-500 hover:bg-cyan-500/15"
+              : "hover:bg-accent/30",
           !s.active && "opacity-35",
         )}
         onClick={() => onSelect(s)}
@@ -176,7 +195,7 @@ export function SessionSidebar({
               <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
             </span>
           )}
-          {s.active && s.activity === "waiting_for_input" && (
+          {isWaiting && (
             <span className="h-2 w-2 flex-shrink-0 rounded-full bg-cyan-400" aria-label="waiting for input" />
           )}
           {editingSessionId === s.sessionId ? (
@@ -264,15 +283,16 @@ export function SessionSidebar({
             </span>
           )}
           {s.comsProject && (
-            <span className="flex items-center gap-0.5 shrink-0 text-cyan-700 dark:text-cyan-400/90" title={`Coms project: ${s.comsProject}${s.comsName ? ` (you are ${s.comsName})` : ""}`}>
-              <span aria-hidden="true">◆</span>
+            <span className="flex items-center gap-0.5 min-w-0 text-cyan-700 dark:text-cyan-400/90" title={`Coms project: ${s.comsProject}${s.comsName ? ` (you are ${s.comsName})` : ""}`}>
+              <span aria-hidden="true" className="shrink-0">◆</span>
               <span className="truncate max-w-[5rem]">{s.comsProject}</span>
             </span>
           )}
           <span className="shrink-0">{ago(s.startedAt)}</span>
-          {s.activity === "waiting_for_input" && <span className="shrink-0 text-cyan-400">waiting for input</span>}
-          {isArchived && opts.keyPrefix === "attention" && (
-            <span className="shrink-0 text-[9px] px-1 rounded bg-muted text-muted-foreground">archived</span>
+          {isWaiting && (
+            <span className="shrink-0 rounded px-1 bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 font-medium whitespace-nowrap">
+              waiting for input
+            </span>
           )}
           {s.container && <Badge variant="outline" className="text-[8px] px-1 py-0 h-3 shrink-0">📦</Badge>}
         </div>
@@ -282,17 +302,20 @@ export function SessionSidebar({
 
 
   // ── Coms projects present among non-archived sessions ──────────────
-  const comsProjects = new Map<string, { sessions: SessionInfo[]; busy: number }>();
+  const comsProjects = new Map<string, { sessions: SessionInfo[]; busy: number; waiting: number }>();
   for (const s of sessions) {
     if (!s.comsProject || archivedSessionIds?.has(s.sessionId)) continue;
-    if (!comsProjects.has(s.comsProject)) comsProjects.set(s.comsProject, { sessions: [], busy: 0 });
+    if (!comsProjects.has(s.comsProject)) comsProjects.set(s.comsProject, { sessions: [], busy: 0, waiting: 0 });
     const entry = comsProjects.get(s.comsProject)!;
     entry.sessions.push(s);
     if (s.activity === "working") entry.busy += 1;
+    if (isSessionWaitingForInput(s, extraAttentionIds)) entry.waiting += 1;
   }
   const sortedComsProjects = [...comsProjects.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   const comsMemberCount = sortedComsProjects.reduce((n, [, info]) => n + info.sessions.length, 0);
   const comsBusyCount = sortedComsProjects.reduce((n, [, info]) => n + info.busy, 0);
+  const comsWaitingCount = sortedComsProjects.reduce((n, [, info]) => n + info.waiting, 0);
+  const archivedWaitingCount = archived.filter((s) => isSessionWaitingForInput(s, extraAttentionIds)).length;
   // Active sessions first inside each project, like the directory groups.
   for (const [, info] of sortedComsProjects) {
     info.sessions.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
@@ -310,7 +333,7 @@ export function SessionSidebar({
 
   return (
     <div className="flex flex-col h-full border-r border-border min-w-0 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
+      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border shrink-0 min-w-0">
         <span className="text-sm font-bold text-primary">pidash</span>
         <span className="flex items-center gap-2">
           <Circle className={cn("h-2 w-2 fill-current", connected ? "text-green-500" : "text-red-500")} />
@@ -350,22 +373,12 @@ export function SessionSidebar({
           </Button>
         </span>
       </div>
-      <ScrollArea className="flex-1">
+      <div
+        data-testid="sidebar-session-list"
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
+      >
         {sessions.length === 0 && (
           <p className="p-4 text-center text-xs text-muted-foreground">No sessions</p>
-        )}
-
-        {needsAttention.length > 0 && (
-          <div className="border-b border-border bg-cyan-500/5" data-section="needs-attention">
-            <div className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-cyan-600 dark:text-cyan-400 border-b border-border/60">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-              <span className="truncate">Needs attention</span>
-              <span className="ml-auto text-[10px] font-medium px-1.5 rounded-full bg-cyan-500/15">
-                {needsAttention.length}
-              </span>
-            </div>
-            {needsAttention.map((s) => renderSession(s, { showLocation: true, keyPrefix: "attention", compactIndent: true }))}
-          </div>
         )}
 
         {pinned.length > 0 && (
@@ -385,6 +398,7 @@ export function SessionSidebar({
           const isExpanded = !collapsedProjects.has(groupKey);
           const hasActive = group.sessions.some(s => s.active);
           const count = group.sessions.length;
+          const waitingCount = group.sessions.filter((s) => isSessionWaitingForInput(s, extraAttentionIds)).length;
 
           return (
             <div key={name}>
@@ -405,10 +419,13 @@ export function SessionSidebar({
                   toggleProject(groupKey);
                 }}
               >
-                {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                <Folder className="h-3 w-3" />
+                {isExpanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+                <Folder className="h-3 w-3 shrink-0" />
                 <span className="truncate">{name}</span>
-                <span className="ml-auto text-[10px] font-normal">{count}</span>
+                <span className="ml-auto flex items-center gap-1 text-[10px] font-normal shrink-0">
+                  {!isExpanded && renderAttentionBadge(waitingCount)}
+                  <span>{count}</span>
+                </span>
               </div>
 
               {/* Sessions in this group */}
@@ -435,11 +452,12 @@ export function SessionSidebar({
               aria-expanded={comsSectionOpen}
               title={`${comsMemberCount} session${comsMemberCount === 1 ? "" : "s"} in ${sortedComsProjects.length} coms project${sortedComsProjects.length === 1 ? "" : "s"}`}
             >
-              {comsSectionOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-              <MessagesSquare className="h-3 w-3" />
+              {comsSectionOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+              <MessagesSquare className="h-3 w-3 shrink-0" />
               <span className="truncate">Coms</span>
-              <span className="ml-auto flex items-center gap-1 text-[10px] font-normal">
-                {comsMemberCount}
+              <span className="ml-auto flex items-center gap-1 text-[10px] font-normal shrink-0">
+                {!comsSectionOpen && renderAttentionBadge(comsWaitingCount)}
+                <span>{comsMemberCount}</span>
                 {comsBusyCount > 0 && <span className="text-green-600 dark:text-green-400">●{comsBusyCount}</span>}
               </span>
             </div>
@@ -460,10 +478,13 @@ export function SessionSidebar({
                     tabIndex={0}
                     aria-expanded={isProjectOpen}
                   >
-                    {isProjectOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                    <span aria-hidden="true" className="text-cyan-700 dark:text-cyan-400/90">◆</span>
+                    {isProjectOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+                    <span aria-hidden="true" className="text-cyan-700 dark:text-cyan-400/90 shrink-0">◆</span>
                     <span className="truncate">{project}</span>
-                    <span className="ml-auto text-[10px] font-normal">{info.sessions.length}</span>
+                    <span className="ml-auto flex items-center gap-1 text-[10px] font-normal shrink-0">
+                      {!isProjectOpen && renderAttentionBadge(info.waiting)}
+                      <span>{info.sessions.length}</span>
+                    </span>
                   </div>
                   {isProjectOpen && info.sessions.map((s) => renderSession(s, { showLocation: true, keyPrefix: `coms:${project}` }))}
                 </div>
@@ -496,12 +517,15 @@ export function SessionSidebar({
               {archivedSectionOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
               <Archive className="h-3 w-3 shrink-0" />
               <span className="truncate">Archived</span>
-              <span className="ml-auto text-[10px] font-normal">{archived.length}</span>
+              <span className="ml-auto flex items-center gap-1 text-[10px] font-normal shrink-0">
+                {!archivedSectionOpen && renderAttentionBadge(archivedWaitingCount)}
+                <span>{archived.length}</span>
+              </span>
             </div>
             {archivedSectionOpen && archived.map((s) => renderSession(s, { showLocation: true, keyPrefix: "archived", compactIndent: true }))}
           </div>
         )}
-      </ScrollArea>
+      </div>
     </div>
   );
 }
