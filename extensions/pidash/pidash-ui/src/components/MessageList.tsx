@@ -10,6 +10,7 @@ import {
   resolvePromptOptionIndex,
   shouldSubmitMultilineAnswer,
   stripToolResultPrefix,
+  trimMessageDisplayText,
 } from "@/lib/pidash-ux-helpers";
 
 import { createLogger } from "@/lib/create-logger";
@@ -65,6 +66,15 @@ function formatDuration(ms: number): string {
   return rem > 0 ? `${m}m${rem}s` : `${m}m`;
 }
 
+function getSearchableMessageText(msg: ChatMessage): string {
+  const isOrdinaryChatCard =
+    (msg.role === "user" || msg.role === "assistant") &&
+    !msg.className?.startsWith("ask|") &&
+    !msg.className?.startsWith("ask-answered|") &&
+    msg.className !== "lsp-startup-summary";
+  return isOrdinaryChatCard ? trimMessageDisplayText(msg.text) : msg.text;
+}
+
 export function MessageList({ messages, searchQuery, searchType, streaming, scrollKey, onAskResponse, promptHotkeysPaused = false }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -76,7 +86,8 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
     const q = searchQuery?.toLowerCase();
     const filtered = messages.filter((msg) => {
       if (searchType && searchType !== "all" && msg.role !== searchType) return false;
-      if (q && !msg.text.toLowerCase().includes(q) && !msg.meta?.partialOutput?.toLowerCase().includes(q)) {
+      const searchableText = getSearchableMessageText(msg);
+      if (q && !searchableText.toLowerCase().includes(q) && !msg.meta?.partialOutput?.toLowerCase().includes(q)) {
         return false;
       }
       return true;
@@ -536,6 +547,8 @@ export const MessageItem = memo(function MessageItem({
     return <CollapsibleMessage msg={msg} searchQuery={searchQuery} />;
   }
 
+  const displayText = trimMessageDisplayText(msg.text);
+
   return (
     <div className="min-w-0" style={{ contentVisibility: "auto", containIntrinsicSize: "auto 90px" }}>
       <div className="flex items-center justify-between gap-1.5 min-w-0 mb-0.5">
@@ -543,13 +556,13 @@ export const MessageItem = memo(function MessageItem({
           {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
           {msg.role}
         </div>
-        <CopyOutputButton text={msg.text} compact label="Copy message" />
+        <CopyOutputButton text={displayText} compact label="Copy message" />
       </div>
       <div className={cn(
         "rounded-md bg-card p-2.5 text-[13px] whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0",
         msg.className === "streaming" && "border-l-2 border-cyan-400",
       )}>
-        <HighlightText text={msg.text} query={searchQuery} />
+        <HighlightText text={displayText} query={searchQuery} />
       </div>
     </div>
   );

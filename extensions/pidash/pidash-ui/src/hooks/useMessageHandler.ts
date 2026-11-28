@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { ChatMessage, NotificationPreferences, PiEvent, SessionInfo, TokenUsage } from "@/types";
 import {
   applyTranscriptEvent,
+  trimMessageDisplayText,
   type TranscriptRefs,
   type TranscriptSink,
 } from "../../../../shared/pidash-transcript-reducer.ts";
@@ -498,9 +499,10 @@ export function useMessageHandler(
   }, []);
 
   const setLastUserText = useCallback((text: string) => {
-    if (!text) return;
+    const normalized = trimMessageDisplayText(text);
+    if (!normalized) return;
     const queue = refsRef.current.pendingLocalUserTexts ?? (refsRef.current.pendingLocalUserTexts = []);
-    queue.push(text);
+    queue.push(normalized);
     if (queue.length > 20) queue.shift();
   }, []);
 

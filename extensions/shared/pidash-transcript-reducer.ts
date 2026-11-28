@@ -58,13 +58,23 @@ export interface TranscriptHooks {
   sessionId?: () => string | undefined;
 }
 
+/**
+ * Trim trailing whitespace and blank lines from user/assistant display text
+ * while preserving leading indentation and all internal newlines.
+ */
+export function trimMessageDisplayText(text: string): string {
+  return text.trimEnd();
+}
+
 export function textFromMessage(msg: any): string {
-  if (typeof msg?.content === "string") return msg.content;
+  if (typeof msg?.content === "string") return trimMessageDisplayText(msg.content);
   if (!Array.isArray(msg?.content)) return "";
-  return msg.content
-    .filter((c: any) => c?.type === "text")
-    .map((c: any) => c.text ?? "")
-    .join("\n");
+  return trimMessageDisplayText(
+    msg.content
+      .filter((c: any) => c?.type === "text")
+      .map((c: any) => c.text ?? "")
+      .join("\n"),
+  );
 }
 
 /**
@@ -354,7 +364,7 @@ export function applyTranscriptEvent(
         }));
       }
       if (refs.assist.id) {
-        sink.patch(refs.assist.id, (m) => ({ ...m, className: undefined }));
+        sink.patch(refs.assist.id, (m) => ({ ...m, text: trimMessageDisplayText(m.text), className: undefined }));
       }
       hooks.onQueuedReset?.();
       hooks.onStreamingBehavior?.(null);
@@ -440,7 +450,7 @@ export function applyTranscriptEvent(
       }
       if (ae.type === "text_end" && refs.assist.id) {
         hooks.onFlushLiveDeltas?.();
-        sink.patch(refs.assist.id, (m) => ({ ...m, className: undefined }));
+        sink.patch(refs.assist.id, (m) => ({ ...m, text: trimMessageDisplayText(m.text), className: undefined }));
       }
       return true;
     }
@@ -456,7 +466,7 @@ export function applyTranscriptEvent(
         }));
       }
       if (refs.assist.id) {
-        sink.patch(refs.assist.id, (m) => ({ ...m, className: undefined }));
+        sink.patch(refs.assist.id, (m) => ({ ...m, text: trimMessageDisplayText(m.text), className: undefined }));
       }
       refs.think = { id: "", text: "", startTs: 0 };
       refs.assist = { id: "", text: "" };
