@@ -146,6 +146,49 @@ describe("resolveJitiCliPath pruned release recovery (#1493)", () => {
 		const after = resolveJitiCliPath({ argv1: r160.releaseBin, envPath: "", managedInstallRoot: "" });
 		assert.equal(after.path, r170.jitiCli);
 	});
+
+	it("ignores an unrelated pi earlier on PATH when resolving jiti-cli.mjs for a pruned managed install", () => {
+		const otherAgent = createTempRoot("jiti-other-agent-");
+		const ourAgent = createTempRoot("jiti-our-agent-");
+		const other = createManagedLauncher(otherAgent, "9.9.9");
+		createRelease(other.installRoot, "9.9.9");
+		const ours = createManagedLauncher(ourAgent, "1.6.0");
+		const r160 = createRelease(ours.installRoot, "1.6.0");
+		const r170 = createRelease(ours.installRoot, "1.7.0");
+		const envPath = `${other.binDir}:${ours.binDir}`;
+
+		const before = resolveJitiCliPath({ argv1: r160.releaseBin, envPath, managedInstallRoot: "" });
+		assert.equal(before.path, r160.jitiCli);
+
+		writeFileSync(join(ours.installRoot, "current-version"), "1.7.0\n");
+		rmSync(r160.releaseDir, { recursive: true, force: true });
+
+		const after = resolveJitiCliPath({ argv1: r160.releaseBin, envPath, managedInstallRoot: "" });
+		assert.equal(after.path, r170.jitiCli);
+	});
+
+	it("skips an unrelated pi earlier on PATH to use a matching direct-symlink pi for jiti-cli.mjs", () => {
+		const otherRoot = createTempRoot("jiti-other-symlink-");
+		const ourRoot = createTempRoot("jiti-our-symlink-");
+		const other = createManagedLauncher(otherRoot, "9.9.9");
+		createRelease(other.installRoot, "9.9.9");
+
+		const ourBinDir = join(ourRoot, "bin");
+		const ourInstallRoot = join(ourRoot, "install");
+		mkdirSync(ourBinDir, { recursive: true });
+		const r160 = createRelease(ourInstallRoot, "1.6.0");
+		const r170 = createRelease(ourInstallRoot, "1.7.0");
+		symlinkSync(r170.releaseBin, join(ourBinDir, "pi"));
+
+		const envPath = `${other.binDir}:${ourBinDir}`;
+		const before = resolveJitiCliPath({ argv1: r160.releaseBin, envPath, managedInstallRoot: "" });
+		assert.equal(before.path, r160.jitiCli);
+
+		rmSync(r160.releaseDir, { recursive: true, force: true });
+
+		const after = resolveJitiCliPath({ argv1: r160.releaseBin, envPath, managedInstallRoot: "" });
+		assert.equal(after.path, r170.jitiCli);
+	});
 });
 
 describe("getPiInvocation pruned release recovery (#1493)", () => {
@@ -278,5 +321,124 @@ describe("getPiInvocation pruned release recovery (#1493)", () => {
 			envPath: "",
 		});
 		assert.deepEqual(inv, { command: "pi", args: ["--version"] });
+	});
+
+	it("prefers own current-version release bin over an unrelated pi earlier on PATH", () => {
+		const otherAgent = createTempRoot("pi-inv-other-");
+		const ourAgent = createTempRoot("pi-inv-ours-");
+		const other = createManagedLauncher(otherAgent, "9.9.9");
+		createRelease(other.installRoot, "9.9.9");
+		const ours = createManagedLauncher(ourAgent, "1.7.0");
+		const r160 = createRelease(ours.installRoot, "1.6.0");
+		const r170 = createRelease(ours.installRoot, "1.7.0");
+
+		rmSync(r160.releaseDir, { recursive: true, force: true });
+
+		const inv = getPiInvocation(["--mode", "json"], {
+			argv1: r160.releaseBin,
+			execPath: fakeNode,
+			envPath: other.binDir,
+		});
+		assert.deepEqual(inv, { command: fakeNode, args: [r170.releaseBin, "--mode", "json"] });
+	});
+
+	it("skips an unrelated pi earlier on PATH to select the matching managed launcher later on PATH", () => {
+		const otherAgent = createTempRoot("pi-inv-other-later-");
+		const ourAgent = createTempRoot("pi-inv-ours-later-");
+		const other = createManagedLauncher(otherAgent, "9.9.9");
+		createRelease(other.installRoot, "9.9.9");
+		const ours = createManagedLauncher(ourAgent, "1.7.0");
+		const r160 = createRelease(ours.installRoot, "1.6.0");
+		createRelease(ours.installRoot, "1.7.0");
+
+		const inv = getPiInvocation(["--mode", "json"], {
+			argv1: r160.releaseBin,
+			execPath: fakeNode,
+			envPath: `${other.binDir}:${ours.binDir}`,
+		});
+		assert.deepEqual(inv, { command: ours.launcherPath, args: ["--mode", "json"] });
+	});
+
+	it("keeps active running release when an unrelated pi appears earlier on PATH", () => {
+		const otherAgent = createTempRoot("pi-inv-other-keep-");
+		const ourAgent = createTempRoot("pi-inv-ours-keep-");
+		const other = createManagedLauncher(otherAgent, "9.9.9");
+		createRelease(other.installRoot, "9.9.9");
+		const ours = createManagedLauncher(ourAgent, "1.7.0");
+		const r170 = createRelease(ours.installRoot, "1.7.0");
+
+		const inv = getPiInvocation(["--mode", "json"], {
+			argv1: r170.releaseBin,
+			execPath: fakeNode,
+			envPath: other.binDir,
+		});
+		assert.deepEqual(inv, { command: fakeNode, args: [r170.releaseBin, "--mode", "json"] });
+	});
+
+	it("prefers pi.exe over pi.cmd on Windows when both exist in the same PATH directory", () => {
+		const agentDir = createTempRoot("pi-inv-win-exe-");
+		const binDir = join(agentDir, "bin");
+		const installRoot = join(agentDir, "install");
+		mkdirSync(binDir, { recursive: true });
+		mkdirSync(installRoot, { recursive: true });
+		const piExe = join(binDir, "pi.exe");
+		const piCmd = join(binDir, "pi.cmd");
+		writeFileSync(piExe, "");
+		writeFileSync(piCmd, "@echo off\r\n");
+		writeFileSync(join(installRoot, "current-version"), "1.7.0\n");
+		const r160 = createRelease(installRoot, "1.6.0");
+		createRelease(installRoot, "1.7.0");
+
+		const inv = getPiInvocation(["--mode", "json"], {
+			argv1: r160.releaseBin,
+			execPath: "C:\\node\\node.exe",
+			envPath: binDir,
+			platform: "win32",
+		});
+		assert.deepEqual(inv, { command: piExe, args: ["--mode", "json"] });
+	});
+
+	it("prefers direct node cli.js entry over a Windows pi.cmd launcher when current release JS exists", () => {
+		const agentDir = createTempRoot("pi-inv-win-node-cli-");
+		const binDir = join(agentDir, "bin");
+		const installRoot = join(agentDir, "install");
+		mkdirSync(binDir, { recursive: true });
+		mkdirSync(installRoot, { recursive: true });
+		writeFileSync(join(binDir, "pi.cmd"), "@echo off\r\n");
+		writeFileSync(join(installRoot, "current-version"), "1.7.0\n");
+		const r160 = createRelease(installRoot, "1.6.0");
+		const r170 = createRelease(installRoot, "1.7.0");
+
+		const inv = getPiInvocation(["--mode", "json"], {
+			argv1: r160.releaseBin,
+			execPath: "C:\\node\\node.exe",
+			envPath: binDir,
+			platform: "win32",
+			comspec: "C:\\Windows\\System32\\cmd.exe",
+		});
+		assert.deepEqual(inv, { command: "C:\\node\\node.exe", args: [r170.cliJs, "--mode", "json"] });
+	});
+
+	it("wraps a Windows pi.cmd fallback in a spawnable cmd.exe call invocation when no direct binary exists", () => {
+		const root = createTempRoot("pi-inv-win-cmd-");
+		const binDir = join(root, "bin");
+		const installRoot = join(root, "install");
+		mkdirSync(binDir, { recursive: true });
+		const piCmd = join(binDir, "pi.cmd");
+		writeFileSync(piCmd, "@echo off\r\n");
+		const r160 = createRelease(installRoot, "1.6.0");
+		rmSync(r160.releaseDir, { recursive: true, force: true });
+
+		const inv = getPiInvocation(["--mode", "json", "a&b", "Task: check & verify"], {
+			argv1: r160.releaseBin,
+			execPath: "C:\\node\\node.exe",
+			envPath: binDir,
+			platform: "win32",
+			comspec: "C:\\Windows\\System32\\cmd.exe",
+		});
+		assert.deepEqual(inv, {
+			command: "C:\\Windows\\System32\\cmd.exe",
+			args: ["/d", "/c", "call", piCmd, "--mode", "json", "a^^^&b", "Task: check & verify"],
+		});
 	});
 });

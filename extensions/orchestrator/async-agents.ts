@@ -315,23 +315,37 @@ export function resolveJitiCliPath(
     log.debug(`jiti strategy 1 (running binary) failed: ${e?.message || e}`);
   }
 
-  // Strategy 1b: resolve from the active `pi` binary on PATH (or managed
-  // install current-version) when `pi update` pruned the running release dir.
+  // Strategy 1b: prefer the running managed install's current-version release
+  // (or a PATH `pi` verified to belong to the same install) before falling back
+  // to any other `pi` on PATH.
   if (!jitiCliPath) {
     try {
-      const activePi = resolveActivePiOnPath(envPath);
-      if (activePi?.releaseDir) {
-        jitiCliPath = findJitiUnder("path-pi-release", activePi.releaseDir);
-      }
-      if (!jitiCliPath && activePi?.realPath) {
-        jitiCliPath = findJitiUnder("path-pi-binary", path.dirname(activePi.realPath));
-      }
-      const installRoot = managedInstallRoot
-        || (argv1 ? extractVersionedReleaseInfo(argv1)?.installRoot : undefined);
-      if (!jitiCliPath && installRoot) {
+      const argvInstallRoot = argv1 ? extractVersionedReleaseInfo(argv1)?.installRoot : undefined;
+      const installRoot = argvInstallRoot || managedInstallRoot || undefined;
+
+      if (installRoot) {
         const currentReleaseDir = readManagedCurrentReleaseDir(installRoot);
         if (currentReleaseDir) {
           jitiCliPath = findJitiUnder("managed-current-release", currentReleaseDir);
+        }
+        if (!jitiCliPath) {
+          const matchingPi = resolveActivePiOnPath(envPath, { expectedInstallRoot: installRoot });
+          if (matchingPi?.releaseDir) {
+            jitiCliPath = findJitiUnder("path-matching-pi-release", matchingPi.releaseDir);
+          }
+          if (!jitiCliPath && matchingPi?.realPath) {
+            jitiCliPath = findJitiUnder("path-matching-pi-binary", path.dirname(matchingPi.realPath));
+          }
+        }
+      }
+
+      if (!jitiCliPath) {
+        const activePi = resolveActivePiOnPath(envPath);
+        if (activePi?.releaseDir) {
+          jitiCliPath = findJitiUnder("path-pi-release", activePi.releaseDir);
+        }
+        if (!jitiCliPath && activePi?.realPath) {
+          jitiCliPath = findJitiUnder("path-pi-binary", path.dirname(activePi.realPath));
         }
       }
     } catch (e: any) {
