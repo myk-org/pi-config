@@ -176,6 +176,7 @@ pi-config/
 ├── templates/                       # Immutable prompt templates (source files for /create-* commands)
 │   └── coms-feature-manager-prompt.md  # Coms feature manager template
 ├── prompts/                         # Prompt templates (slash commands)
+│   ├── afk.md
 │   ├── create-coms-feature-manager.md
 │   ├── coderabbit-rate-limit.md
 │   ├── domain-model.md

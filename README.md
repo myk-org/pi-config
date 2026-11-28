@@ -109,6 +109,7 @@ for `git-expert` to commit.
 | `/create-commit <message>` | Commit and push the current change set via git-expert (source template: `templates/commit-prompt.md` — stage exact files, commit, push, report sha) |
 | `/query-db <command>` | Query the review comments database |
 | `/remember <what>` | Save a memory for future sessions |
+| `/afk [instructions]` | Signal AFK mode — skip `ask_user`, keep working without waiting, and list any questions for when you return |
 | `/cron` | Zero-arg fullscreen cron TUI overlay (`n` add, `e` edit, `x` delete, `p` pause/resume, `t` toggle persist/session, `f` scope `all`/`session`/`persist`, `Space` multi-select, `Enter` detail; shows `quiet` badge and `noop`/`error` last run outcomes; plain-text fallback when headless). Persistent delivery is local at-least-once with OS `flock` locking on `.pi/cron/crons.json`. LLMs manage crons via `cron_manage` (supports `quiet_on_noop` to suppress follow-up turns on `[NOOP]` checks) |
 | `/async` | Zero-arg async agent dashboard — `[1] Roster` / `[2] Activity` log (`f` filter, `/` search, `Space` follow), `r` revive stopped/completed/failed jobs, `Space` multi-select + `x` kill, `X` kill all, `Enter` live output; plain-text fallback when headless |
 | `/tasks` | Zero-arg fullscreen tasks TUI overlay — `Space` multi-select for `s` start, `d` done, `x` delete, plus `n` add, `e` edit, `f` mine/all, `Enter` detail (plain-text fallback when headless/browser) |
