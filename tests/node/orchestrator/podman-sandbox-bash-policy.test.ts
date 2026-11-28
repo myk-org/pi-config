@@ -839,6 +839,42 @@ describe("Podman peer sandbox protected COMS, home, root boundary", () => {
     });
     assert.equal(decision.action, "block");
   });
+
+  it("blocks rm following fd --exec creating symlink into PI_COMS_DIR", async () => {
+    const { workspace, comsDir } = makeSandboxDirs();
+    const decision = await evaluateBashPolicy({
+      command: `fd '^seed$' . --exec ln -s ${join(comsDir, "projects", "myproj")} /tmp/{/}; rm -rf /tmp/seed/victim`,
+      cwd: workspace,
+      inContainer: true,
+      comsContainerName: VALID_CONTAINER,
+      comsDir,
+    });
+    assert.equal(decision.action, "block");
+  });
+
+  it("blocks fd --format synthesizing protected path into xargs rm", async () => {
+    const { workspace, comsDir } = makeSandboxDirs();
+    const decision = await evaluateBashPolicy({
+      command: "fd --format /home/peer . | xargs rm -rf",
+      cwd: workspace,
+      inContainer: true,
+      comsContainerName: VALID_CONTAINER,
+      comsDir,
+    });
+    assert.equal(decision.action, "block");
+  });
+
+  it("blocks rm following subshell symlink creation inside echo", async () => {
+    const { workspace, comsDir } = makeSandboxDirs();
+    const decision = await evaluateBashPolicy({
+      command: `echo $(ln -s ${join(comsDir, "sockets")} s) && rm -rf s/x`,
+      cwd: workspace,
+      inContainer: true,
+      comsContainerName: VALID_CONTAINER,
+      comsDir,
+    });
+    assert.equal(decision.action, "block");
+  });
 });
 
 describe("Podman peer sandbox non-relaxed security guards", () => {

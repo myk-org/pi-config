@@ -6909,6 +6909,20 @@ function validateXargsUpstreamStage(
       if (w.unterminatedQuote || w.hasDynamicExpansion) {
         return { safe: false, reason: `dynamic token in upstream filter "${base}"` };
       }
+      if (
+        !w.quoted &&
+        (base === "grep" || base === "egrep" || base === "fgrep") &&
+        (w.value === "-o" || w.value === "--only-matching" || w.value === "--label" || w.value.startsWith("--label=") || (/^-[a-zA-Z]+$/.test(w.value) && w.value.includes("o")))
+      ) {
+        return { safe: false, reason: `upstream ${base} option "${w.value}" can synthesize path substrings` };
+      }
+      if (
+        !w.quoted &&
+        base === "sort" &&
+        (w.value === "--compress-program" || w.value.startsWith("--compress-program=") || w.value === "-o" || w.value === "--output" || w.value.startsWith("--output="))
+      ) {
+        return { safe: false, reason: `upstream sort option "${w.value}" is disallowed` };
+      }
     }
     return { safe: true };
   }
@@ -7089,6 +7103,7 @@ function validateXargsUpstreamStage(
     const cwdCheck = checkLiteralPathSafe(".", ctx);
     if (!cwdCheck.safe) return cwdCheck;
     let pastSep = false;
+    let rgHasFilesFlag = false;
     for (const w of redir.filtered) {
       if (w.unterminatedQuote || w.hasDynamicExpansion) {
         return { safe: false, reason: `dynamic argument in upstream ${base}` };
@@ -7108,10 +7123,44 @@ function validateXargsUpstreamStage(
         ) {
           return { safe: false, reason: `symlink-following option "${w.value}" in upstream ${base}` };
         }
+        if (
+          base === "fd" &&
+          (w.value === "-x" ||
+            w.value === "-X" ||
+            w.value === "--exec" ||
+            w.value === "--exec-batch" ||
+            w.value === "--format" ||
+            w.value.startsWith("--format=") ||
+            (/^-[a-zA-Z]+$/.test(w.value) && /[xX]/.test(w.value)))
+        ) {
+          return { safe: false, reason: `disallowed fd option "${w.value}" in upstream xargs pipeline` };
+        }
+        if (base === "rg") {
+          if (w.value === "--files") {
+            rgHasFilesFlag = true;
+            continue;
+          }
+          if (
+            w.value === "--pre" ||
+            w.value.startsWith("--pre=") ||
+            w.value === "-r" ||
+            w.value === "--replace" ||
+            w.value.startsWith("--replace=") ||
+            w.value === "-o" ||
+            w.value === "--only-matching" ||
+            w.value === "--vimgrep" ||
+            w.value === "--json"
+          ) {
+            return { safe: false, reason: `disallowed rg option "${w.value}" in upstream xargs pipeline` };
+          }
+        }
         continue;
       }
       const check = isSandboxTargetSafe(w, ctx);
       if (!check.safe) return check;
+    }
+    if (base === "rg" && !rgHasFilesFlag) {
+      return { safe: false, reason: "upstream rg feeding xargs rm requires --files" };
     }
     return { safe: true };
   }
@@ -7273,24 +7322,78 @@ function updateCwdFromStage(
   };
 }
 
-/** Non-mutating commands that cannot create symlinks before a subsequent destructive stage. */
+/** Non-mutating commands that cannot execute arbitrary subcommands or create symlinks. */
 const SANDBOX_NON_SYMLINK_STAGE_CMDS = new Set([
   "cd", "pushd", "mkdir", "true", "false", "test", "[", "echo", "printf", "pwd", "fi", "done", "esac",
-  "ls", "fd", "rg", "grep", "egrep", "fgrep", "sort", "uniq", "head", "tail",
+  "ls", "grep", "egrep", "fgrep", "uniq", "head", "tail",
 ]);
 
 function stageMayCreateSymlinks(stage: string): boolean {
-  if (isReadOnlyStatement(stage)) return false;
+  if (extractSubshells(stage).length > 0) return true;
   const stripped = stripSandboxWrappers(tokenizeSandboxWords(stage));
   if (stripped.opaque) return true;
   if (stripped.words.length === 0) return false;
   const base = cmdBasename(stripped.words[0]);
+  const args = stripped.words.slice(1);
   if (base === "find") {
-    return stripped.words.some((w) => !w.quoted && (w.value === "-exec" || w.value === "-execdir" || w.value === "-ok" || w.value === "-okdir"));
+    return args.some(
+      (w) =>
+        !w.quoted &&
+        (w.value === "-exec" ||
+          w.value === "-execdir" ||
+          w.value === "-ok" ||
+          w.value === "-okdir" ||
+          w.value === "-fprint" ||
+          w.value === "-fprint0" ||
+          w.value === "-fprintf" ||
+          w.value === "-fls"),
+    );
+  }
+  if (base === "fd") {
+    return args.some(
+      (w) =>
+        !w.quoted &&
+        (w.value === "-x" ||
+          w.value === "-X" ||
+          w.value === "--exec" ||
+          w.value === "--exec-batch" ||
+          (/^-[a-zA-Z]+$/.test(w.value) && /[xX]/.test(w.value))),
+    );
+  }
+  if (base === "rg") {
+    return args.some(
+      (w) =>
+        !w.quoted &&
+        (w.value === "--pre" ||
+          w.value.startsWith("--pre=") ||
+          w.value === "--pre-glob" ||
+          w.value.startsWith("--pre-glob=")),
+    );
+  }
+  if (base === "sort") {
+    return args.some(
+      (w) =>
+        !w.quoted &&
+        (w.value === "--compress-program" ||
+          w.value.startsWith("--compress-program=") ||
+          w.value === "-o" ||
+          w.value === "--output" ||
+          w.value.startsWith("--output=") ||
+          (/^-[a-zA-Z]+$/.test(w.value) && w.value.includes("o"))),
+    );
   }
   if (base === "git") {
-    // Only read-only `git ls-files` is guaranteed not to create symlinks in the worktree.
-    const sub = stripped.words.slice(1).find((w) => !w.quoted && !w.value.startsWith("-"))?.value;
+    // Only read-only `git ls-files` without config overrides is guaranteed not to create symlinks.
+    let sub: string | undefined;
+    for (const w of args) {
+      if (!w.quoted && (w.value === "-c" || w.value.startsWith("-c") || w.value === "--config-env" || w.value.startsWith("--config-env="))) {
+        return true;
+      }
+      if (!w.quoted && !w.value.startsWith("-")) {
+        sub = w.value;
+        break;
+      }
+    }
     return sub !== "ls-files";
   }
   return !SANDBOX_NON_SYMLINK_STAGE_CMDS.has(base);
