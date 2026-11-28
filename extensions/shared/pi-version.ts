@@ -1,10 +1,10 @@
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("pi-version");
-const require = createRequire(import.meta.url);
+
+declare const require: NodeRequire | undefined;
 
 /**
  * Minimum pi version required by this pi-config version.
@@ -30,10 +30,8 @@ export interface PiVersionDetectionOptions {
   packageDir?: string | null;
   /** Override `process.argv[1]` walk-up (for tests). */
   argv1?: string | null;
-  /** Override resolved `@earendil-works/pi-coding-agent` runtime package version (for tests). */
+  /** Override Pi-loader aliased `@earendil-works/pi-coding-agent` `VERSION` (for tests). */
   runtimeModuleVersion?: string | null;
-  /** Bypass the module-level per-process cache. */
-  noCache?: boolean;
 }
 
 let cachedVersion: string | null | undefined = undefined;
@@ -79,57 +77,33 @@ function readPiVersionFromEntrypoint(argv1: string): string | null {
 }
 
 /**
- * Resolve `@earendil-works/pi-coding-agent` version from module metadata without
- * statically importing the Pi SDK runtime (avoids ESM linking order issues,
- * startup overhead, and runtime signal-handler side effects).
- * Falls back to `require("@earendil-works/pi-coding-agent").VERSION` only when
- * no on-disk `package.json` exists (e.g. compiled binary virtual modules).
+ * Read `VERSION` from the `@earendil-works/pi-coding-agent` module injected by
+ * Pi's extension loader (`jiti` `_aliases` in Node mode, `VIRTUAL_MODULES` in
+ * compiled binaries).
+ *
+ * Intentionally does NOT use Node's `createRequire(import.meta.url)` or
+ * extension-relative disk probes, which would read `pi-config`'s own local
+ * `node_modules` copy instead of the running Pi host process. Under native ESM
+ * (outside Pi's loader), ambient `require` is undefined and this returns `null`.
  */
-function readRuntimePiPackageVersion(): string | null {
-  try {
-    const pkgPath = require.resolve(`${PI_PACKAGE_NAME}/package.json`);
-    const version = readPiVersionFromPackageDir(path.dirname(pkgPath));
-    if (version) return version;
-  } catch {
-    // Strict ESM `exports` may block `<pkg>/package.json` — walk resolve paths below.
-  }
-
-  try {
-    const searchPaths = require.resolve.paths(PI_PACKAGE_NAME);
-    if (searchPaths) {
-      for (const searchDir of searchPaths) {
-        const version = readPiVersionFromPackageDir(path.join(searchDir, PI_PACKAGE_NAME));
-        if (version) return version;
-      }
-    }
-  } catch {
-    // ignore resolution failures
-  }
-
-  // Compiled Pi binaries expose `@earendil-works/pi-coding-agent` via virtual
-  // modules rather than on-disk `node_modules`. Only probe it if disk metadata
-  // was absent.
+function readPiLoaderModuleVersion(): string | null {
+  if (typeof require !== "function") return null;
   try {
     const mod = require(PI_PACKAGE_NAME) as { VERSION?: unknown } | undefined;
-    const version = normalizeSemverCandidate(mod?.VERSION);
-    if (version) return version;
+    return normalizeSemverCandidate(mod?.VERSION);
   } catch {
-    // ignore when virtual/CJS require is unavailable
+    return null;
   }
-
-  return null;
 }
 
 /**
  * Resolve the version of the running Pi process loading this extension.
  *
  * Strictly process-authoritative (never shells out to an unrelated `pi` binary
- * on `PATH`, which would block startup for wrapper invocations or stall the
- * event loop):
+ * on `PATH` and never probes `pi-config`'s local `node_modules`):
  * 1) `PI_PACKAGE_DIR/package.json` when set for the running Pi installation.
  * 2) Ancestor `package.json` walk from `process.argv[1]`.
- * 3) Resolved `@earendil-works/pi-coding-agent` package metadata / virtual
- *    module `VERSION` in the running process.
+ * 3) `VERSION` exported by `@earendil-works/pi-coding-agent` via Pi's loader.
  */
 function detectRuntimePiVersion(options: PiVersionDetectionOptions = {}): string | null {
   const packageDir = options.packageDir !== undefined ? options.packageDir : process.env.PI_PACKAGE_DIR;
@@ -150,13 +124,13 @@ function detectRuntimePiVersion(options: PiVersionDetectionOptions = {}): string
     }
   }
 
-  const fromRuntime =
+  const fromLoader =
     options.runtimeModuleVersion !== undefined
       ? normalizeSemverCandidate(options.runtimeModuleVersion)
-      : readRuntimePiPackageVersion();
-  if (fromRuntime) {
-    log.debug("pi_version_detected", { source: "runtime_package", installed: fromRuntime });
-    return fromRuntime;
+      : readPiLoaderModuleVersion();
+  if (fromLoader) {
+    log.debug("pi_version_detected", { source: "pi_loader_module", installed: fromLoader });
+    return fromLoader;
   }
 
   log.debug("pi_version_undetermined", {
@@ -175,8 +149,7 @@ export function getPiVersion(options?: PiVersionDetectionOptions): string | null
     options &&
     (options.packageDir !== undefined ||
       options.argv1 !== undefined ||
-      options.runtimeModuleVersion !== undefined ||
-      options.noCache)
+      options.runtimeModuleVersion !== undefined)
   ) {
     return detectRuntimePiVersion(options);
   }

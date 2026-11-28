@@ -144,7 +144,7 @@ export function assertPiVersionFloor(): void {
     logger.error(`[sidecar] PI_VERSION_CHECK_FAILED: installed=${installed}, min_version=${MIN_PI_VERSION}`);
     throw new Error(
       `@earendil-works/pi-coding-agent ${installed} is below the required floor ${MIN_PI_VERSION}. ` +
-      `Upgrade and re-resolve your sidecar npm dependencies (\`rm -rf node_modules package-lock.json && npm install\` for \`@earendil-works/pi-coding-agent\` >= ${MIN_PI_VERSION}), then restart the sidecar.`,
+      `Upgrade the dependency (e.g. \`npm install @earendil-works/pi-coding-agent@^${MIN_PI_VERSION}\`), then restart the sidecar.`,
     );
   }
   logger.info(`[sidecar] PI_VERSION_CHECK_OK: installed=${installed}, min_version=${MIN_PI_VERSION}`);

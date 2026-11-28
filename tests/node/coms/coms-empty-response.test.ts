@@ -20,6 +20,9 @@ import { ComsRegistry } from "../../../extensions/coms/coms-registry.js";
 import { resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 type Handler = (...args: any[]) => any;
 

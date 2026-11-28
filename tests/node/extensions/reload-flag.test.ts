@@ -31,6 +31,9 @@ import reloadExtension, {
 } from "../../../extensions/reload-flag/index.js";
 import { clearLogLevelCache } from "../../../extensions/shared/file-logger.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 
 type Handler = (event: any, ctx: any) => Promise<void>;

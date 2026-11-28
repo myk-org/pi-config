@@ -24,6 +24,9 @@ import { formatTaskRowLine } from "../../../extensions/pitasks/tasks-view.js";
 import { clearLogLevelCache, getPiLogPath, setGlobalSessionId } from "../../../extensions/shared/file-logger.js";
 import { publishWorkloadSources, resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 const peerTask = (over: Partial<WorkloadTask> = {}): WorkloadTask => ({
   id: "1",

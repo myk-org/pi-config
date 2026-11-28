@@ -33,6 +33,9 @@ import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
 import { syncComsActiveTools } from "../../../extensions/coms/coms-shared.js";
 import { TOOL_NAMESPACES } from "../../../extensions/shared/tool-namespaces.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 function createMockPi(opts: {
   initialTools?: Array<Record<string, any>>;

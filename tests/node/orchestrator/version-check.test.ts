@@ -9,6 +9,7 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { createJiti } from "jiti";
 import {
   MIN_PI_VERSION,
   assertMinPiVersionOnLoad,
@@ -92,14 +93,17 @@ describe("compareSemver", () => {
     assert.equal(compareSemver("2.0.0", "10.0.0"), -1);
   });
 
-  it("orders prereleases strictly below matching stable releases and ignores build metadata", () => {
+  it("orders prereleases strictly below matching stable releases", () => {
     assert.equal(compareSemver("1.6.0-beta.1", "1.6.0"), -1);
     assert.equal(compareSemver("1.6.0", "1.6.0-beta.1"), 1);
-    assert.equal(compareSemver("1.2.3-rc.1+build.7", "1.2.3"), -1);
-    assert.equal(compareSemver("1.2.3+build.7", "1.2.3"), 0);
     assert.equal(compareSemver("1.6.1-alpha.1", "1.6.0"), 1);
     assert.equal(compareSemver("1.6.0-alpha.2", "1.6.0-alpha.10"), -1);
     assert.equal(compareSemver("1.6.0-alpha", "1.6.0-alpha.1"), -1);
+  });
+
+  it("ignores semver build metadata during precedence comparison", () => {
+    assert.equal(compareSemver("1.2.3-rc.1+build.7", "1.2.3"), -1);
+    assert.equal(compareSemver("1.2.3+build.7", "1.2.3"), 0);
   });
 
   it("pads missing components as zeros", () => {
@@ -125,29 +129,61 @@ describe("getPiVersion (process-authoritative & cached)", () => {
     );
   });
 
-  it("ignores an unrelated stale pi binary on PATH when running Pi 1.7.0 through a wrapper", () => {
-    const wrapperDir = makeTempDir("pi-wrapper-");
+  it("ignores an unrelated stale pi binary on PATH when running Pi 1.7.0 through a wrapper", async () => {
+    const wrapperDir = makeTempDir("pi-wrapper-170-");
     const wrapperPath = path.join(wrapperDir, "custom-pi-wrapper.js");
+    const fakePiModule = path.join(wrapperDir, "fake-pi-170.mjs");
     fs.writeFileSync(wrapperPath, "// wrapper without @earendil-works/pi-coding-agent package.json\n", "utf-8");
+    fs.writeFileSync(fakePiModule, 'export const VERSION = "1.7.0";\n', "utf-8");
     cleanupFns.push(() => fs.rmSync(wrapperDir, { recursive: true, force: true }));
 
     putStalePiOnPath("1.5.0");
 
-    // Even with an older `pi` 1.5.0 first on PATH and a wrapper argv[1], runtime module VERSION wins.
-    const detected = getPiVersion({ packageDir: null, argv1: wrapperPath, runtimeModuleVersion: "1.7.0" });
-    assert.equal(detected, "1.7.0");
-    assert.equal(
-      checkMinPiVersion(MIN_PI_VERSION, { packageDir: null, argv1: wrapperPath, runtimeModuleVersion: "1.7.0" }).ok,
-      true,
+    const jiti = createJiti(import.meta.url, {
+      moduleCache: false,
+      alias: { "@earendil-works/pi-coding-agent": fakePiModule },
+    });
+    const loaded = (await jiti.import(
+      path.resolve("extensions/shared/pi-version.ts"),
+    )) as typeof import("../../../extensions/shared/pi-version.ts");
+
+    assert.equal(loaded.getPiVersion({ packageDir: null, argv1: wrapperPath }), "1.7.0");
+    assert.equal(loaded.checkMinPiVersion(MIN_PI_VERSION, { packageDir: null, argv1: wrapperPath }).ok, true);
+  });
+
+  it("rejects an older host Pi via jiti alias even when local node_modules has Pi 1.7.0", async () => {
+    const wrapperDir = makeTempDir("pi-wrapper-161-");
+    const wrapperPath = path.join(wrapperDir, "custom-pi-wrapper.js");
+    const fakeOlderPiModule = path.join(wrapperDir, "fake-pi-161.mjs");
+    fs.writeFileSync(wrapperPath, "// wrapper without @earendil-works/pi-coding-agent package.json\n", "utf-8");
+    fs.writeFileSync(fakeOlderPiModule, 'export const VERSION = "1.6.1";\n', "utf-8");
+    cleanupFns.push(() => fs.rmSync(wrapperDir, { recursive: true, force: true }));
+
+    const jiti = createJiti(import.meta.url, {
+      moduleCache: false,
+      alias: { "@earendil-works/pi-coding-agent": fakeOlderPiModule },
+    });
+    const loaded = (await jiti.import(
+      path.resolve("extensions/shared/pi-version.ts"),
+    )) as typeof import("../../../extensions/shared/pi-version.ts");
+
+    assert.equal(loaded.getPiVersion({ packageDir: null, argv1: wrapperPath }), "1.6.1");
+    assert.throws(
+      () => loaded.assertMinPiVersionOnLoad("wrapper-ext", { packageDir: null, argv1: wrapperPath }),
+      /pi-config requires Pi >= 1\.7\.0, but Pi 1\.6\.1 is installed/,
     );
   });
 
-  it("returns null when no process-authoritative version source is available (never shells out to PATH)", () => {
+  it("does not fall back to extension-local node_modules when argv[1] misses outside Pi's loader", () => {
+    const wrapperDir = makeTempDir("pi-wrapper-nolocal-");
+    const wrapperPath = path.join(wrapperDir, "custom-pi-wrapper.js");
+    fs.writeFileSync(wrapperPath, "// wrapper without package.json\n", "utf-8");
+    cleanupFns.push(() => fs.rmSync(wrapperDir, { recursive: true, force: true }));
+
     putStalePiOnPath("9.9.9");
-    assert.equal(
-      getPiVersion({ packageDir: null, argv1: null, runtimeModuleVersion: null }),
-      null,
-    );
+    // In native ESM (outside Pi's jiti loader), neither PI_PACKAGE_DIR nor argv[1] matches,
+    // so local node_modules/@earendil-works/pi-coding-agent (1.7.0) must NOT be treated as the host Pi.
+    assert.equal(getPiVersion({ packageDir: null, argv1: wrapperPath }), null);
   });
 
   it("caches the resolved version per process until resetPiVersionCache() is called", () => {
@@ -186,28 +222,36 @@ describe("checkMinPiVersion", () => {
     assert.equal(r.ok, true);
   });
 
-  it("rejects older, prerelease, and undetermined versions while accepting exact and higher stable versions", () => {
+  it("rejects an older stable version below the floor", () => {
     setPiVersionResolverForTests(() => "1.6.1");
     const older = checkMinPiVersion();
     assert.equal(older.installed, "1.6.1");
     assert.equal(older.required, "1.7.0");
     assert.equal(older.ok, false);
+  });
 
+  it("rejects a prerelease of the floor version", () => {
     setPiVersionResolverForTests(() => "1.7.0-beta.1");
     const pre = checkMinPiVersion();
     assert.equal(pre.installed, "1.7.0-beta.1");
     assert.equal(pre.required, "1.7.0");
     assert.equal(pre.ok, false);
+  });
 
+  it("rejects an undetermined running version", () => {
     setPiVersionResolverForTests(() => null);
     const unknown = checkMinPiVersion();
     assert.equal(unknown.installed, null);
     assert.equal(unknown.required, "1.7.0");
     assert.equal(unknown.ok, false);
+  });
 
+  it("accepts the exact floor version", () => {
     setPiVersionResolverForTests(() => "1.7.0");
     assert.equal(checkMinPiVersion().ok, true);
+  });
 
+  it("accepts a newer stable version above the floor", () => {
     setPiVersionResolverForTests(() => "1.7.1");
     assert.equal(checkMinPiVersion().ok, true);
   });
@@ -276,7 +320,7 @@ describe("registerSessionValidation minimum Pi version enforcement", () => {
     );
   });
 
-  it("fails closed consistently when Pi version is undetermined (matching load-time guard)", async () => {
+  it("notifies with error severity in interactive mode when running Pi version is undetermined", async () => {
     const handler = setupValidation(() => ({ ok: false, installed: null, required: "1.7.0" }));
     const notices: Array<{ message: string; type: string }> = [];
     await handler({}, {
@@ -287,7 +331,10 @@ describe("registerSessionValidation minimum Pi version enforcement", () => {
     assert.equal(notices.length, 1);
     assert.equal(notices[0].type, "error");
     assert.match(notices[0].message, /could not be determined/);
+  });
 
+  it("throws an actionable error in headless mode when running Pi version is undetermined", async () => {
+    const handler = setupValidation(() => ({ ok: false, installed: null, required: "1.7.0" }));
     await assert.rejects(
       () => handler({}, { hasUI: false, cwd: process.cwd(), ui: { notify: () => {} } }),
       /Pi >= 1\.7\.0.*could not be determined.*pi update/,

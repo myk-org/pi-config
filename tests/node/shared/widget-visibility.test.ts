@@ -37,6 +37,9 @@ import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
 import orchestrator from "../../../extensions/orchestrator/index.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 const createdBy = { type: "local" as const, origin: "system", session: "", project: "" };
 const theme = {
