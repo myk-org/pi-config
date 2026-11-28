@@ -119,14 +119,21 @@ function getPathPiVersion(): string | null {
   return null;
 }
 
+export interface AssertPiVersionFloorOptions {
+  /** Override installed SDK version resolution (for unit tests). */
+  getInstalledVersion?: () => string | null;
+  /** Override PATH `pi` binary version resolution (for unit tests). */
+  getPathVersion?: () => string | null;
+}
+
 /**
  * Enforces the minimum installed @earendil-works/pi-coding-agent version.
  * Throws (does not just log) when the resolved SDK version is below MIN_PI_VERSION
  * or cannot be resolved at all — callers should call this early during startup
  * so a stale SDK install fails fast instead of surfacing confusing runtime errors.
  */
-export function assertPiVersionFloor(): void {
-  const installed = getInstalledPiVersion();
+export function assertPiVersionFloor(options: AssertPiVersionFloorOptions = {}): void {
+  const installed = (options.getInstalledVersion ?? getInstalledPiVersion)();
   if (!installed) {
     logger.error(`[sidecar] PI_VERSION_CHECK_FAILED: reason=could_not_resolve_installed_version, min_version=${MIN_PI_VERSION}`);
     throw new Error(`Could not resolve installed @earendil-works/pi-coding-agent version; requires >=${MIN_PI_VERSION}`);
@@ -149,7 +156,7 @@ export function assertPiVersionFloor(): void {
   }
   logger.info(`[sidecar] PI_VERSION_CHECK_OK: installed=${installed}, min_version=${MIN_PI_VERSION}`);
 
-  const pathVersion = getPathPiVersion();
+  const pathVersion = (options.getPathVersion ?? getPathPiVersion)();
   // Match installed-SDK policy: prerelease/build suffixes are unparsable and
   // must not silently satisfy the floor (PATH `pi` is what subagents spawn).
   if (pathVersion && (!parseVersion(pathVersion) || compareVersions(pathVersion, MIN_PI_VERSION) < 0)) {

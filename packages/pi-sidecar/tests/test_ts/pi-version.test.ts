@@ -105,15 +105,38 @@ describe("assertPiVersionFloor", () => {
     }
   });
 
-  it("recommends a targeted @earendil-works/pi-coding-agent npm upgrade rather than global pi update or deleting lockfiles", () => {
-    const source = fs.readFileSync(new URL("../../src/pi-version.ts", import.meta.url), "utf8");
-    const sdkThrowBlock = source.slice(
-      source.indexOf("if (compareVersions(installed, MIN_PI_VERSION) < 0)"),
-      source.indexOf("PI_VERSION_CHECK_OK"),
+  it("throws a targeted npm install upgrade hint when the installed SDK is below MIN_PI_VERSION", () => {
+    assert.throws(
+      () => assertPiVersionFloor({ getInstalledVersion: () => "1.6.1", getPathVersion: () => null }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /1\.6\.1 is below the required floor 1\.7\.0/);
+        assert.match(err.message, /npm install @earendil-works\/pi-coding-agent@\^1\.7\.0/);
+        return true;
+      },
     );
-    assert.match(sdkThrowBlock, /npm install @earendil-works\/pi-coding-agent@\^\$\{MIN_PI_VERSION\}/);
-    assert.doesNotMatch(sdkThrowBlock, /pi update/);
-    assert.doesNotMatch(sdkThrowBlock, /package-lock\.json/);
+  });
+
+  it("omits global pi update from the SDK floor error message", () => {
+    assert.throws(
+      () => assertPiVersionFloor({ getInstalledVersion: () => "1.6.1", getPathVersion: () => null }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.doesNotMatch(err.message, /pi update/);
+        return true;
+      },
+    );
+  });
+
+  it("omits lockfile deletion advice from the SDK floor error message", () => {
+    assert.throws(
+      () => assertPiVersionFloor({ getInstalledVersion: () => "1.6.1", getPathVersion: () => null }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.doesNotMatch(err.message, /package-lock\.json/);
+        return true;
+      },
+    );
   });
 
   it("keeps pi-version.ts free of SDK runtime imports so floor checks precede ESM linking", () => {
