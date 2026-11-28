@@ -1222,4 +1222,15 @@ describe("approval-hmac-key protected storage guard (#1495)", () => {
     assert.equal(res.action, "block");
     assert.match(res.reason ?? "", /\.approval-hmac-key/);
   });
+
+  it("blocks multiline bash -c sourcing /dev/fd from process substitution", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "bash -c 'echo x\n. /dev/fd/63' <(echo 'cat ~/.pi/agent/.*')",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
 });

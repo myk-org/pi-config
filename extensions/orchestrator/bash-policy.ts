@@ -6998,13 +6998,13 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     };
 
     /**
-     * Strict positive allowlist of provably data-only inline runtime snippets that CANNOT
-     * execute stdin (no computed property access `[...]`, no reflection, no arbitrary calls
-     * or callbacks). Everything else fails closed so attached heredocs and piped input are
-     * inspected by `checkInlineCode`.
+     * Strict positive allowlist of provably data-only single-line inline runtime snippets
+     * that CANNOT execute stdin (no computed property access `[...]`, no reflection, no
+     * newlines, no arbitrary calls or callbacks). Everything else fails closed so attached
+     * heredocs and piped input are inspected by `checkInlineCode`.
      */
     const SAFE_DATA_ONLY_INLINE_CODE_RE =
-      /^(?:(?:import\s+sys\s*;\s*)?print\s*\(\s*(?:input\s*\(\s*\)|sys\.stdin\.read\s*\(\s*\)|-?\d+(?:\.\d+)?|True|False|None|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\)|console\.(?:log|error|info)\s*\(\s*(?:-?\d+(?:\.\d+)?|true|false|null|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*\)|-?\d+(?:\.\d+)?|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*;?$/;
+      /^(?:(?:import[ \t]+sys[ \t]*;[ \t]*)?print[ \t]*\([ \t]*(?:input[ \t]*\([ \t]*\)|sys\.stdin\.read[ \t]*\([ \t]*\)|-?\d+(?:\.\d+)?|True|False|None|"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*')[ \t]*\)|console\.(?:log|error|info)[ \t]*\([ \t]*(?:-?\d+(?:\.\d+)?|true|false|null|"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*')[ \t]*\)|-?\d+(?:\.\d+)?|"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*')[ \t]*;?$/;
 
     const inlineCodeMayExecuteStdin = (inlineCodes: string[]): boolean => {
       if (inlineCodes.length === 0) return true;
@@ -7017,12 +7017,13 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     };
 
     /**
-     * Strict positive allowlist of nested `-c` shell commands that are demonstrably
-     * independent of positional arguments and `/dev/fd` (only literal `echo`/`printf`/
-     * `true`/`false`/`:`, with zero `$`, backticks, loops, redirections, or subshells).
+     * Strict positive allowlist of single-statement nested `-c` shell commands that are
+     * demonstrably independent of positional arguments and `/dev/fd` (only literal
+     * `echo`/`printf`/`true`/`false`/`:`, horizontal whitespace `[ \t]` only — zero
+     * newlines, command separators, `$`, backticks, globs, loops, redirections, or subshells).
      */
     const NESTED_SCRIPT_IGNORES_ARGS_RE =
-      /^\s*(?:(?:echo|printf)(?:\s+(?:-[A-Za-z]+|[A-Za-z0-9_.,:!?@#%+=/-]+|'(?:[^']*)'|"(?:[^"$`\\]*)"))*|true|false|:)\s*$/;
+      /^[ \t]*(?:(?:echo|printf)(?:[ \t]+(?:-[A-Za-z]+|[A-Za-z0-9_.,:%+=/@-]+|'(?:[^'\r\n]*)'|"(?:[^"$`\\\r\n]*)"))*|true|false|:)[ \t]*$/;
 
     const hasActiveDynamicPiAgentAccess = (text: string): boolean => {
       const active = stripStandaloneSingleQuotes(text);
