@@ -59,6 +59,7 @@ The zero-arg `/pi-config-settings` slash command opens an interactive TUI overla
 For what it looks like from the user side, see [Configuration & Settings](configuration.html); the internals:
 
 - **Two scopes:** `project` (writes to `<repo>/.pi/pi-config-settings.json`) and `global` (writes to `~/.pi/pi-config-settings.json`). Press Tab to switch.
+- **Global-only keys:** On the `Project` tab, settings with `global_only: true` (such as `lsp_enabled` and `lsp_servers`) render dimmed with a `(global-only)` label; attempting to edit or delete them shows an inline warning banner inside the overlay instead of writing to project scope or hiding the error behind the overlay.
 - **Source indicators:** Each setting shows its source: `P` (project file), `G` (global file), `E` (env var), `D` (default).
 - **Smart pickers:** Provider and model fields use fuzzy-searchable `SelectList` from `ctx.modelRegistry`.
 - **Agent overrides:** Nested per-agent provider/model editor.

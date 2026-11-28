@@ -49,6 +49,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
   const [selectedCategory, setSelectedCategory] = useState<string>("");
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [globalOnlyHintKey, setGlobalOnlyHintKey] = useState<string | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Pending write awaiting the server's ack (refreshed settings-data = ok,
   // settings-error = failed). Success is only announced after the ack — a
@@ -120,6 +121,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
     setData(null);
     setDraft({});
     setErrors({});
+    setGlobalOnlyHintKey(null);
     sendCmd("settings-get", { scope });
     return onMessage((ev: any) => {
       if (ev.type === "settings-data" && ev.scope === scope) {
@@ -303,6 +305,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
             onChange={(e) => {
               const next = e.target.value;
               setFilter(next);
+              setGlobalOnlyHintKey(null);
               if (next.trim().length > 0) {
                 setSelectedCategory(ALL_CATEGORY_ID);
               } else if (selectedCategory === ALL_CATEGORY_ID) {
@@ -317,6 +320,7 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
               className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               onClick={() => {
                 setFilter("");
+                setGlobalOnlyHintKey(null);
                 if (selectedCategory === ALL_CATEGORY_ID) {
                   setSelectedCategory(categories[0]?.name ?? "");
                 }
@@ -344,7 +348,10 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                   ? "bg-accent text-foreground font-medium border-primary"
                   : "text-muted-foreground hover:bg-accent/40 border-transparent",
               )}
-              onClick={() => setSelectedCategory(ALL_CATEGORY_ID)}
+              onClick={() => {
+                setSelectedCategory(ALL_CATEGORY_ID);
+                setGlobalOnlyHintKey(null);
+              }}
             >
               <span className="truncate">All</span>
               <span className="text-[10px] opacity-80 shrink-0">{crossCategoryMatches.length}</span>
@@ -367,7 +374,10 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                       ? "text-muted-foreground/45 hover:bg-accent/20 border-transparent"
                       : "text-muted-foreground hover:text-foreground hover:bg-accent/40 border-transparent",
                 )}
-                onClick={() => setSelectedCategory(cat.name)}
+                onClick={() => {
+                  setSelectedCategory(cat.name);
+                  setGlobalOnlyHintKey(null);
+                }}
               >
                 <span className="truncate">{cat.name}</span>
                 <span className="text-[10px] opacity-80 shrink-0">{count}</span>
@@ -413,8 +423,25 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
               "—";
 
             return (
-              <div key={def.key} className="rounded-md border border-border bg-background p-2 space-y-1.5 min-w-0">
-                <div className="flex items-start justify-between gap-1.5 min-w-0">
+              <div
+                key={def.key}
+                data-global-only-blocked={globalOnlyBlocked ? "true" : undefined}
+                onClick={
+                  globalOnlyBlocked
+                    ? () => {
+                        log.debug("global_only setting row clicked in project scope", { key: def.key });
+                        setGlobalOnlyHintKey(def.key);
+                      }
+                    : undefined
+                }
+                className={cn(
+                  "rounded-md border p-2 space-y-1.5 min-w-0",
+                  globalOnlyBlocked
+                    ? "border-border/60 bg-muted/20 cursor-not-allowed"
+                    : "border-border bg-background",
+                )}
+              >
+                <div className={cn("flex items-start justify-between gap-1.5 min-w-0", globalOnlyBlocked && "opacity-60")}>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 flex-wrap min-w-0">
                       <span
@@ -426,7 +453,14 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                       >
                         {badge.label}
                       </span>
-                      <span className="text-xs font-mono font-medium text-foreground break-all">{def.key}</span>
+                      <span
+                        className={cn(
+                          "text-xs font-mono font-medium break-all",
+                          globalOnlyBlocked ? "text-muted-foreground" : "text-foreground",
+                        )}
+                      >
+                        {def.key}
+                      </span>
                       {isSearching && (
                         <span className="text-[9px] px-1 py-0 rounded bg-muted text-muted-foreground shrink-0">
                           {def.group}
@@ -459,14 +493,20 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                           : "bg-muted/40 text-muted-foreground border-border",
                         globalOnlyBlocked && "opacity-50 cursor-not-allowed",
                       )}
-                      onClick={() => {
-                        if (globalOnlyBlocked) return;
+                      onClick={(e) => {
+                        if (globalOnlyBlocked) {
+                          e.stopPropagation();
+                          log.debug("global_only bool blocked in project scope", { key: def.key });
+                          setGlobalOnlyHintKey(def.key);
+                          return;
+                        }
                         setDraftValue(def.key, !boolEffective);
                         armPending(def.key, "save");
                         sendCmd("settings-set", { scope, key: def.key, value: !boolEffective });
                       }}
-                      disabled={savingKey === def.key || globalOnlyBlocked}
-                      title={globalOnlyBlocked ? "Switch to Global scope to edit" : undefined}
+                      disabled={savingKey === def.key}
+                      aria-disabled={globalOnlyBlocked || savingKey === def.key}
+                      title={globalOnlyBlocked ? "Global-only setting — switch to Global scope to edit" : undefined}
                     >
                       {boolEffective ? "enabled" : "disabled"}
                     </button>
@@ -475,14 +515,37 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                       className={cn(
                         "flex-1 min-w-0 px-2 py-1 text-[11px] rounded bg-background border outline-none font-mono",
                         errors[def.key] ? "border-red-500" : dirty ? "border-primary" : "border-border",
-                        globalOnlyBlocked && "opacity-50 cursor-not-allowed",
+                        globalOnlyBlocked && "opacity-50 cursor-not-allowed text-muted-foreground",
                       )}
                       placeholder={placeholderVal}
                       value={def.key in draft ? displayValue(draftVal) : storedStr}
-                      onChange={(e) => setDraftValue(def.key, e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter" && !globalOnlyBlocked) save(def); }}
-                      disabled={globalOnlyBlocked}
-                      title={globalOnlyBlocked ? "Switch to Global scope to edit" : undefined}
+                      onClick={(e) => {
+                        if (globalOnlyBlocked) {
+                          e.stopPropagation();
+                          log.debug("global_only input clicked in project scope", { key: def.key });
+                          setGlobalOnlyHintKey(def.key);
+                        }
+                      }}
+                      onChange={(e) => {
+                        if (globalOnlyBlocked) {
+                          setGlobalOnlyHintKey(def.key);
+                          return;
+                        }
+                        setDraftValue(def.key, e.target.value);
+                      }}
+                      onKeyDown={(e) => {
+                        if (globalOnlyBlocked) {
+                          if (e.key !== "Tab" && e.key !== "Escape") {
+                            log.debug("global_only input keydown blocked in project scope", { key: def.key });
+                            setGlobalOnlyHintKey(def.key);
+                          }
+                          return;
+                        }
+                        if (e.key === "Enter") save(def);
+                      }}
+                      readOnly={globalOnlyBlocked}
+                      aria-disabled={globalOnlyBlocked}
+                      title={globalOnlyBlocked ? "Global-only setting — switch to Global scope to edit" : undefined}
                     />
                   )}
                   <button
@@ -490,7 +553,10 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                     aria-label={`Copy ${def.key} value`}
                     title="Copy value"
                     className="shrink-0 p-1.5 rounded border border-border text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors"
-                    onClick={() => void handleCopyValue(def)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleCopyValue(def);
+                    }}
                   >
                     {copiedKey === def.key ? (
                       <Check className="h-3 w-3 text-green-400" />
@@ -499,6 +565,29 @@ export function SettingsPanel({ sendCmd, onMessage, notify, cwd }: Props) {
                     )}
                   </button>
                 </div>
+
+                {globalOnlyBlocked && globalOnlyHintKey === def.key && (
+                  <div
+                    role="status"
+                    data-testid={`global-only-warning-${def.key}`}
+                    className="flex items-center justify-between flex-wrap gap-1.5 rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300 min-w-0"
+                  >
+                    <span className="break-words min-w-0">
+                      Global-only setting — switch to Global scope to edit
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 underline font-medium text-amber-200 hover:text-amber-100 cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setGlobalOnlyHintKey(null);
+                        setScope("global");
+                      }}
+                    >
+                      Switch to Global
+                    </button>
+                  </div>
+                )}
 
                 {!isBool && (dirty || errors[def.key]) && (
                   <div className="flex items-center gap-2 justify-end flex-wrap">
