@@ -240,6 +240,7 @@ export function describePeerOrigin(row: RegistryRow): { by: string; via: string 
   if (entry === "tool") return { by: "agent", via: "coms_start tool" };
   if (entry === "slash") return { by: "user", via: "/coms start" };
   if (entry === "cli") return { by: "user", via: "pi --coms" };
+  if (entry === "auto") return { by: "auto", via: "coms_auto_start" };
   // Peers started before the entry-point vocabulary keep writing these two values.
   if (entry === "agent") return { by: "agent", via: "coms_start (legacy record)" };
   if (entry === "user") return { by: "user", via: "/coms start (legacy record)" };

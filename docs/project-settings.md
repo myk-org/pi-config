@@ -69,6 +69,7 @@ For what it looks like from the user side, see [Configuration & Settings](config
   is the reference.
 - **Immediate save:** Each change writes immediately with `clearSettingsCache()`.
 - **Review group opt-ins:** `pr_retro_on_merge` (`PI_PR_RETRO_ON_MERGE`, default `false`) lives in the `Review` group and gates both the `{{IF:pr_retro_on_merge}}` rule block in `rules/20-code-review-loop.md` and the `extensions/orchestrator/pr-retro.ts` merge watcher.
+- **Coms group defaults:** `coms_auto_start` (`PI_COMS_AUTO_START`, default `true`) lives in the `Coms` group and controls automatic COMS registration for interactive TUI sessions (exposed automatically in `/pi-config-settings`, PiDash `SettingsPanel`, `settings_get`/`settings_set`, and `myk-pi-tools settings`).
 - **Zero-to-disable integer bounds (`allow_zero`):** `settings-keys.json` supports `"allow_zero": true` alongside `min`/`max` on `int` keys (used by `auto_compact_threshold_pct`, valid `0` or `20`–`99`), enforced consistently across `project-settings.ts`, `settings-tui-submenus.ts`, `myk_pi_tools/settings/commands.py`, and PiDash `SettingsPanel`.
 - **UI widget & overlay settings (`UI` category):** `widget_tasks_shortcut` (`alt+t`), `widget_coms_shortcut` (`alt+c`), `widget_all_shortcut` (`alt+w`), and `qa_overlay_shortcut` (`alt+q`) use free-text `InputSubmenu` (empty string disables the shortcut), and `widgets_default_mode` (`expanded` | `collapsed`) uses `SelectSubmenu`. Changes to shortcuts take effect after `/reload`.
 

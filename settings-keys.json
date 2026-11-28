@@ -288,6 +288,13 @@
     "max": 300,
     "group": "Enforcement"
   },
+  "coms_auto_start": {
+    "description": "Automatically register interactive Pi sessions on COMS at startup so open sessions across repos can discover and message each other",
+    "type": "bool",
+    "env": "PI_COMS_AUTO_START",
+    "default": true,
+    "group": "Coms"
+  },
   "coms_max_hops": {
     "description": "Maximum message relay hops between peers",
     "type": "int",
