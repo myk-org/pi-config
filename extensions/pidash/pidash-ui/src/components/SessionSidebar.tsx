@@ -59,6 +59,7 @@ const LEGACY_COLLAPSED_STORAGE_KEY = "pidash-collapsed-projects";
 
 const dirKey = (name: string) => `dir:${name}`;
 const comsKey = (project: string) => `coms:${project}`;
+const parentKey = (sessionId: string) => `parent:${sessionId}`;
 
 function loadCollapsedProjects(): Set<string> {
   try {
@@ -101,9 +102,8 @@ export function SessionSidebar({
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [archivedSectionOpen, setArchivedSectionOpen] = useState(false);
-  // Coms section: a second, collapsible view at the BOTTOM of the list. Sessions
-  // appear both here (under their project) and in the directory tree — a cheap
-  // cross-reference, since rows cost nothing and members are few.
+  // Coms section: collapsible bottom view reserved strictly for cross-project or
+  // unattached peers (hidden completely when empty).
   const [comsSectionOpen, setComsSectionOpen] = useState<boolean>(() => {
     try { return localStorage.getItem("pidash-coms-section-open") !== "false"; } catch { return true; }
   });
@@ -116,7 +116,7 @@ export function SessionSidebar({
     });
   };
   const [theme, setThemeState] = useState<Theme>(() => loadTheme());
-  const { pinned, groups: sortedGroups, archived } = useMemo(
+  const { pinned, groups: sortedGroups, coms: sortedComsProjects, archived } = useMemo(
     () => partitionSidebarSessions(sessions, {
       pinnedIds: pinnedSessionIds ?? EMPTY_SESSION_IDS,
       archivedIds: archivedSessionIds ?? EMPTY_SESSION_IDS,
@@ -134,8 +134,8 @@ export function SessionSidebar({
   }, []);
 
   // Reveal a newly selected session (e.g. via Ctrl+1..9 or SessionSwitcher) when its
-  // owning directory group or Archived section is collapsed, without fighting manual
-  // collapse while the same session stays selected.
+  // owning directory group, parent node, Coms section/sub-project, or Archived section
+  // is collapsed, without fighting manual collapse while the same session stays selected.
   const lastRevealedSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!activeSessionId) {
@@ -157,12 +157,40 @@ export function SessionSidebar({
     const owningGroup = sortedGroups.find((g) => g.sessions.some((s) => s.sessionId === activeSessionId));
     if (owningGroup) {
       lastRevealedSessionIdRef.current = activeSessionId;
-      const key = dirKey(owningGroup.name);
+      const owningParent = owningGroup.nodes.find((n) => n.children.some((c) => c.sessionId === activeSessionId));
+      const groupDirKey = dirKey(owningGroup.name);
+      const owningParentKey = owningParent ? parentKey(owningParent.session.sessionId) : null;
       setCollapsedProjects((prev) => {
-        if (!prev.has(key)) return prev;
-        log.debug("auto-expanded directory group for selected session", { sessionId: activeSessionId, group: owningGroup.name });
+        const needsGroup = prev.has(groupDirKey);
+        const needsParent = Boolean(owningParentKey && prev.has(owningParentKey));
+        if (!needsGroup && !needsParent) return prev;
+        log.debug("auto-expanded project/parent container for selected session", {
+          sessionId: activeSessionId,
+          group: owningGroup.name,
+          parentSessionId: owningParent?.session.sessionId ?? null,
+        });
         const next = new Set(prev);
-        next.delete(key);
+        if (needsGroup) next.delete(groupDirKey);
+        if (owningParentKey && needsParent) next.delete(owningParentKey);
+        return next;
+      });
+      return;
+    }
+
+    const owningComs = sortedComsProjects.find((c) => c.sessions.some((s) => s.sessionId === activeSessionId));
+    if (owningComs) {
+      lastRevealedSessionIdRef.current = activeSessionId;
+      setComsSectionOpen((prev) => {
+        if (prev) return prev;
+        log.debug("auto-expanded coms section for selected session", { sessionId: activeSessionId, project: owningComs.project });
+        return true;
+      });
+      const projectComsKey = comsKey(owningComs.project);
+      setCollapsedProjects((prev) => {
+        if (!prev.has(projectComsKey)) return prev;
+        log.debug("auto-expanded coms sub-project for selected session", { sessionId: activeSessionId, project: owningComs.project });
+        const next = new Set(prev);
+        next.delete(projectComsKey);
         return next;
       });
       return;
@@ -171,7 +199,7 @@ export function SessionSidebar({
     if (pinned.some((s) => s.sessionId === activeSessionId)) {
       lastRevealedSessionIdRef.current = activeSessionId;
     }
-  }, [activeSessionId, archived, pinned, sortedGroups, setCollapsedProjects]);
+  }, [activeSessionId, archived, pinned, sortedGroups, sortedComsProjects, setCollapsedProjects]);
 
   if (collapsed) return null;
 
@@ -190,10 +218,25 @@ export function SessionSidebar({
     );
   };
 
-  /** One session row — shared by Pinned, directory groups, Coms, and Archived. */
+  /** One session row — shared by Pinned, directory groups (including nested peers), Coms, and Archived. */
   const renderSession = (
     s: SessionInfo,
-    opts: { showLocation?: boolean; keyPrefix?: string; compactIndent?: boolean; preferComsName?: boolean } = {},
+    opts: {
+      showLocation?: boolean;
+      keyPrefix?: string;
+      compactIndent?: boolean;
+      nested?: boolean;
+      nestedUnder?: string;
+      nestedUnderProject?: string;
+      preferComsName?: boolean;
+      childSummary?: {
+        count: number;
+        busy: number;
+        waiting: number;
+        expanded: boolean;
+        onToggle: () => void;
+      };
+    } = {},
   ) => {
     const isActive = s.sessionId === activeSessionId;
     const isPinned = Boolean(pinnedSessionIds?.has(s.sessionId));
@@ -202,14 +245,23 @@ export function SessionSidebar({
     const status = sessionActivityDisplay(s);
     const rowKey = opts.keyPrefix ? `${opts.keyPrefix}:${s.sessionId}` : s.sessionId;
     const displayLabel = sessionRowDisplayLabel(s, { preferComsName: opts.preferComsName });
+    const indentClass = opts.nested
+      ? "pl-10 pr-2.5"
+      : opts.compactIndent
+        ? "pl-3 pr-2.5"
+        : "pl-7 pr-2.5";
     return (
       <div
         key={rowKey}
         data-session-id={s.sessionId}
         data-waiting={isWaiting ? "true" : undefined}
+        data-supervised-peer={s.supervisedPeer ? "true" : undefined}
+        data-nested-under={opts.nestedUnder}
+        data-nested-under-project={opts.nestedUnderProject}
         className={cn(
           "group/session py-2 cursor-pointer transition-colors border-b border-border/50 min-w-0",
-          opts.compactIndent ? "pl-3 pr-2.5" : "pl-7 pr-2.5",
+          indentClass,
+          opts.nested && "bg-muted/20",
           isActive
             ? cn("bg-accent border-l-3", isWaiting ? "border-l-cyan-500" : "border-l-primary")
             : isWaiting
@@ -220,6 +272,25 @@ export function SessionSidebar({
         onClick={() => onSelect(s)}
       >
         <div className={cn("text-xs font-medium flex items-center gap-1.5 min-w-0", s.active ? "text-primary" : "text-muted-foreground")}>
+          {opts.nested && (
+            <span aria-hidden="true" className="text-[10px] text-muted-foreground/70 shrink-0 select-none">↳</span>
+          )}
+          {opts.childSummary && (
+            <button
+              type="button"
+              data-toggle-children={s.sessionId}
+              className="p-0.5 -ml-1 rounded text-muted-foreground hover:text-primary hover:bg-accent/50 cursor-pointer shrink-0"
+              aria-expanded={opts.childSummary.expanded}
+              aria-label={opts.childSummary.expanded ? "Collapse nested peers" : "Expand nested peers"}
+              title={opts.childSummary.expanded ? "Collapse nested peers" : `Expand ${opts.childSummary.count} nested peer${opts.childSummary.count === 1 ? "" : "s"}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                opts.childSummary!.onToggle();
+              }}
+            >
+              {opts.childSummary.expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            </button>
+          )}
           {opts.showLocation && (
             <span
               className="shrink-0 flex items-center gap-0.5 px-1 rounded border border-border bg-muted text-[9px] font-normal text-muted-foreground"
@@ -258,6 +329,15 @@ export function SessionSidebar({
           ) : (
             <>
               <span className="truncate min-w-0 flex-1">{displayLabel}</span>
+              {opts.childSummary && !opts.childSummary.expanded && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-normal text-muted-foreground shrink-0">
+                  {renderAttentionBadge(opts.childSummary.waiting)}
+                  <span className="px-1 rounded bg-muted/70">{opts.childSummary.count}</span>
+                  {opts.childSummary.busy > 0 && (
+                    <span className="text-green-600 dark:text-green-400">●{opts.childSummary.busy}</span>
+                  )}
+                </span>
+              )}
               {(onRename || onTogglePin || onToggleArchive) && (
                 <span className="flex items-center gap-0.5 shrink-0">
                   {onRename && (
@@ -323,7 +403,7 @@ export function SessionSidebar({
               <span className="truncate">{s.branch}</span>
             </span>
           )}
-          {s.comsProject && (
+          {s.comsProject && !opts.nested && (
             <span className="flex items-center gap-0.5 min-w-0 text-cyan-700 dark:text-cyan-400/90" title={`Coms project: ${s.comsProject}${s.comsName ? ` (you are ${s.comsName})` : ""}`}>
               <span aria-hidden="true" className="shrink-0">◆</span>
               <span className="truncate max-w-[5rem]">{s.comsProject}</span>
@@ -350,25 +430,17 @@ export function SessionSidebar({
   };
 
 
-  // ── Coms projects present among non-archived sessions ──────────────
-  const comsProjects = new Map<string, { sessions: SessionInfo[]; busy: number; waiting: number }>();
-  for (const s of sessions) {
-    if (!s.comsProject || archivedSessionIds?.has(s.sessionId)) continue;
-    if (!comsProjects.has(s.comsProject)) comsProjects.set(s.comsProject, { sessions: [], busy: 0, waiting: 0 });
-    const entry = comsProjects.get(s.comsProject)!;
-    entry.sessions.push(s);
-    if (s.activity === "working") entry.busy += 1;
-    if (isSessionWaitingForInput(s, extraAttentionIds)) entry.waiting += 1;
-  }
-  const sortedComsProjects = [...comsProjects.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  const comsMemberCount = sortedComsProjects.reduce((n, [, info]) => n + info.sessions.length, 0);
-  const comsBusyCount = sortedComsProjects.reduce((n, [, info]) => n + info.busy, 0);
-  const comsWaitingCount = sortedComsProjects.reduce((n, [, info]) => n + info.waiting, 0);
+  // ── Cross-project / unattached Coms summary counts ──────────────────
+  const comsEntries = sortedComsProjects.map((entry) => ({
+    project: entry.project,
+    sessions: entry.sessions,
+    busy: entry.sessions.filter((s) => s.active && s.activity === "working").length,
+    waiting: entry.sessions.filter((s) => isSessionWaitingForInput(s, extraAttentionIds)).length,
+  }));
+  const comsMemberCount = comsEntries.reduce((n, info) => n + info.sessions.length, 0);
+  const comsBusyCount = comsEntries.reduce((n, info) => n + info.busy, 0);
+  const comsWaitingCount = comsEntries.reduce((n, info) => n + info.waiting, 0);
   const archivedWaitingCount = archived.filter((s) => isSessionWaitingForInput(s, extraAttentionIds)).length;
-  // Active sessions first inside each project, like the directory groups.
-  for (const [, info] of sortedComsProjects) {
-    info.sessions.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
-  }
 
   const toggleProject = (key: string) => {
     log.debug("group toggled", { key });
@@ -447,10 +519,11 @@ export function SessionSidebar({
           const isExpanded = !collapsedProjects.has(groupKey);
           const hasActive = group.sessions.some(s => s.active);
           const count = group.sessions.length;
+          const busyCount = group.sessions.filter((s) => s.active && s.activity === "working").length;
           const waitingCount = group.sessions.filter((s) => isSessionWaitingForInput(s, extraAttentionIds)).length;
 
           return (
-            <div key={name}>
+            <div key={name} data-project-group={name}>
               {/* Project header */}
               <div
                 className={cn(
@@ -474,20 +547,62 @@ export function SessionSidebar({
                 <span className="ml-auto flex items-center gap-1 text-[10px] font-normal shrink-0">
                   {!isExpanded && renderAttentionBadge(waitingCount)}
                   <span>{count}</span>
+                  {busyCount > 0 && (
+                    <span
+                      data-busy-badge="true"
+                      className="text-green-600 dark:text-green-400"
+                      title={`${busyCount} active working session${busyCount === 1 ? "" : "s"}`}
+                    >
+                      ●{busyCount}
+                    </span>
+                  )}
                 </span>
               </div>
 
-              {/* Sessions in this group */}
-              {isExpanded && group.sessions.map((s) => renderSession(s))}
+              {/* Sessions in this group (with same-project supervised peers nested under parent or project) */}
+              {isExpanded && (
+                <>
+                  {group.nodes.map((node) => {
+                    const pKey = parentKey(node.session.sessionId);
+                    const childrenExpanded = !collapsedProjects.has(pKey);
+                    const childBusy = node.children.filter((c) => c.active && c.activity === "working").length;
+                    const childWaiting = node.children.filter((c) => isSessionWaitingForInput(c, extraAttentionIds)).length;
+                    return (
+                      <div key={node.session.sessionId}>
+                        {renderSession(node.session, {
+                          childSummary: node.children.length > 0
+                            ? {
+                                count: node.children.length,
+                                busy: childBusy,
+                                waiting: childWaiting,
+                                expanded: childrenExpanded,
+                                onToggle: () => toggleProject(pKey),
+                              }
+                            : undefined,
+                        })}
+                        {childrenExpanded && node.children.map((child) =>
+                          renderSession(child, {
+                            nested: true,
+                            nestedUnder: node.session.sessionId,
+                          }),
+                        )}
+                      </div>
+                    );
+                  })}
+                  {group.projectPeers.map((peer) =>
+                    renderSession(peer, {
+                      nested: true,
+                      nestedUnderProject: name,
+                    }),
+                  )}
+                </>
+              )}
             </div>
           );
         })}
-        {/* Coms section — AFTER the sessions, not above them. A session shows up
-            both here (under its project) and in its directory group: rows are
-            cheap, and the cross-reference is the point. Each project collapses
-            independently (namespaced keys), and the whole section can be closed. */}
-        {sortedComsProjects.length > 0 && (
-          <div className="border-t border-border mt-1">
+        {/* Coms section — strictly cross-project or unattached peers; hidden completely when empty (#1527). */}
+        {comsEntries.length > 0 && (
+          <div className="border-t border-border mt-1" data-section="coms">
             <div
               className="flex items-center gap-1.5 px-3 py-2 cursor-pointer text-sm font-semibold text-muted-foreground hover:bg-accent/30 focus:outline-none focus:ring-1 focus:ring-primary focus:ring-inset"
               onClick={toggleComsSection}
@@ -499,7 +614,7 @@ export function SessionSidebar({
               role="button"
               tabIndex={0}
               aria-expanded={comsSectionOpen}
-              title={`${comsMemberCount} session${comsMemberCount === 1 ? "" : "s"} in ${sortedComsProjects.length} coms project${sortedComsProjects.length === 1 ? "" : "s"}`}
+              title={`${comsMemberCount} cross-project/unattached peer${comsMemberCount === 1 ? "" : "s"} in ${comsEntries.length} coms project${comsEntries.length === 1 ? "" : "s"}`}
             >
               {comsSectionOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
               <MessagesSquare className="h-3 w-3 shrink-0" />
@@ -510,8 +625,8 @@ export function SessionSidebar({
                 {comsBusyCount > 0 && <span className="text-green-600 dark:text-green-400">●{comsBusyCount}</span>}
               </span>
             </div>
-            {comsSectionOpen && sortedComsProjects.map(([project, info]) => {
-              const projectKey = comsKey(project);
+            {comsSectionOpen && comsEntries.map((info) => {
+              const projectKey = comsKey(info.project);
               const isProjectOpen = !collapsedProjects.has(projectKey);
               return (
                 <div key={projectKey}>
@@ -529,13 +644,13 @@ export function SessionSidebar({
                   >
                     {isProjectOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
                     <span aria-hidden="true" className="text-cyan-700 dark:text-cyan-400/90 shrink-0">◆</span>
-                    <span className="truncate">{project}</span>
+                    <span className="truncate">{info.project}</span>
                     <span className="ml-auto flex items-center gap-1 text-[10px] font-normal shrink-0">
                       {!isProjectOpen && renderAttentionBadge(info.waiting)}
                       <span>{info.sessions.length}</span>
                     </span>
                   </div>
-                  {isProjectOpen && info.sessions.map((s) => renderSession(s, { showLocation: true, keyPrefix: `coms:${project}`, preferComsName: true }))}
+                  {isProjectOpen && info.sessions.map((s) => renderSession(s, { showLocation: true, keyPrefix: `coms:${info.project}`, preferComsName: true }))}
                 </div>
               );
             })}

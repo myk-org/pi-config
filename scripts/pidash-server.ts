@@ -139,9 +139,24 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     if (parsed.contextWindow !== undefined) piClient.session.contextWindow = parsed.contextWindow;
     if (parsed.diffPort !== undefined) piClient.session.diffPort = parsed.diffPort;
     if (parsed.thinkingLevel !== undefined) piClient.session.thinkingLevel = parsed.thinkingLevel;
-    if (parsed.comsName !== undefined) piClient.session.comsName = parsed.comsName || undefined;
-    if (parsed.comsPurpose !== undefined) piClient.session.comsPurpose = parsed.comsPurpose || undefined;
-    if (parsed.comsProject !== undefined) piClient.session.comsProject = parsed.comsProject || undefined;
+    if (parsed.comsName !== undefined) {
+      if (piClient.session.supervisedPeer !== true || parsed.comsName) {
+        piClient.session.comsName = parsed.comsName || undefined;
+      }
+    }
+    if (parsed.comsPurpose !== undefined) {
+      if (piClient.session.supervisedPeer !== true || parsed.comsPurpose) {
+        piClient.session.comsPurpose = parsed.comsPurpose || undefined;
+      }
+    }
+    if (parsed.comsProject !== undefined) {
+      if (piClient.session.supervisedPeer !== true || parsed.comsProject) {
+        piClient.session.comsProject = parsed.comsProject || undefined;
+      }
+    }
+    if (typeof parsed.parentSessionId === "string" && parsed.parentSessionId.trim()) {
+      piClient.session.parentSessionId = parsed.parentSessionId.trim();
+    }
     updatePidashSession(piClient.session, parsed);
     broadcastToBrowsers(buildSessionUpdatedBroadcast(piClient.session, parsed));
     return;

@@ -133,9 +133,11 @@ export function buildSessionUpdatedBroadcast(
   parsed?: { comsName?: unknown; comsPurpose?: unknown; comsProject?: unknown },
 ): { type: "session_updated"; session: Record<string, unknown> } {
   const wire: Record<string, unknown> = { ...session };
-  if (parsed?.comsName === null) wire.comsName = null;
-  if (parsed?.comsPurpose === null) wire.comsPurpose = null;
-  if (parsed?.comsProject === null) wire.comsProject = null;
+  if (session.supervisedPeer !== true) {
+    if (parsed?.comsName === null) wire.comsName = null;
+    if (parsed?.comsPurpose === null) wire.comsPurpose = null;
+    if (parsed?.comsProject === null) wire.comsProject = null;
+  }
   return { type: "session_updated", session: wire };
 }
 
@@ -1036,6 +1038,9 @@ function registeredSession(parsed: any): SessionInfo {
     comsPurpose: parsed.comsPurpose || undefined,
     comsProject: parsed.comsProject || undefined,
     ...(parsed.supervisedPeer === true ? { supervisedPeer: true } : {}),
+    ...(typeof parsed.parentSessionId === "string" && parsed.parentSessionId.trim()
+      ? { parentSessionId: parsed.parentSessionId.trim() }
+      : {}),
     trailTokenSavings: Number.isSafeInteger(parsed.trailTokenSavings) && parsed.trailTokenSavings >= 0 ? parsed.trailTokenSavings : undefined,
     worktreeCount: Number.isSafeInteger(parsed.worktreeCount) && parsed.worktreeCount >= 0 ? parsed.worktreeCount : undefined,
     worktreeDirtyCount: Number.isSafeInteger(parsed.worktreeDirtyCount) && parsed.worktreeDirtyCount >= 0 ? parsed.worktreeDirtyCount : undefined,
@@ -1090,12 +1095,22 @@ export function registerPidashSession(
   const existing = sessions.get(session.sessionId);
   let client: PiClient;
   if (existing) {
-    if (!session.name && existing.session.name) session.name = existing.session.name;
-    if (!session.comsName && parsed.comsName !== null && existing.session.comsName) session.comsName = existing.session.comsName;
-    if (!session.comsPurpose && parsed.comsPurpose !== null && existing.session.comsPurpose) session.comsPurpose = existing.session.comsPurpose;
-    if (!session.comsProject && parsed.comsProject !== null && existing.session.comsProject) session.comsProject = existing.session.comsProject;
     if (!session.supervisedPeer && existing.session.supervisedPeer && parsed.supervisedPeer !== false) {
       session.supervisedPeer = true;
+    }
+    const preserveSupervisedComs = session.supervisedPeer === true;
+    if (!session.name && existing.session.name) session.name = existing.session.name;
+    if (!session.comsName && (preserveSupervisedComs || parsed.comsName !== null) && existing.session.comsName) {
+      session.comsName = existing.session.comsName;
+    }
+    if (!session.comsPurpose && (preserveSupervisedComs || parsed.comsPurpose !== null) && existing.session.comsPurpose) {
+      session.comsPurpose = existing.session.comsPurpose;
+    }
+    if (!session.comsProject && (preserveSupervisedComs || parsed.comsProject !== null) && existing.session.comsProject) {
+      session.comsProject = existing.session.comsProject;
+    }
+    if (!session.parentSessionId && existing.session.parentSessionId) {
+      session.parentSessionId = existing.session.parentSessionId;
     }
     const preservedCommands = existing.viewState.availableCommands;
     existing.ws = ws;

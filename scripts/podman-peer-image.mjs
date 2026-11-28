@@ -51,6 +51,7 @@ export const DEFAULT_PASSTHROUGH_ENV_KEYS = [
   "ANTHROPIC_VERTEX_PROJECT_ID",
   "CLOUD_ML_REGION",
   "PI_LOG_LEVEL",
+  "PI_COMS_PARENT_SESSION_ID",
 ];
 
 const LEVEL_ORDER = { off: -1, debug: 0, info: 1, warn: 2, error: 3 };
@@ -692,7 +693,13 @@ export function buildPodmanRunArgs(opts) {
   if (opts.session) {
     envFlags.push("-e", `PI_PEER_SESSION=${opts.session}`);
   }
+  const explicitParentSessionId = typeof opts.parentSessionId === "string" ? opts.parentSessionId.trim() : "";
+  const hasExplicitParentSessionId = Boolean(explicitParentSessionId) && !/[\x00-\x1f]/.test(explicitParentSessionId);
+  if (hasExplicitParentSessionId) {
+    envFlags.push("-e", `PI_COMS_PARENT_SESSION_ID=${explicitParentSessionId}`);
+  }
   for (const key of passthroughKeys) {
+    if (key === "PI_COMS_PARENT_SESSION_ID" && hasExplicitParentSessionId) continue;
     if (env && typeof env[key] === "string" && env[key].length > 0) {
       envFlags.push("-e", key);
     }

@@ -37,6 +37,7 @@ import {
 // Provenance, read before the env is scrubbed below: a supervisor started from an agent's bash
 // tool inherits the parent session id, a human's own shell does not.
 const spawnerSessionId = process.env.__PI_CONFIG_SESSION_ID || process.env.__PI_PARENT_SESSION_ID || null;
+const parentSessionId = (process.env.PI_COMS_PARENT_SESSION_ID || "").trim() || null;
 const createdBy = spawnerSessionId ? "agent" : "user";
 
 const [cname, ...rest] = process.argv.slice(2);
@@ -107,6 +108,7 @@ function writeStateRecord(baseFields, extra = {}) {
     cname,
     createdBy,
     createdBySession: spawnerSessionId,
+    ...(parentSessionId ? { parentSessionId } : {}),
     pid: process.pid,
     project,
     purpose,
@@ -147,6 +149,11 @@ function scrubPeerEnv() {
   // Mark only the spawned child process as a supervised headless COMS peer so interactive-only
   // tools like ask_user stay disabled on the peer without touching the spawner's environment.
   env.PI_COMS_SUPERVISED_PEER = "1";
+  if (parentSessionId) {
+    env.PI_COMS_PARENT_SESSION_ID = parentSessionId;
+  } else {
+    delete env.PI_COMS_PARENT_SESSION_ID;
+  }
   return env;
 }
 
@@ -295,6 +302,7 @@ function startPodmanPeer() {
     project,
     purpose,
     session,
+    parentSessionId: parentSessionId || undefined,
     pidashPort: process.env.PI_PIDASH_PORT ? Number.parseInt(process.env.PI_PIDASH_PORT, 10) || undefined : undefined,
     env: containerEnv,
   });

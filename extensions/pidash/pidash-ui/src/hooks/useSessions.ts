@@ -11,9 +11,19 @@ const RETRY_MAX_MS = 10000;
 export function mergeSessionUpdate(prev: SessionInfo, update: Partial<SessionInfo>): SessionInfo {
   const merged: SessionInfo = { ...prev, ...update };
   const raw = update as Record<string, unknown>;
-  if (raw.comsName === null) delete merged.comsName;
-  if (raw.comsPurpose === null) delete merged.comsPurpose;
-  if (raw.comsProject === null) delete merged.comsProject;
+  const isSupervised = merged.supervisedPeer === true;
+  if (raw.comsName === null) {
+    if (isSupervised) merged.comsName = prev.comsName;
+    else delete merged.comsName;
+  }
+  if (raw.comsPurpose === null) {
+    if (isSupervised) merged.comsPurpose = prev.comsPurpose;
+    else delete merged.comsPurpose;
+  }
+  if (raw.comsProject === null) {
+    if (isSupervised) merged.comsProject = prev.comsProject;
+    else delete merged.comsProject;
+  }
   return merged;
 }
 

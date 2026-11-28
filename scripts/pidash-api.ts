@@ -339,6 +339,17 @@ export function collectPeers(deps: PidashApiDeps, projectParam: string | null, c
 
   const normalizedProject = projectParam && projectParam !== "*" ? projectParam.trim() : null;
 
+  const piClients = deps.getPiClients();
+  const findClientParentSessionId = (project: string, name: string): string | null => {
+    for (const client of piClients.values()) {
+      const s = client?.session;
+      if (s?.comsProject === project && s?.comsName === name && typeof s.parentSessionId === "string" && s.parentSessionId.trim()) {
+        return s.parentSessionId.trim();
+      }
+    }
+    return null;
+  };
+
   const peers = allRows
     .filter((row) => isRegistryRowAlive(row, now))
     .filter((row) => !normalizedProject || row.project === normalizedProject)
@@ -351,6 +362,9 @@ export function collectPeers(deps: PidashApiDeps, projectParam: string | null, c
         container && sup?.container === container && Number.isInteger(sup?.childPid) && (sup.childPid as number) > 0
           ? (sup.childPid as number)
           : (row.hostPid ?? null);
+      const parentSessionId =
+        (typeof sup?.parentSessionId === "string" && sup.parentSessionId.trim() ? sup.parentSessionId.trim() : null)
+        ?? findClientParentSessionId(row.project, row.name);
 
       return {
         name: row.name,
@@ -365,6 +379,7 @@ export function collectPeers(deps: PidashApiDeps, projectParam: string | null, c
         pid: hostPid ?? row.pid ?? null,
         hostPid,
         container,
+        ...(parentSessionId ? { parentSessionId } : {}),
         alive: true,
         startedAt: row.startedAt ?? (typeof sup?.startedAt === "string" ? sup.startedAt : null),
         heartbeatAt: row.heartbeatAt ?? null,
