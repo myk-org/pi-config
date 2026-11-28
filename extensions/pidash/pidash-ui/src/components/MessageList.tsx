@@ -10,6 +10,7 @@ import {
   resolvePromptOptionIndex,
   shouldSubmitMultilineAnswer,
   stripToolResultPrefix,
+  trimMessageDisplayText,
 } from "@/lib/pidash-ux-helpers";
 
 import { createLogger } from "@/lib/create-logger";
@@ -536,6 +537,8 @@ export const MessageItem = memo(function MessageItem({
     return <CollapsibleMessage msg={msg} searchQuery={searchQuery} />;
   }
 
+  const displayText = trimMessageDisplayText(msg.text);
+
   return (
     <div className="min-w-0" style={{ contentVisibility: "auto", containIntrinsicSize: "auto 90px" }}>
       <div className="flex items-center justify-between gap-1.5 min-w-0 mb-0.5">
@@ -543,13 +546,13 @@ export const MessageItem = memo(function MessageItem({
           {msg.timestamp && <span className="text-muted-foreground font-normal normal-case tracking-normal mr-1.5">[{formatClock(msg.timestamp)}]</span>}
           {msg.role}
         </div>
-        <CopyOutputButton text={msg.text} compact label="Copy message" />
+        <CopyOutputButton text={displayText} compact label="Copy message" />
       </div>
       <div className={cn(
         "rounded-md bg-card p-2.5 text-[13px] whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0",
         msg.className === "streaming" && "border-l-2 border-cyan-400",
       )}>
-        <HighlightText text={msg.text} query={searchQuery} />
+        <HighlightText text={displayText} query={searchQuery} />
       </div>
     </div>
   );
