@@ -419,10 +419,15 @@ export interface SessionViewState extends TranscriptRefs {
 
 export interface ActiveAsyncAgentInfo {
   id: string;
+  name?: string;
   agent: string;
+  mode?: "async" | "sync";
   task: string;
   cwd: string;
   sessionId?: string;
+  taskId?: string | null;
+  startedAt?: number;
+  currentTool?: string | null;
   text: string;
   ws?: any;
 }
@@ -775,12 +780,18 @@ export function createAsyncAgentRegistry(
         log.warn("rejected async_register: registry capacity reached", { id, sessionId, maxAgents });
         return null;
       }
+      const agentName = typeof parsed.agent === "string" ? parsed.agent : "agent";
       const info: ActiveAsyncAgentInfo = {
         id,
-        agent: typeof parsed.agent === "string" ? parsed.agent : "agent",
+        name: typeof parsed.name === "string" && parsed.name ? parsed.name : agentName,
+        agent: agentName,
+        mode: parsed.mode === "sync" ? "sync" : "async",
         task: typeof parsed.task === "string" ? parsed.task : "",
         cwd: typeof parsed.cwd === "string" ? parsed.cwd : "",
         sessionId,
+        taskId: typeof parsed.taskId === "string" && parsed.taskId ? parsed.taskId : null,
+        startedAt: typeof parsed.startedAt === "number" && Number.isFinite(parsed.startedAt) ? parsed.startedAt : Date.now(),
+        currentTool: null,
         text: "",
         ws,
       };
@@ -808,6 +819,11 @@ export function createAsyncAgentRegistry(
         return false;
       }
       appendAsyncAgentEventText(info, parsed.event, maxTextChars);
+      if (parsed.event?.type === "tool_execution_start" && typeof parsed.event.toolName === "string") {
+        info.currentTool = parsed.event.toolName;
+      } else if (parsed.event?.type === "tool_execution_end") {
+        info.currentTool = null;
+      }
       const progressEvent = {
         type: "async_agent_event",
         id,

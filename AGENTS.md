@@ -23,7 +23,12 @@
 4. **PiDash TUI Parity (MANDATORY):** every new user-facing feature, slash command, overlay, tool output, or TUI view change MUST
    also be reflected in PiDash (`extensions/pidash/`) in the same PR — collapsible by default, never hiding or truncating data when
    expanded, with a visible Copy button on every section.
-5. Commit as `type(scope): description`.
+5. **PiDash Loopback `/api/*` Exposure (MANDATORY):** whenever a PR adds or changes observable `pi-config` runtime state or features
+   (peers, worktrees, tasks, agents, crons, LSP, settings, memory, review, trail, skills, daemons, security, sandboxes, etc.), it MUST
+   also expose or update that state on PiDash's loopback-only read-only `/api/*` JSON surface (`scripts/pidash-api.ts`) in the same PR
+   so external scripts and dashboards share one authoritative source of truth (never importing `@earendil-works/*` or `typebox` at
+   runtime, never leaking secrets or private tool outputs).
+6. Commit as `type(scope): description`.
 
 ## Logging Requirements
 

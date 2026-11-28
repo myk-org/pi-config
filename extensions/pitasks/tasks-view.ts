@@ -7,6 +7,9 @@
 import type { Task, TaskCompletedBy, TaskStatus } from "./types.js";
 import { createLogger } from "../shared/logger.js";
 import { matchesOverlayKey } from "../orchestrator/overlay-dashboard.js";
+import { taskAssigneeRank } from "./task-store.js";
+
+export { taskAssigneeRank };
 
 const log = createLogger("pitasks");
 
@@ -27,11 +30,6 @@ export function taskAssigneeTag(task: { assignee?: string }): string {
 	const tag = task.assignee === "user" ? "[you]" : "[llm]";
 	if (log.isDebugEnabled()) log.debug("task_assignee_tag", { tag });
 	return tag;
-}
-
-/** The owner's tasks sort above the agent's within a status group (#1090). */
-export function taskAssigneeRank(task: { assignee?: string }): number {
-	return task.assignee === "user" ? 0 : 1;
 }
 
 export function taskStatusGlyph(status: string): string {

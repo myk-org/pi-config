@@ -114,6 +114,10 @@ return { fallback: false, model: `${model.provider}/${model.id}`, status: answer
 
 When the script returns `fallback: true`, inspect the screenshot with `read` or DOM checks. Classifier triage only covers coarse render states; subtle layout, focus, or text checks still require standard `read` or manual inspection.
 
+### Local Read-Only JSON API
+
+External tools, status bars, and scripts running on the same host can query `pidash`'s loopback-only read-only HTTP JSON endpoints (`GET /api/status`, `/api/peers`, `/api/worktrees`, `/api/tasks`, `/api/agents`, `/api/crons`, `/api/lsp`, `/api/settings`, `/api/memory`, `/api/review`, `/api/trail`, `/api/skills`, `/api/daemons`, `/api/security`, `/api/version`) on `http://127.0.0.1:<pidash_port>`. Non-loopback callers receive `403`, non-`GET` methods receive `405`, and secrets/private tool outputs are never exposed. See [Daemon & Websocket Networking](daemon-and-websockets.html) for the full endpoint table and query parameters.
+
 ### Running in Containers
 
 The pidash extension detects whether a session is running inside a container (it checks for `/.dockerenv` and `/run/.containerenv`) and shows a 📦 marker on that session in the dashboard. Ensure you expose the necessary ports when launching your container so your host machine's browser can connect:
