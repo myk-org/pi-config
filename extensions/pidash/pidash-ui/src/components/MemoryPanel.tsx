@@ -31,6 +31,9 @@ export function MemoryPanel({ sendCmd, onMessage, notify }: Props) {
   };
 
   useEffect(() => {
+    clearDreamTimer();
+    pendingDreamReqRef.current = null;
+    setDreaming(false);
     sendCmd("memory-status");
     const unsub = onMessage((ev: any) => {
       if (ev.type === "memory-status") {
@@ -38,7 +41,7 @@ export function MemoryPanel({ sendCmd, onMessage, notify }: Props) {
         setStatus(ev as MemoryStatus);
       }
       if (ev.type === "memory-dream-result") {
-        if (pendingDreamReqRef.current && ev.requestId && ev.requestId !== pendingDreamReqRef.current) return;
+        if (ev.requestId && pendingDreamReqRef.current !== ev.requestId) return;
         clearDreamTimer();
         pendingDreamReqRef.current = null;
         setDreaming(false);
@@ -52,6 +55,7 @@ export function MemoryPanel({ sendCmd, onMessage, notify }: Props) {
     });
     return () => {
       clearDreamTimer();
+      pendingDreamReqRef.current = null;
       unsub();
     };
   }, [sendCmd, onMessage, notify]);

@@ -505,4 +505,46 @@ describe("dreaming PiDash bridge (#1481)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("keeps dreamInFlight across session_start and ignores stale onComplete callbacks", async () => {
+    const dir = makeTempDir("dream-bridge-inflight-");
+    const fake = createFakePi();
+    let spawned = 0;
+    const onCompletes: Array<() => void> = [];
+    try {
+      withSubagentChildEnv(undefined, () => {
+        registerDreaming(fake.pi, (_agent, _task, _cwd, _agents, opts) => {
+          spawned++;
+          if (opts?.onComplete) onCompletes.push(opts.onComplete);
+          return { started: true, id: `dream-job-${spawned}` };
+        });
+      });
+
+      fake.fireEvent("pidash:memory-dream-request", { cwd: dir, requestId: "req-1" });
+      assert.equal(spawned, 1);
+
+      // Switching sessions while a dream worker is still running must not start a competing dream.
+      await fake.fireLifecycle("session_start", { reason: "new" }, { cwd: dir, mode: "interactive" });
+      fake.fireEvent("pidash:memory-dream-request", { cwd: dir, requestId: "req-2" });
+      const secondEvt = [...fake.emitted].reverse().find((e) => e.channel === "pidash:memory-dream-result");
+      assert.equal(spawned, 1, "does not spawn a competing dream across session_start");
+      assert.equal(secondEvt?.data.ok, false);
+      assert.equal(secondEvt?.data.inFlight, true);
+      assert.equal(secondEvt?.data.id, "dream-job-1");
+
+      // Completing worker 1 allows worker 2 to start; re-firing worker 1's onComplete must not clear worker 2's guard.
+      onCompletes[0]?.();
+      fake.fireEvent("pidash:memory-dream-request", { cwd: dir, requestId: "req-3" });
+      assert.equal(spawned, 2);
+      onCompletes[0]?.();
+      fake.fireEvent("pidash:memory-dream-request", { cwd: dir, requestId: "req-4" });
+      const fourthEvt = [...fake.emitted].reverse().find((e) => e.channel === "pidash:memory-dream-result");
+      assert.equal(spawned, 2, "stale onComplete from dream-job-1 does not clear dream-job-2 guard");
+      assert.equal(fourthEvt?.data.inFlight, true);
+      assert.equal(fourthEvt?.data.id, "dream-job-2");
+    } finally {
+      await fake.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

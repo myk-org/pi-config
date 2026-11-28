@@ -185,6 +185,7 @@ export function registerDreaming(
     // knowledge rather than re-derivable history is put back below (issue #1010).
     const topicsBeforeDream = snapshotTopicLines(topicsDir);
     const dreamStartedAt = Date.now();
+    let dreamId = "";
     const { id, error } = spawnAsyncAgent(
       "worker",
       buildDreamPrompt(lastSessionFile, topicsDir),
@@ -196,7 +197,10 @@ export function registerDreaming(
         parentModelId: dreamModelId,
         parentProvider: dreamProvider,
         onComplete: () => {
-          dreamInFlight = false;
+          if (!dreamId || currentDreamId === dreamId) {
+            dreamInFlight = false;
+            currentDreamId = "";
+          }
           log.info("dream complete", cwd);
           updateDreamStatus();
           // Undo any deletion of learned knowledge before anything reads the topics.
@@ -255,14 +259,15 @@ export function registerDreaming(
       updateDreamStatus();
       return { started: false, id: "", error: error || "Failed to start dream worker" };
     }
+    dreamId = id;
     currentDreamId = id;
     // Safety fallback: if onComplete never fires (runner crash/hang),
     // reset dreamInFlight after 30 min so future dreams aren't blocked.
     // Capture the current dream ID to avoid cross-run races.
-    const dreamId = id;
     const fallbackTimer = setTimeout(() => {
       if (dreamInFlight && currentDreamId === dreamId) {
         dreamInFlight = false;
+        currentDreamId = "";
         updateDreamStatus();
         fileLog(
           "dreaming",
@@ -502,7 +507,6 @@ export function registerDreaming(
     lastCwd = ctx.cwd;
     lastCtx = ctx;
     enabledOverride = null;
-    dreamInFlight = false; // Reset — previous session's dream state doesn't carry over
     ensurePidashDreamSubscription();
     // Skip auto-dream timer in print/json; shutdown dream is skipped in
     // session_shutdown via shouldSkipOneshotShutdownDream.

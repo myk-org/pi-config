@@ -126,6 +126,7 @@ async function mountPanel(Component: any, extraProps: Record<string, unknown> = 
     );
   });
   return {
+    root,
     container,
     sent,
     notices,
@@ -583,6 +584,43 @@ describe("MemoryPanel (#1481)", () => {
     } finally {
       t.mock.timers.reset();
     }
+  });
+
+  it("resets Dream state on session switch and ignores stale memory-dream-result from previous session", async () => {
+    const view = await mountPanel(MemoryPanel);
+    await view.emit({ type: "memory-status", usagePct: 10, topics: [], report: "session A" });
+
+    const dreamBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "Dream");
+    await clickEl(dreamBtn);
+    const oldRequestId = view.sent.find((s) => s.command === "memory-dream")?.extra?.requestId;
+    assert.ok(oldRequestId);
+    assert.ok(elements(view.container, "button").find((b) => b.textContent.trim() === "Dreaming…"));
+
+    const sentB: Array<{ command: string; extra?: Record<string, unknown> }> = [];
+    const noticesB: Array<{ msg: string; level?: string }> = [];
+    let listenerB: ((ev: any) => void) | null = null;
+    await act(async () => {
+      view.root.render(
+        createElement(MemoryPanel, {
+          sendCmd: (command: string, extra?: Record<string, unknown>) => sentB.push({ command, extra }),
+          onMessage: (handler: (ev: any) => void) => {
+            listenerB = handler;
+            return () => { listenerB = null; };
+          },
+          notify: (msg: string, level?: string) => noticesB.push({ msg, level }),
+        }),
+      );
+    });
+
+    const resetBtn = elements(view.container, "button").find((b) => b.textContent.trim() === "Dream");
+    assert.ok(resetBtn, "Dream button re-enabled after switching watched session");
+    assert.equal(resetBtn.hasAttribute("disabled"), false);
+
+    // Late result from session A must be ignored in session B.
+    await act(async () => {
+      listenerB?.({ type: "memory-dream-result", requestId: oldRequestId, ok: true, message: "late from A" });
+    });
+    assert.equal(noticesB.length, 0, "stale memory-dream-result does not notify the new session");
   });
 });
 
