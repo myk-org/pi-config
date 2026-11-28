@@ -36,7 +36,7 @@ pi install npm:@myk-org/pi-vertex-claude
 pi update npm:@myk-org/pi-vertex-claude
 ```
 
-The npm package name is `@myk-org/pi-vertex-claude`. The container entrypoint registers it from the same npm source and actively migrates away from the older `git:github.com/myk-org/pi-config/packages/pi-vertex-claude` source (see `entrypoint.sh`).
+The npm package name is `@myk-org/pi-vertex-claude`. The interactive installer (`scripts/install.py`) registers it from the same npm source and actively migrates away from the older `git:github.com/myk-org/pi-config/packages/pi-vertex-claude` source.
 
 ### 2. Authenticate
 

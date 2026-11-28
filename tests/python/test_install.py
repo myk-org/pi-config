@@ -33,11 +33,6 @@ from install_sources import (  # noqa: E402
     PI_VERTEX_SETTINGS_MARKER,
     RETIRED_VERTEX_GIT,
     create_logger,
-    entrypoint_has_no_pi_config_git_clone,
-    entrypoint_has_single_registration_mechanism,
-    entrypoint_installs_myk_pi_tools_from_pypi,
-    entrypoint_registers_pi_config_via_npm,
-    entrypoint_registers_vertex_via_settings,
     is_pi_pkg_installed,
     is_quoted_package_source,
     is_vertex_registered,
@@ -150,23 +145,6 @@ def test_vertex_cmd_uses_npm_registry_source() -> None:
     assert f"pi install {PI_VERTEX_NPM}" in migrate
 
 
-def test_entrypoint_registers_vertex_via_settings_not_sibling_clone() -> None:
-    text = (REPO / "entrypoint.sh").read_text()
-    assert entrypoint_registers_vertex_via_settings(text) is True
-
-
-def test_entrypoint_prefers_npm_and_migrates_legacy_git_marker() -> None:
-    text = (REPO / "entrypoint.sh").read_text()
-    # Registration call site names the npm source…
-    assert 'register_pi_pkg "@myk-org/pi-vertex-claude"' in text
-    # …and passes the full legacy git source as the migration marker so a
-    # stale entry gets actively uninstalled, not just detected.
-    assert PI_VERTEX_GIT in text
-    assert "pi uninstall" in text
-    # The retired standalone repo must stay out.
-    assert "git:github.com/myk-org/pi-vertex-claude" not in text
-
-
 def test_pi_config_npm_source_matches_published_package() -> None:
     """Since 4.3.7 pi-config itself installs from npm — not a git clone under .pi."""
     assert PI_CONFIG_NPM == "npm:pi-orchestrator-config"
@@ -214,40 +192,12 @@ def test_npm_pkg_dir_is_pi_npm_tree() -> None:
     assert "git/" not in PI_NPM_PKG_DIR
 
 
-def test_entrypoint_registers_pi_config_via_npm_not_git_clone() -> None:
-    text = (REPO / "entrypoint.sh").read_text()
-    assert entrypoint_registers_pi_config_via_npm(text) is True
-    assert f"pi install {PI_CONFIG_GIT}" not in text
-    assert ".pi/agent/git/github.com" not in text
-    assert 'register_pi_pkg pi-orchestrator-config "git:github.com/myk-org/pi-config"' in text
-
-
-def test_entrypoint_installs_myk_pi_tools_from_pypi_not_source() -> None:
-    text = (REPO / "entrypoint.sh").read_text()
-    assert entrypoint_installs_myk_pi_tools_from_pypi(text) is True
-
-
-def test_entrypoint_has_no_pi_config_git_clone() -> None:
-    text = (REPO / "entrypoint.sh").read_text()
-    assert entrypoint_has_no_pi_config_git_clone(text) is True
-    assert "github.com/myk-org/pi-config.git" not in text
-    assert "pi-config-src" not in text
-    assert r'"\"${legacy_marker}\""' in text
-
-
 def test_install_py_has_no_pi_config_git_commands() -> None:
     text = (REPO / "scripts/install.py").read_text()
     assert f"pi install {PI_CONFIG_GIT}" not in text
     assert f"pi install {PI_VERTEX_GIT}" not in text
     assert "git+https://github.com/myk-org/pi-config" not in text
     assert "agent/git/github.com" not in text
-
-
-def test_entrypoint_has_single_registration_mechanism() -> None:
-    """register_pi_pkg must be the only install-if-missing code path — no
-    duplicate hand-rolled grep+install blocks next to it."""
-    text = (REPO / "entrypoint.sh").read_text()
-    assert entrypoint_has_single_registration_mechanism(text) is True
 
 
 def test_create_logger_returns_named_logger() -> None:
@@ -1579,20 +1529,6 @@ def test_install_logger_suppresses_last_resort_while_propagating() -> None:
 
     assert any(isinstance(h, logging.NullHandler) for h in install.log.handlers)
     assert install.log.propagate is True
-
-
-def test_entrypoint_does_not_install_mcpc() -> None:
-    """MCP is pi's builtin:mcp — no external mcpc binary (see #848)."""
-    text = (REPO / "entrypoint.sh").read_text()
-    assert "@apify/mcpc" not in text
-    assert "npm install -g @apify/mcpc" not in text
-
-
-def test_entrypoint_installs_required_npm_packages() -> None:
-    """pi stays required; a failure aborts container start."""
-    text = (REPO / "entrypoint.sh").read_text()
-    assert "npm install -g @earendil-works/pi-coding-agent" in text
-    assert "npm install -g acpx" not in text
 
 
 def test_build_steps_includes_lsp_servers_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

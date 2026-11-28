@@ -7519,11 +7519,11 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     };
   }
 
-  // Block direct docker/podman CLI in container — force docker-safe wrapper.
-  if (input.inContainer && /(?:^|[|;&]\s*)(?:docker|podman)\s/.test(cmdLower) && !cmdLower.includes("docker-safe")) {
+  // Block direct docker/podman CLI inside a container.
+  if (input.inContainer && /(?:^|[|;&]\s*)(?:docker|podman)\s/.test(cmdLower)) {
     return {
       action: "block",
-      reason: "Direct docker/podman forbidden. Use docker-safe for read-only container inspection (ps, logs, inspect, top, stats).",
+      reason: "Direct docker/podman CLI is forbidden inside a container.",
     };
   }
 

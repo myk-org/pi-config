@@ -21,8 +21,7 @@ Use this documentation updates table:
 | New or modified extension module | `contributing/repo-structure.md` (repository structure) |
 | New agent added/removed | `contributing/repo-structure.md`, routing rules, bug reporting agent list |
 | New prompt template | `README.md` (prompt templates table) |
-| Docker/container changes | `README.md` (Docker section), `Dockerfile` |
-| New CLI tool or dependency | `README.md` (tools table), `Dockerfile` |
+| New CLI tool or dependency | `README.md` (tools table) |
 | Dev workflow changes | `DEVELOPMENT.md` |
 
 Flag missing doc updates as `[CRITICAL]`.

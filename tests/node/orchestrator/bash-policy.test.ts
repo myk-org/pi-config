@@ -358,7 +358,7 @@ describe("evaluateBashPolicy git protection and workflow guards", () => {
     assert.match(decision.reason, /Git identity override blocked/);
   });
 
-  it("blocks direct docker CLI inside a container", async () => {
+  it("blocks direct docker CLI inside a container without referencing removed docker-safe", async () => {
     const dir = makeTempDir("pi-bash-policy-misc-");
     const decision = await evaluateBashPolicy({
       command: "docker ps",
@@ -366,15 +366,27 @@ describe("evaluateBashPolicy git protection and workflow guards", () => {
       inContainer: true,
     });
     assert.equal(decision.action, "block");
-    assert.match(decision.reason, /docker-safe/);
+    assert.match(decision.reason, /forbidden inside a container/i);
+    assert.doesNotMatch(decision.reason, /docker-safe/);
   });
 
-  it("allows docker-safe CLI inside a container", async () => {
+  it("blocks direct podman CLI inside a container", async () => {
     const dir = makeTempDir("pi-bash-policy-misc-");
     const decision = await evaluateBashPolicy({
-      command: "docker-safe ps",
+      command: "podman ps",
       cwd: dir,
       inContainer: true,
+    });
+    assert.equal(decision.action, "block");
+    assert.match(decision.reason, /forbidden inside a container/i);
+  });
+
+  it("allows docker/podman CLI outside a container", async () => {
+    const dir = makeTempDir("pi-bash-policy-misc-");
+    const decision = await evaluateBashPolicy({
+      command: "podman ps",
+      cwd: dir,
+      inContainer: false,
     });
     assert.equal(decision.action, "allow");
   });
