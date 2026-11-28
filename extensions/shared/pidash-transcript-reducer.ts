@@ -397,7 +397,7 @@ export function applyTranscriptEvent(
         sink.add(
           "system",
           text,
-          undefined,
+          msg.customType === "lsp-startup-summary" ? "lsp-startup-summary" : undefined,
           undefined,
           { timestamp: ts },
         );

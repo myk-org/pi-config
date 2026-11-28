@@ -470,6 +470,135 @@ export function isInteractiveTuiForLspPrompt(
   return mode === undefined || mode === "tui";
 }
 
+// ── Startup summary entry (issue #1492) ──────────────────────────────
+
+export const LSP_STARTUP_SUMMARY_ENTRY_TYPE = "lsp-startup-summary";
+
+export interface LspStartupSummaryData {
+  summary: string;
+  enabled: boolean;
+  available: string[];
+  missing: string[];
+}
+
+function formatLspBinaryLabel(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed) return "";
+  const base = path.basename(trimmed);
+  if (base === "basedpyright-langserver") return "basedpyright";
+  if (base === "pyright-langserver") return "pyright";
+  return base;
+}
+
+/**
+ * Probe built-in + global `lsp_servers` binary availability on PATH using pure local
+ * executable checks ONLY (never spawns LSP servers or touches the network) and format
+ * a concise 1-line startup summary matching the `Providers: ...` visual convention.
+ */
+export function buildLspStartupSummary(options: {
+  enabled?: boolean;
+  overrides?: LspServersConfig;
+  envPath?: string;
+} = {}): LspStartupSummaryData {
+  const enabled = options.enabled ?? resolveTrustedLspEnabled();
+  const overrides = options.overrides ?? resolveTrustedLspServers();
+  const searchPath = options.envPath === undefined ? getDefaultLspSearchPath() : options.envPath;
+
+  const available: string[] = [];
+  const missing: string[] = [];
+  const seenAvailable = new Set<string>();
+  const seenMissing = new Set<string>();
+
+  const pushUnique = (list: string[], seen: Set<string>, label: string): void => {
+    if (!label || seen.has(label)) return;
+    seen.add(label);
+    list.push(label);
+  };
+
+  const probeOverride = (serverId: string, cfg: LspServersConfig[string]): void => {
+    const cmd = typeof cfg?.command === "string" ? cfg.command.trim() : "";
+    const label = formatLspBinaryLabel(cmd) || serverId;
+    if (cmd && findExecutableOnPath(cmd, searchPath) !== null) {
+      pushUnique(available, seenAvailable, label);
+    } else {
+      pushUnique(missing, seenMissing, label);
+    }
+  };
+
+  const builtinIds = new Set<string>();
+  for (const spec of BUILTIN_LSP_SERVERS) {
+    builtinIds.add(spec.id);
+    if (Object.prototype.hasOwnProperty.call(overrides, spec.id)) {
+      probeOverride(spec.id, overrides[spec.id]);
+      continue;
+    }
+    let matchedCommand: string | null = null;
+    for (const candidate of spec.candidates) {
+      if (findExecutableOnPath(candidate.command, searchPath) !== null) {
+        matchedCommand = candidate.command;
+        break;
+      }
+    }
+    if (matchedCommand) {
+      pushUnique(available, seenAvailable, formatLspBinaryLabel(matchedCommand) || spec.id);
+    } else {
+      const fallback =
+        BUILTIN_INSTALL_RECIPES[spec.id]?.label ||
+        formatLspBinaryLabel(spec.candidates[0]?.command ?? "") ||
+        spec.id;
+      pushUnique(missing, seenMissing, fallback);
+    }
+  }
+
+  for (const [serverId, cfg] of Object.entries(overrides)) {
+    if (builtinIds.has(serverId)) continue;
+    probeOverride(serverId, cfg);
+  }
+
+  const prefix = enabled ? "LSP" : "LSP (off)";
+  const body = available.length > 0 ? available.join(", ") : "none installed";
+  return {
+    summary: `${prefix}: ${body}`,
+    enabled,
+    available,
+    missing,
+  };
+}
+
+/**
+ * Emit the LSP startup summary ONLY on interactive TUI `startup` or `new` sessions,
+ * strictly skipping `/reload`, `/resume`, oneshot (`pi -p`), subagents, and supervised
+ * headless COMS RPC peers.
+ */
+export function shouldEmitLspStartupSummary(
+  event: unknown,
+  ctx: any,
+  isSubagent: boolean = process.env.PI_SUBAGENT_CHILD === "1",
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (isSubagent) return false;
+  if (env.PI_COMS_SUPERVISED_PEER === "1") return false;
+  if (ctx?.mode !== "tui" || ctx?.hasUI !== true) return false;
+  const reason =
+    typeof (event as { reason?: unknown })?.reason === "string"
+      ? (event as { reason: string }).reason
+      : "";
+  return reason === "startup" || reason === "new";
+}
+
+/** A muted summary renderer component without a runtime dependency on Pi's TUI package. */
+function lspStartupSummaryComponent(
+  summary: string,
+  theme: { fg: (color: "muted", text: string) => string },
+  log: Logger,
+) {
+  log.debug("lsp_startup_summary_render", { summary });
+  return {
+    render: (_width: number): string[] => [theme.fg("muted", summary)],
+    invalidate: (): void => {},
+  };
+}
+
 // ── Missing-server install prompt persistence (SQLite kv_state) ──────
 
 export function getDefaultLspPrefsDbPath(): string {
@@ -2462,6 +2591,15 @@ export class LspManager {
 
 export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}): { manager: LspManager } {
   const log = options.logger ?? defaultLog;
+  if (typeof pi.registerEntryRenderer === "function") {
+    pi.registerEntryRenderer<LspStartupSummaryData>(
+      LSP_STARTUP_SUMMARY_ENTRY_TYPE,
+      (entry, _options, theme) => {
+        const summary = typeof entry.data?.summary === "string" ? entry.data.summary : "";
+        return summary ? lspStartupSummaryComponent(summary, theme, log) : undefined;
+      },
+    );
+  }
   const checkSubagent = options.isSubagentChild ?? (() => process.env.PI_SUBAGENT_CHILD === "1");
   const installRunner =
     options.installRunner ??
@@ -2859,7 +2997,39 @@ export function registerLsp(pi: ExtensionAPI, options: RegisterLspOptions = {}):
     pendingPollTimer.unref();
   };
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    if (
+      !shuttingDown &&
+      isLiveExtensionCtx(ctx) &&
+      shouldEmitLspStartupSummary(event, ctx, checkSubagent())
+    ) {
+      try {
+        const summaryData = buildLspStartupSummary({ envPath: options.envPath });
+        if (typeof pi.appendEntry === "function") {
+          pi.appendEntry<LspStartupSummaryData>(LSP_STARTUP_SUMMARY_ENTRY_TYPE, summaryData);
+        }
+        const sessionFile = ctx.sessionManager?.getSessionFile?.() || (ctx as any)?.sessionFile || "";
+        try {
+          pi.events?.emit?.("pidash:custom-entry", {
+            customType: LSP_STARTUP_SUMMARY_ENTRY_TYPE,
+            content: summaryData.summary,
+            timestamp: Date.now(),
+            ...(sessionFile ? { sessionFile } : {}),
+          });
+        } catch (emitErr: any) {
+          log.debug("lsp_startup_summary_pidash_emit_failed", {
+            error: emitErr?.message ?? String(emitErr),
+          });
+        }
+        log.info("lsp_startup_summary", {
+          enabled: summaryData.enabled,
+          available: summaryData.available,
+          missing: summaryData.missing,
+        });
+      } catch (err: any) {
+        log.warn("lsp_startup_summary_failed", { error: err?.message ?? String(err) });
+      }
+    }
     ensureIdlePendingWatcher(ctx);
     if (
       isLiveExtensionCtx(ctx) &&
