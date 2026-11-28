@@ -172,7 +172,7 @@ Use steers sparingly. They are capped at 5 per turn on the receiver (excess stee
 
 ## Peer Status: Busy and Progress
 
-Peer cards and `coms_list` include a busy indicator (`⚙busy`) whenever the peer is currently processing an inbound message, alongside queue depth and context usage. While a peer is processing your prompt it also sends a progress signal roughly every 60 seconds — the signal annotates the pending reply in your session (it never resolves it), so long-running work does not look like radio silence.
+Peer cards, pool headers, `/coms`, `coms_list`, `coms_peers`, PiDash (`ComsPanel` and `SessionSidebar`), and `GET /api/peers` count a peer as busy (`⚙busy` / `busy`) whenever it is executing an active turn OR has running async subagents (`workload.agents > 0`), alongside queue depth and context usage. Pending tasks (`workload.tasks`) and scheduled crons (`workload.crons`) alone do not mark a peer busy, and the raw turn-active `busy` flag on the wire/registry stays `false` while waiting on async subagents so inbound COMS messages can still be delivered normally. While a peer is processing your prompt it also sends a progress signal roughly every 60 seconds — the signal annotates the pending reply in your session (it never resolves it), so long-running work does not look like radio silence.
 
 ## Priority Messages
 
@@ -202,7 +202,7 @@ The internals mostly stay out of your way, but they explain several behaviors yo
 | A peer disappeared from the list | Its registry entry was removed after failing a socket probe |
 | A delegated task arrives with structure | The sender included `tasks`, and the receiver rendered them as assigned work |
 | `/coms` shows a different set of peers | You pressed `f` to toggle `this project` / `all projects` |
-| A peer shows `⚙busy` | It is currently processing an inbound message |
+| A peer shows `⚙busy` | It is executing an active turn or has running async subagents (`workload.agents > 0`) |
 | A pending reply shows a progress note | The peer sent a progress signal (~60s interval) while still working |
 | An inbound says `(from the USER)` | A human sent it with the `m` composer in `/coms`. The marker is display only and unauthenticated — any local process can assert it |
 | COMS messages appear as 1 compact line (`📡 ← peer: summary  (ctrl+o to expand)` or `📡 + peer joined`) | Custom TUI message renderers collapse `coms-inbound`, `coms-response`, `coms-peer-joined`, and `coms-peer-left` to one line by default; press `Ctrl+O` to expand the full header and body (the LLM still receives the full `content`) |

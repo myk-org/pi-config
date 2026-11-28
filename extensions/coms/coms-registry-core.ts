@@ -7,7 +7,11 @@
  * never fail with missing `@earendil-works/pi-tui`.
  */
 
-import type { PeerWorkloadCounts } from "./coms-workload.js";
+export interface PeerWorkloadCounts {
+  agents: number;
+  tasks: number;
+  crons: number;
+}
 
 export interface RegistryRow {
   /** Project namespace (the registry directory name). */
@@ -69,6 +73,27 @@ export interface SupervisionRecord {
   exitCode?: number | null;
   exitSignal?: string | null;
   failure?: string;
+}
+
+/**
+ * Whether a peer is actively doing work for display/summary purposes (#1509).
+ *
+ * When a peer spawns an async subagent and ends its turn, its raw `busy` flag
+ * flips to `false` so inbound COMS messages can still be delivered, while
+ * `workload.agents` remains `> 0`. Display headers, badges, and `/api/peers`
+ * summary counts treat either an active turn (`busy`) or running async
+ * subagents (`workload.agents > 0`) as busy; protocol-level queue/delivery
+ * logic continues checking the raw `busy` flag.
+ */
+export function isPeerBusy(
+  peer: {
+    busy?: boolean | null;
+    workload?: { agents?: number | null; tasks?: number | null; crons?: number | null } | null;
+  } | null | undefined,
+): boolean {
+  if (!peer) return false;
+  const agents = peer.workload?.agents;
+  return Boolean(peer.busy) || (typeof agents === "number" && Number.isFinite(agents) && agents > 0);
 }
 
 /** A peer is live only while it keeps writing its heartbeat.

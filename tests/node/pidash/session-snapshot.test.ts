@@ -542,6 +542,21 @@ describe("SessionViewState server snapshot (#1398)", () => {
     assert.ok(doneCard.text.includes("live progress"));
     assert.ok(doneCard.text.startsWith("✅"));
   });
+
+  it("tracks runningAsyncAgents count on the parent session across async agent register to complete", () => {
+    const { state, client } = makeClient();
+    const broadcasted: any[] = [];
+    const registry = createAsyncAgentRegistry(state.sessions, (ev) => broadcasted.push(ev));
+    const sock = {};
+
+    assert.ok(registry.register(sock, { id: "a1", agent: "worker", cwd: "/repo", sessionId: client.session.sessionId }));
+    assert.equal(client.session.runningAsyncAgents, 1);
+    assert.equal(broadcasted.some((ev) => ev.type === "session_updated" && ev.session?.runningAsyncAgents === 1), true);
+
+    assert.equal(registry.complete(sock, { id: "a1", success: true }), true);
+    assert.equal(client.session.runningAsyncAgents, 0);
+    assert.equal(broadcasted.some((ev) => ev.type === "session_updated" && ev.session?.runningAsyncAgents === 0), true);
+  });
 });
 
 describe("useMessageHandler session_snapshot hydration (#1398)", () => {

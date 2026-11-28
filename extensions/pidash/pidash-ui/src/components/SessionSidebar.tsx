@@ -6,6 +6,7 @@ import { NotificationSettings } from "@/components/NotificationSettings";
 import { cn } from "@/lib/utils";
 import type { SessionInfo, NotificationPreferences } from "@/types";
 import { sessionActivityDisplay } from "@/lib/activity-display";
+import { isPeerBusy } from "../../../../coms/coms-registry-core.ts";
 import { loadTheme, setTheme, type Theme } from "@/lib/theme";
 import { createLogger } from "@/lib/create-logger";
 import { isSessionWaitingForInput, partitionSidebarSessions, sessionRowDisplayLabel } from "@/lib/pidash-ux-helpers";
@@ -200,6 +201,8 @@ export function SessionSidebar({
     const isArchived = Boolean(archivedSessionIds?.has(s.sessionId));
     const isWaiting = isSessionWaitingForInput(s, extraAttentionIds);
     const status = sessionActivityDisplay(s);
+    const runningAgents = s.active && typeof s.runningAsyncAgents === "number" && s.runningAsyncAgents > 0 ? s.runningAsyncAgents : 0;
+    const isBusy = isPeerBusy({ busy: status.isWorking, workload: { agents: runningAgents } });
     const rowKey = opts.keyPrefix ? `${opts.keyPrefix}:${s.sessionId}` : s.sessionId;
     const displayLabel = sessionRowDisplayLabel(s, { preferComsName: opts.preferComsName });
     return (
@@ -230,10 +233,19 @@ export function SessionSidebar({
             </span>
           )}
           {!s.active && <Pause className="h-3 w-3 flex-shrink-0 text-muted-foreground" />}
-          {s.active && status.isWorking && (
+          {s.active && isBusy && (
             <span className="relative flex h-2 w-2 flex-shrink-0" aria-label="working">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-green-400" />
+            </span>
+          )}
+          {runningAgents > 0 && (
+            <span
+              data-running-agents={runningAgents}
+              className="text-[10px] text-yellow-600 dark:text-yellow-400 shrink-0"
+              title={`${runningAgents} running async subagent${runningAgents === 1 ? "" : "s"}`}
+            >
+              ⏳{runningAgents}
             </span>
           )}
           {isWaiting && (
@@ -357,7 +369,9 @@ export function SessionSidebar({
     if (!comsProjects.has(s.comsProject)) comsProjects.set(s.comsProject, { sessions: [], busy: 0, waiting: 0 });
     const entry = comsProjects.get(s.comsProject)!;
     entry.sessions.push(s);
-    if (s.activity === "working") entry.busy += 1;
+    if (isPeerBusy({ busy: s.activity === "working", workload: { agents: s.active ? (s.runningAsyncAgents ?? 0) : 0 } })) {
+      entry.busy += 1;
+    }
     if (isSessionWaitingForInput(s, extraAttentionIds)) entry.waiting += 1;
   }
   const sortedComsProjects = [...comsProjects.entries()].sort((a, b) => a[0].localeCompare(b[0]));

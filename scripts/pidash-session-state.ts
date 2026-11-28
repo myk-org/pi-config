@@ -690,9 +690,11 @@ export function reconcileActiveAsyncAgents(
   const state = client.viewState;
   const sid = client.session.sessionId;
   let reconciled = 0;
+  let runningAsync = 0;
 
   for (const agent of activeAgents) {
     if (!agent.id || agent.sessionId !== sid) continue;
+    if (agent.mode !== "sync") runningAsync++;
     if (state.asyncMsgs.has(agent.id)) continue;
 
     applyEventToViewState(client, {
@@ -718,6 +720,7 @@ export function reconcileActiveAsyncAgents(
     reconciled++;
   }
 
+  client.session.runningAsyncAgents = runningAsync;
   if (reconciled > 0) {
     log.debug("reconciled active async agents into viewState", { sessionId: sid, count: reconciled });
   }
@@ -766,6 +769,19 @@ export function createAsyncAgentRegistry(
   const maxTextChars = opts.maxTextChars ?? ASYNC_AGENT_TEXT_MAX;
   const agents = new Map<string, ActiveAsyncAgentInfo>();
 
+  const syncSessionAsyncCount = (sessionId: string): void => {
+    const target = piClients.get(sessionId);
+    if (!target) return;
+    let count = 0;
+    for (const a of agents.values()) {
+      if (a.sessionId === sessionId && a.mode !== "sync") count++;
+    }
+    if ((target.session.runningAsyncAgents ?? 0) !== count) {
+      target.session.runningAsyncAgents = count;
+      broadcast({ type: "session_updated", session: target.session });
+    }
+  };
+
   return {
     agents,
 
@@ -807,6 +823,7 @@ export function createAsyncAgentRegistry(
       const target = piClients.get(sessionId);
       if (target) applyEventToViewState(target, startEvent);
       broadcast(startEvent);
+      syncSessionAsyncCount(sessionId);
       return info;
     },
 
@@ -854,6 +871,7 @@ export function createAsyncAgentRegistry(
       const target = info.sessionId ? piClients.get(info.sessionId) : undefined;
       if (target) applyEventToViewState(target, completeEvent);
       broadcast(completeEvent);
+      if (info.sessionId) syncSessionAsyncCount(info.sessionId);
       return true;
     },
 
@@ -867,6 +885,7 @@ export function createAsyncAgentRegistry(
       agents.delete(id);
       const target = info.sessionId ? piClients.get(info.sessionId) : undefined;
       finalizeAsyncAgentDisconnect(target, info, broadcast);
+      if (info.sessionId) syncSessionAsyncCount(info.sessionId);
       return true;
     },
   };
@@ -1154,6 +1173,7 @@ export function disconnectPidashSession(
   client.session.activityBeforePrompt = undefined;
   client.session.streaming = false;
   client.session.working = false;
+  client.session.runningAsyncAgents = 0;
   client.viewState.streaming = false;
   dismissAllViewAsks(client.viewState);
   clearPendingUiRequests(client);

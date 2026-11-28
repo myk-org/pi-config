@@ -50,6 +50,7 @@ import { getSetting } from "../orchestrator/project-settings.js";
 import { createLogger } from "../shared/logger.js";
 import { setLogFilePrefix } from "../shared/file-logger.js";
 import { ComsRegistry, probeAlive, probeStaleSocket, resolveComsDir, type RegistryEntry } from "./coms-registry.js";
+import { isPeerBusy } from "./coms-registry-core.js";
 import { isUserMessageDuringInbound, computeMixedTurn } from "./mixed-turn.js";
 import { buildQueuePreview, clearLocalQueue, type QueueRecoveryItem, type QueueRecoveryPreview } from "./queue-recovery.js";
 import { collectWorkload, openBlockers, renderWorkloadPart, toDescribeDetail, type ActiveWorkload, type PeerWorkloadCounts, type WorkloadTask } from "./coms-workload.js";
@@ -1856,9 +1857,13 @@ export function createComsPeerRuntime(
 	function maybeRefreshWidget(): void {
 		if (!currentCtx || !isLiveExtensionCtx(currentCtx) || !currentCtx.hasUI) return;
 		const pc = getPendingInboundCount();
-		// Include busy state and pending-reply progress notes in the refresh key
-		// so a progress envelope or busy transition re-renders the pool (#924).
-		const busyKey = [...peerCards.entries()].map(([k, v]) => `${k}:${v.staleCount}:${v.busy ? 1 : 0}`).sort().join(",");
+		// Include effective busy state (active turn or running async subagents) and
+		// pending-reply progress notes in the refresh key so a progress envelope,
+		// busy transition, or workload.agents change re-renders the pool (#924, #1509).
+		const busyKey = [...peerCards.entries()]
+			.map(([k, v]) => `${k}:${v.staleCount}:${isPeerBusy(v) ? 1 : 0}:${v.workload?.agents ?? ""}`)
+			.sort()
+			.join(",");
 		const progressKey = [...pendingReplies.entries()]
 			.filter(([, pr]) => pr.progress)
 			.map(([id, pr]) => `${id}@${pr.progress!.at}`)
@@ -3327,7 +3332,7 @@ Do not respond to this message.`;
 		// Advertise only the binding accepted at registration (never an unbound settings edit).
 		const shortcutHint = getRegisteredWidgetShortcut("widget_coms_shortcut");
 		if (widgetMode === "collapsed") {
-			const busyCount = rows.filter((r) => !r.stale && r.busy).length;
+			const busyCount = rows.filter((r) => !r.stale && isPeerBusy(r)).length;
 			return [
 				formatComsCollapsedHeader({
 					width: Math.max(0, width),
@@ -3401,7 +3406,7 @@ Do not respond to this message.`;
 			// was one fact twice — and `unknown` must never sit next to a fabricated count.
 			const workloadPart = renderWorkloadPart(r.workload, theme);
 			const queuePart = renderQueuePart(r.queue_depth, theme);
-			const busyPart = r.busy ? " " + theme.fg("warning", "⚙busy") : "";
+			const busyPart = isPeerBusy(r) ? " " + theme.fg("warning", "⚙busy") : "";
 			const progressPart = r.progress ? " " + theme.fg("dim", `⏳${r.progress}`) : "";
 			const line = " " + swatch + " " + namePart + " " + modelPart + " " + bar + pctPart + workloadPart + queuePart + busyPart + progressPart + sep + purposePart;
 			out.push(truncateToWidth(line, width));
@@ -3878,10 +3883,13 @@ Do not respond to this message.`;
 					alive: true,
 					context_used_pct: card.context_used_pct,
 					queue_depth: card.queue_depth ?? 0,
-					busy: card.busy ?? false,
+					busy: isPeerBusy(card),
+					workload: card.workload ?? null,
 					color: card.color,
 				}));
 
+			const busyCount = agents.filter((a) => isPeerBusy(a)).length;
+			const busyHeader = busyCount > 0 ? ` (${busyCount} busy)` : "";
 			const lines = agents.length === 0
 				? "No peer agents found."
 				: agents.map((a) => {
@@ -3889,11 +3897,13 @@ Do not respond to this message.`;
 					const live = a.alive ? "●" : "✗";
 					const queueStr = formatQueueStr(a.queue_depth);
 					const busyStr = formatBusyStr(a.busy);
-					return `${live} ${a.name} (${a.model})${ctxStr}${queueStr}${busyStr}${a.purpose ? ` — ${a.purpose}` : ""}`;
+					const agentsCount = typeof a.workload?.agents === "number" && a.workload.agents > 0 ? a.workload.agents : 0;
+					const agentsStr = agentsCount > 0 ? ` ⏳${agentsCount}` : "";
+					return `${live} ${a.name} (${a.model})${ctxStr}${queueStr}${busyStr}${agentsStr}${a.purpose ? ` — ${a.purpose}` : ""}`;
 				}).join("\n");
 
 			return {
-				content: [{ type: "text" as const, text: `${agents.length} peer(s):\n${lines}` }],
+				content: [{ type: "text" as const, text: `${agents.length} peer(s)${busyHeader}:\n${lines}` }],
 				details: { agents, project: projectFilter },
 			};
 		},
@@ -3908,15 +3918,18 @@ Do not respond to this message.`;
 		renderResult(result, options, theme) {
 			const details = result.details as any;
 			const agents: any[] = details?.agents ?? [];
-			const header = theme.fg("accent", `📡 ${agents.length} peer(s)`);
+			const busyCount = agents.filter((a) => isPeerBusy(a)).length;
+			const header = theme.fg("accent", `📡 ${agents.length} peer(s)${busyCount > 0 ? ` (${busyCount} busy)` : ""}`);
 			if (!options.expanded || agents.length === 0) {
 				return new Text(header, 0, 0);
 			}
 			const rows = agents.map((a) => {
 				const dot = a.alive ? theme.fg("success", "●") : theme.fg("error", "✗");
 				const pct = a.context_used_pct != null ? `${a.context_used_pct}%` : "?%";
-				const busy = a.busy ? ` ${theme.fg("warning", "⚙busy")}` : "";
-				return `${dot} ${theme.fg("accent", a.name)} ${theme.fg("dim", a.model)} ${theme.fg("warning", pct)}${busy}`;
+				const busy = isPeerBusy(a) ? ` ${theme.fg("warning", "⚙busy")}` : "";
+				const agentsCount = typeof a.workload?.agents === "number" && a.workload.agents > 0 ? a.workload.agents : 0;
+				const agentsPart = agentsCount > 0 ? ` ${theme.fg("accent", `⏳${agentsCount}`)}` : "";
+				return `${dot} ${theme.fg("accent", a.name)} ${theme.fg("dim", a.model)} ${theme.fg("warning", pct)}${busy}${agentsPart}`;
 			}).join("\n");
 			return new Text(header + "\n" + rows, 0, 0);
 		},

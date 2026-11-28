@@ -794,6 +794,63 @@ describe("ComsPanel (#1481)", () => {
       false,
     );
   });
+
+  it("counts a peer with busy false plus workload.agents 1 as busy in ComsPanel", async () => {
+    const view = await mountPanel(ComsPanel);
+    await view.emit({
+      type: "coms-peers",
+      self: { name: "feature-manager", project: "pi-config" },
+      peers: [
+        {
+          name: "peer-async",
+          project: "pi-config",
+          purpose: "running subagent",
+          model: "gemini-4-neon",
+          busy: false,
+          workload: { agents: 2, tasks: 0, crons: 0 },
+          queueDepth: 0,
+          contextUsedPct: 18,
+          supervised: true,
+        },
+        {
+          name: "peer-tasks",
+          project: "pi-config",
+          purpose: "planning",
+          model: "gemini-4-neon",
+          busy: false,
+          workload: { agents: 0, tasks: 3, crons: 0 },
+          queueDepth: 0,
+          contextUsedPct: 10,
+          supervised: true,
+        },
+      ],
+    });
+    assert.ok(view.container.textContent.includes("1 busy / 2"));
+    assert.ok(view.container.textContent.includes("busy (2 agents)"));
+  });
+
+  it("keeps a peer with workload.agents 0 plus pending tasks idle in ComsPanel", async () => {
+    const view = await mountPanel(ComsPanel);
+    await view.emit({
+      type: "coms-peers",
+      self: { name: "feature-manager", project: "pi-config" },
+      peers: [
+        {
+          name: "peer-tasks",
+          project: "pi-config",
+          purpose: "planning",
+          model: "gemini-4-neon",
+          busy: false,
+          workload: { agents: 0, tasks: 3, crons: 1 },
+          queueDepth: 0,
+          contextUsedPct: 10,
+          supervised: true,
+        },
+      ],
+    });
+    assert.ok(view.container.textContent.includes("0 busy / 1"));
+    assert.equal(view.container.textContent.includes("⚙"), false);
+  });
 });
 
 describe("SessionSidebar Coms peer display name (#1481)", () => {
@@ -855,5 +912,79 @@ describe("SessionSidebar Coms peer display name (#1481)", () => {
       );
     });
     assert.ok(container.textContent.includes("peer-1479-pidash-data"));
+  });
+
+  it("counts an idle Coms session with runningAsyncAgents 1 in SessionSidebar busy count", async () => {
+    installLocalStorageStub();
+    const { container } = installReactDomShim();
+    const sessions: SessionInfo[] = [
+      {
+        sessionId: "s-peer-async",
+        cwd: "/repo/.worktrees/issue-1509",
+        branch: "fix/issue-1509",
+        gitDirty: false,
+        active: true,
+        activity: "idle",
+        runningAsyncAgents: 1,
+        model: "Gemini 4 Neon",
+        comsProject: "pi-config",
+        comsName: "peer-1509",
+        startedAt: new Date().toISOString(),
+        lastActivity: Date.now(),
+      } as SessionInfo,
+    ];
+    const root = createRoot(container);
+    mounted.push(root);
+    await act(async () => {
+      root.render(
+        createElement(SessionSidebar, {
+          sessions,
+          activeSessionId: null,
+          connected: true,
+          onSelect: () => {},
+          collapsed: false,
+          onToggle: () => {},
+        }),
+      );
+    });
+    assert.ok(container.textContent.includes("●1"));
+    assert.ok(container.textContent.includes("⏳1"));
+  });
+
+  it("omits an idle Coms session with runningAsyncAgents 0 from SessionSidebar busy count", async () => {
+    installLocalStorageStub();
+    const { container } = installReactDomShim();
+    const sessions: SessionInfo[] = [
+      {
+        sessionId: "s-peer-idle",
+        cwd: "/repo/.worktrees/issue-1509",
+        branch: "fix/issue-1509",
+        gitDirty: false,
+        active: true,
+        activity: "idle",
+        runningAsyncAgents: 0,
+        model: "Gemini 4 Neon",
+        comsProject: "pi-config",
+        comsName: "peer-idle",
+        startedAt: new Date().toISOString(),
+        lastActivity: Date.now(),
+      } as SessionInfo,
+    ];
+    const root = createRoot(container);
+    mounted.push(root);
+    await act(async () => {
+      root.render(
+        createElement(SessionSidebar, {
+          sessions,
+          activeSessionId: null,
+          connected: true,
+          onSelect: () => {},
+          collapsed: false,
+          onToggle: () => {},
+        }),
+      );
+    });
+    assert.equal(container.textContent.includes("●1"), false);
+    assert.equal(container.textContent.includes("⏳"), false);
   });
 });

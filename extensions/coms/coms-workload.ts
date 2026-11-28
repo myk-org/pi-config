@@ -16,15 +16,12 @@ import { formatDuration } from "../orchestrator/async-agents.js";
 import { formatTaskRowLine } from "../pitasks/tasks-view.js";
 import { sanitizePeerText } from "./peer-text.js";
 import { createLogger } from "../shared/logger.js";
+import type { PeerWorkloadCounts } from "./coms-registry-core.js";
 import type { WorkloadAgent, WorkloadCron } from "../shared/session-bridge.js";
 
-const log = createLogger("coms-workload");
+export type { PeerWorkloadCounts };
 
-export interface PeerWorkloadCounts {
-  agents: number;
-  tasks: number;
-  crons: number;
-}
+const log = createLogger("coms-workload");
 
 /** One open task, as the peer's own store holds it. */
 export interface WorkloadTask {
