@@ -143,6 +143,38 @@ through the normal gates: an "always allow" then binds to exactly one folder
 you know. Absolute `rm -rf <project>/.pi/tmp/…` and `/tmp/<sub>` targets keep
 their silent exemption.
 
+### Rootless Podman peer sandbox relaxation
+
+Supervised COMS peers running inside a verified rootless Podman container
+(`coms_peer_sandbox: "podman"`) run headlessly against a disposable workspace
+clone, so container-local cleanup commands no longer hard-block on missing UI.
+
+- **Spoof-proof activation:** relaxation activates **only** when **both**
+  `inContainer === true` (detected at startup from `/run/.containerenv` or
+  `/.dockerenv`, never spoofable by setting env vars on the host) **and**
+  `PI_COMS_CONTAINER_NAME` matches the valid peer container format
+  (`pi-peer-...`). Non-peer containers and host sessions keep full
+  confirmation gates.
+- **Relaxed container-local rules:** `recursive delete (rm -r)` (including
+  relative workspace paths), `git reset --hard`, `git clean --force`,
+  `find -delete`, `find -exec rm`, `xargs rm`, and `chmod/chown 777`. Every
+  sandbox-exempt command logs an info entry
+  (`dangerous_gate_podman_sandbox_exempt`).
+- **Protected boundary (never relaxed, fail closed):**
+  - Any destructive target that resolves to, lies inside, or is an ancestor of
+    shared `:rw` COMS mounts (`$PI_COMS_DIR` or default `~/.pi/coms`,
+    including `projects/` and `sockets/`), `/home/peer`, `$HOME`, or `/` —
+    including symlinks and unresolvable dynamic variables/globs such as
+    `rm -rf $PI_COMS_DIR/*` or `rm -rf ~/.pi/*` — remains **strictly blocked**
+    and logs `dangerous_gate_podman_sandbox_protected_target`.
+  - Dangerous system and arbitrary-shell rules (`sudo`, `mkfs`,
+    `dd to a device`, and `bare shell invocation`) remain strictly enforced.
+  - All external-blast-radius and integrity guards (`curl | bash`,
+    `git push --force`, protected-branch commits/pushes, `--no-verify`,
+    `git add .`, git identity overrides, `git-expert` routing,
+    `.approval-hmac-key`, and `pi-config-settings.json` write protection)
+    remain 100% unchanged.
+
 ## Pre-approve a recurring dangerous command
 
 The dangerous-command gate (background shells, `sudo`, recursive `rm`, …) asks

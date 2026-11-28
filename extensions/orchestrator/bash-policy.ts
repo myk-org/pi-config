@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import { basename, dirname, join, resolve } from "node:path";
+import { isValidPeerContainerName } from "../../scripts/podman-peer-image.mjs";
 import { escapeRegExp, getProjectDataDir, realpathNearestExisting, sanitizeModelId } from "./utils.js";
 import {
   getGlobalSettingsPath,
@@ -1208,12 +1209,15 @@ export interface DangerousRule {
   readonly pattern: RegExp;
   readonly label: string;
   readonly explanation: DangerousExplanation;
+  /** True only for container-local destructive rules eligible for relaxation inside a verified rootless Podman peer sandbox (#1529). */
+  readonly podmanSandboxRelaxable?: boolean;
 }
 
 export const DANGEROUS_RULES: readonly DangerousRule[] = [
   {
     pattern: /\brm\s+(?:-[a-zA-Z]+\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)/i,
     label: "recursive delete (rm -r)",
+    podmanSandboxRelaxable: true,
     explanation: {
       why: "recursive delete — removes a directory tree",
       consequence: "every file under it is gone; there is no recovery path",
@@ -1232,6 +1236,7 @@ export const DANGEROUS_RULES: readonly DangerousRule[] = [
   {
     pattern: /\b(chmod|chown)\b.*777/i,
     label: "chmod/chown 777",
+    podmanSandboxRelaxable: true,
     explanation: {
       why: "chmod/chown with a 777 argument",
       consequence: "the target ends up world-writable or owned by someone else, so other local users can change it",
@@ -1259,6 +1264,7 @@ export const DANGEROUS_RULES: readonly DangerousRule[] = [
   {
     pattern: /\bgit\b[\s\S]*\breset\b[\s\S]*--hard\b/i,
     label: "git reset --hard",
+    podmanSandboxRelaxable: true,
     explanation: {
       why: "git reset --hard — discards working-tree changes",
       consequence: "uncommitted edits are lost; git cannot restore them",
@@ -1268,6 +1274,7 @@ export const DANGEROUS_RULES: readonly DangerousRule[] = [
   {
     pattern: /\bgit\b[\s\S]*\bclean\b[\s\S]*(?:--force|-\S*f)/i,
     label: "git clean --force",
+    podmanSandboxRelaxable: true,
     explanation: {
       why: "git clean --force — deletes untracked files; -n/--dry-run deletes nothing",
       consequence: "work that was never committed is removed; git cannot restore it",
@@ -1277,6 +1284,7 @@ export const DANGEROUS_RULES: readonly DangerousRule[] = [
   {
     pattern: /\bfind\b[\s\S]*\s-delete\b/i,
     label: "find -delete",
+    podmanSandboxRelaxable: true,
     explanation: {
       why: "find -delete — deletes every match",
       consequence: "the matched set is usually larger than it looks; deleted files have no recovery path",
@@ -1286,6 +1294,7 @@ export const DANGEROUS_RULES: readonly DangerousRule[] = [
   {
     pattern: /\bfind\b[\s\S]*-exec(?:dir)?\s+(?:\/\S+\/)?rm\b/i,
     label: "find -exec rm",
+    podmanSandboxRelaxable: true,
     explanation: {
       why: "find -exec rm — runs rm on every match",
       consequence: "the matched set is usually larger than it looks; deleted files have no recovery path",
@@ -1295,6 +1304,7 @@ export const DANGEROUS_RULES: readonly DangerousRule[] = [
   {
     pattern: /\bxargs\s+(?:-\S+\s+)*(?:\/\S+\/)?rm\b/i,
     label: "xargs rm",
+    podmanSandboxRelaxable: true,
     explanation: {
       why: "xargs rm — deletes whatever is piped in",
       consequence: "the input can be any file your user can see; deleted files have no recovery path",
@@ -5672,6 +5682,10 @@ export interface BashPolicyInput {
   cwd: string;
   hasTimeout?: boolean;
   inContainer?: boolean;
+  /** Optional override for `PI_COMS_CONTAINER_NAME` (defaults to `process.env.PI_COMS_CONTAINER_NAME`). */
+  comsContainerName?: string;
+  /** Optional override for `PI_COMS_DIR` (defaults to `process.env.PI_COMS_DIR`). */
+  comsDir?: string;
   isSubagentChild?: boolean;
   agentName?: string;
   ctxModelId?: string | null;
@@ -6035,12 +6049,1073 @@ async function checkGitProtection(
   return undefined;
 }
 
+// ── Rootless Podman Peer Sandbox Dangerous-Gate Relaxation (#1529) ─────────
+
+const PODMAN_PEER_HOME = "/home/peer";
+
+/**
+ * Return the validated Podman peer container name when running inside a verified
+ * rootless Podman COMS peer sandbox, or `null` otherwise.
+ *
+ * Spoof-proof: requires BOTH `inContainer === true` (verified from `/run/.containerenv`
+ * or `/.dockerenv` at startup — never spoofable via env vars alone on the host) AND a
+ * valid `PI_COMS_CONTAINER_NAME` matching `isValidPeerContainerName` (`pi-peer-...`).
+ */
+export function verifiedPodmanPeerSandbox(
+  inContainer: boolean | undefined,
+  containerName: string | undefined = process.env.PI_COMS_CONTAINER_NAME,
+): string | null {
+  if (inContainer !== true) return null;
+  const trimmed = typeof containerName === "string" ? containerName.trim() : "";
+  if (!trimmed || !isValidPeerContainerName(trimmed)) return null;
+  return trimmed;
+}
+
+interface SandboxShellWord {
+  value: string;
+  quoted: boolean;
+  hasDynamicExpansion: boolean;
+  hasGlob: boolean;
+  firstGlobIndex: number;
+  startsWithUnquotedTilde: boolean;
+  unterminatedQuote: boolean;
+}
+
+/**
+ * Quote-aware shell word tokenizer that preserves adjacent quote concatenation
+ * (`c"oms"` -> `"coms"`), unquoted escapes (`c\oms` -> `"coms"`), dynamic expansion
+ * markers (`$`, `` ` ``, `$'...'`), and unquoted glob/brace positions.
+ */
+function tokenizeSandboxWords(stmt: string): SandboxShellWord[] {
+  const out: SandboxShellWord[] = [];
+  const src = stmt.trim();
+  let cur = "";
+  let inWord = false;
+  let quoted = false;
+  let hasDynamicExpansion = false;
+  let hasGlob = false;
+  let firstGlobIndex = -1;
+  let startsWithUnquotedTilde = false;
+  let quote: "'" | '"' | null = null;
+
+  const flush = (unterminatedQuote = false) => {
+    if (!inWord && !unterminatedQuote) return;
+    out.push({
+      value: cur,
+      quoted,
+      hasDynamicExpansion,
+      hasGlob,
+      firstGlobIndex,
+      startsWithUnquotedTilde,
+      unterminatedQuote,
+    });
+    cur = "";
+    inWord = false;
+    quoted = false;
+    hasDynamicExpansion = false;
+    hasGlob = false;
+    firstGlobIndex = -1;
+    startsWithUnquotedTilde = false;
+  };
+
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]!;
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = null;
+      } else {
+        cur += ch;
+      }
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null;
+      } else if (ch === "\\" && i + 1 < src.length && /["\\$`\n]/.test(src[i + 1]!)) {
+        cur += src[++i]!;
+      } else {
+        if (ch === "$" || ch === "`") hasDynamicExpansion = true;
+        cur += ch;
+      }
+      continue;
+    }
+    // Unquoted mode
+    if (/\s/.test(ch)) {
+      flush(false);
+      continue;
+    }
+    if (!inWord && ch === "~") {
+      startsWithUnquotedTilde = true;
+    }
+    inWord = true;
+    if (ch === "$" && src[i + 1] === "'") {
+      // ANSI-C quoting ($'...') — fail closed as dynamic expansion and skip body.
+      hasDynamicExpansion = true;
+      quoted = true;
+      i += 2;
+      let closed = false;
+      while (i < src.length) {
+        if (src[i] === "\\" && i + 1 < src.length) {
+          cur += src[i]! + src[i + 1]!;
+          i += 2;
+          continue;
+        }
+        if (src[i] === "'") {
+          closed = true;
+          break;
+        }
+        cur += src[i]!;
+        i++;
+      }
+      if (!closed) {
+        flush(true);
+        return out;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      quoted = true;
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 < src.length) {
+        cur += src[++i]!;
+      } else {
+        // Trailing lone backslash (e.g. `\;` split by splitBashStatements on `;`)
+        cur += ch;
+      }
+      continue;
+    }
+    if (ch === "$" || ch === "`") {
+      hasDynamicExpansion = true;
+    } else if (/[*?[\]{}]/.test(ch)) {
+      if (!hasGlob) firstGlobIndex = cur.length;
+      hasGlob = true;
+    }
+    cur += ch;
+  }
+  flush(quote !== null);
+  return out;
+}
+
+function normalizeAbsPath(p: string): string {
+  const resolved = path.resolve(p);
+  return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
+}
+
+/** True when `candidate` equals, resides inside, or is an ancestor of `protectedRoot` (or is `/`). */
+function pathsOverlapProtectedRoot(candidate: string, protectedRoot: string): boolean {
+  const a = normalizeAbsPath(candidate);
+  const b = normalizeAbsPath(protectedRoot);
+  if (a === "/" || b === "/") return true;
+  return a === b || a.startsWith(b + "/") || b.startsWith(a + "/");
+}
+
+function buildPodmanProtectedRoots(comsDirOverride?: string): { home: string | null; protectedComsRoots: string[] } {
+  let home: string | null = null;
+  try {
+    home = normalizeAbsPath(homedir());
+  } catch {
+    home = null;
+  }
+  const roots = new Set<string>();
+  const addRoot = (raw: string) => {
+    const abs = normalizeAbsPath(raw);
+    roots.add(abs);
+    const real = realpathNearestExisting(abs);
+    if (real) roots.add(normalizeAbsPath(real));
+  };
+  const configuredComs = (comsDirOverride !== undefined ? comsDirOverride : process.env.PI_COMS_DIR)?.trim() || "";
+  if (configuredComs) addRoot(configuredComs);
+  if (home) addRoot(path.join(home, ".pi", "coms"));
+  addRoot(path.join(PODMAN_PEER_HOME, ".pi", "coms"));
+  return { home, protectedComsRoots: [...roots] };
+}
+
+type SandboxTargetCheck = { safe: true } | { safe: false; reason: string };
+
+interface SandboxCheckCtx {
+  effectiveCwd: string | null;
+  sessionCwd: string;
+  home: string | null;
+  protectedRoots: readonly string[];
+  homeMutatedInCmd: boolean;
+}
+
+function checkLiteralPathSafe(targetPath: string, ctx: SandboxCheckCtx): SandboxTargetCheck {
+  if (!targetPath) return { safe: false, reason: "empty path target" };
+  let lexical: string;
+  if (path.isAbsolute(targetPath)) {
+    lexical = normalizeAbsPath(targetPath);
+  } else {
+    if (ctx.effectiveCwd === null) return { safe: false, reason: "relative target after dynamic directory change" };
+    lexical = normalizeAbsPath(path.resolve(ctx.effectiveCwd, targetPath));
+  }
+  for (const root of ctx.protectedRoots) {
+    if (pathsOverlapProtectedRoot(lexical, root)) {
+      return { safe: false, reason: `target "${targetPath}" overlaps protected path "${root}"` };
+    }
+  }
+  const physical = realpathNearestExisting(lexical);
+  if (physical === null) {
+    return { safe: false, reason: `unable to resolve realpath for "${targetPath}"` };
+  }
+  const normPhysical = normalizeAbsPath(physical);
+  for (const root of ctx.protectedRoots) {
+    if (pathsOverlapProtectedRoot(normPhysical, root)) {
+      return { safe: false, reason: `resolved target "${targetPath}" overlaps protected path "${root}"` };
+    }
+  }
+  return { safe: true };
+}
+
+function isSandboxTargetSafe(word: SandboxShellWord, ctx: SandboxCheckCtx): SandboxTargetCheck {
+  if (word.unterminatedQuote) {
+    return { safe: false, reason: "unterminated quote in target" };
+  }
+  let val = word.value;
+  let firstGlobIndex = word.firstGlobIndex;
+  let hasGlob = word.hasGlob;
+
+  if (word.hasDynamicExpansion) {
+    const projTmpMatch = val.match(/^\$(?:\{PROJECT_TMP_DIR\}|PROJECT_TMP_DIR)(?:$|\/)/);
+    if (!projTmpMatch) {
+      return { safe: false, reason: `dynamic variable or command substitution in "${val}"` };
+    }
+    const prefixLen = val.startsWith("${PROJECT_TMP_DIR}") ? "${PROJECT_TMP_DIR}".length : "$PROJECT_TMP_DIR".length;
+    const suffix = val.slice(prefixLen);
+    if (/[$`]/.test(suffix) || /(?:^|\/)\.\.(?:$|\/)/.test(suffix)) {
+      return { safe: false, reason: `unsafe dynamic suffix in "${val}"` };
+    }
+    const expandedRoot = path.join(ctx.sessionCwd, ".pi", "tmp");
+    if (hasGlob && firstGlobIndex >= prefixLen) {
+      firstGlobIndex = firstGlobIndex - prefixLen + expandedRoot.length;
+    }
+    val = expandedRoot + suffix;
+  }
+
+  if (word.startsWithUnquotedTilde) {
+    if (ctx.homeMutatedInCmd || !ctx.home) {
+      return { safe: false, reason: `unresolvable tilde expansion in "${val}"` };
+    }
+    if (val === "~" || val.startsWith("~/")) {
+      if (hasGlob && firstGlobIndex >= 1) {
+        firstGlobIndex = firstGlobIndex - 1 + ctx.home.length;
+      }
+      val = ctx.home + val.slice(1);
+    } else {
+      return { safe: false, reason: `tilde user expansion "${val}" cannot be verified` };
+    }
+  }
+
+  if (hasGlob) {
+    const tail = val.slice(Math.max(0, firstGlobIndex));
+    if (firstGlobIndex === 0 && val.startsWith("{")) {
+      return { safe: false, reason: `leading brace expansion "${val}" cannot be verified` };
+    }
+    if (/(?:^|\/|[{,])\.\.(?:$|\/|[},])/.test(tail)) {
+      return { safe: false, reason: `path traversal after glob in "${val}"` };
+    }
+    if (tail.includes("{") && /[{,](?:\/|~)/.test(tail)) {
+      return { safe: false, reason: `brace expansion targeting root/home in "${val}"` };
+    }
+    const staticPrefix = val.slice(0, Math.max(0, firstGlobIndex));
+    const lastSlash = staticPrefix.lastIndexOf("/");
+    const dirPrefix = lastSlash === -1 ? "." : lastSlash === 0 ? "/" : staticPrefix.slice(0, lastSlash);
+    return checkLiteralPathSafe(dirPrefix, ctx);
+  }
+
+  return checkLiteralPathSafe(val, ctx);
+}
+
+const SANDBOX_ENV_VALUE_OPTS = new Set(["-u", "--unset", "-C", "--chdir", "-P", "--default-signal", "--ignore-signal", "--block-signal"]);
+const SANDBOX_NICE_VALUE_OPTS = new Set(["-n", "--adjustment"]);
+const SANDBOX_TIMEOUT_VALUE_OPTS = new Set(["-k", "--kill-after", "-s", "--signal"]);
+const SANDBOX_XARGS_VALUE_OPTS = new Set([
+  "-I", "-L", "-n", "-P", "-s", "-E", "-e", "-d",
+  "--replace", "--max-lines", "--max-args", "--max-procs", "--max-chars", "--eof", "--delimiter", "--process-slot-var",
+]);
+const SANDBOX_FIND_DANGEROUS_ACTIONS = new Set(["-fprint", "-fprint0", "-fprintf", "-fls", "-ok", "-okdir"]);
+const SANDBOX_SAFE_PIPE_FILTERS = new Set(["grep", "egrep", "fgrep", "sort", "uniq", "head", "tail", "tr", "cut"]);
+const SANDBOX_LEAD_KEYWORDS = new Set(["then", "do", "else", "elif", "!", "time", "command", "builtin", "exec", "nohup"]);
+
+interface StrippedSandboxCmd {
+  words: SandboxShellWord[];
+  envDirOverrides: SandboxShellWord[];
+  opaque: boolean;
+}
+
+/**
+ * Strip leading benign wrappers (`VAR=val`, `command`, `env`, `rtk`, `nice`, `timeout`,
+ * `nohup`, shell keywords, leading `(`/trailing `)`) while NEVER stripping `sudo`.
+ */
+function stripSandboxWrappers(rawWords: SandboxShellWord[]): StrippedSandboxCmd {
+  const words = rawWords.map((w, idx) => {
+    let v = w.value;
+    if (idx === 0 && !w.quoted) v = v.replace(/^\(+/, "");
+    if (idx === rawWords.length - 1 && !w.quoted) v = v.replace(/\)+$/, "");
+    return v === w.value ? w : { ...w, value: v };
+  }).filter((w) => w.value.length > 0 || w.quoted);
+
+  const envDirOverrides: SandboxShellWord[] = [];
+  let i = 0;
+
+  while (i < words.length) {
+    const w = words[i]!;
+    if (w.unterminatedQuote) return { words: [], envDirOverrides, opaque: true };
+    if (w.quoted) break;
+    const v = w.value;
+
+    // Leading redirections (`2>/dev/null rm ...`)
+    if (REDIRECT_TOKEN.test(v)) {
+      if (/^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/.test(v)) i += 2;
+      else i += 1;
+      continue;
+    }
+
+    if (SANDBOX_LEAD_KEYWORDS.has(v)) {
+      i += 1;
+      continue;
+    }
+
+    // Inline VAR=value assignment
+    if (/^[A-Za-z_]\w*=/.test(v)) {
+      const eqIdx = v.indexOf("=");
+      const name = v.slice(0, eqIdx);
+      if (name === "GIT_DIR" || name === "GIT_WORK_TREE") {
+        envDirOverrides.push({ ...w, value: v.slice(eqIdx + 1) });
+      }
+      i += 1;
+      continue;
+    }
+
+    if (v === "rtk") {
+      i += 1;
+      while (i < words.length && !words[i]!.quoted && words[i]!.value.startsWith("-")) {
+        if (words[i]!.value === "--") { i += 1; break; }
+        i += 1;
+      }
+      continue;
+    }
+
+    if (v === "nice") {
+      i += 1;
+      while (i < words.length && !words[i]!.quoted && words[i]!.value.startsWith("-")) {
+        const opt = words[i]!.value;
+        i += 1;
+        if (opt === "--") break;
+        if (SANDBOX_NICE_VALUE_OPTS.has(opt)) i += 1;
+      }
+      continue;
+    }
+
+    if (v === "timeout") {
+      i += 1;
+      while (i < words.length && !words[i]!.quoted && words[i]!.value.startsWith("-")) {
+        const opt = words[i]!.value;
+        i += 1;
+        if (opt === "--") break;
+        if (SANDBOX_TIMEOUT_VALUE_OPTS.has(opt)) i += 1;
+      }
+      // Consume duration operand
+      if (i < words.length) i += 1;
+      continue;
+    }
+
+    if (v === "env") {
+      i += 1;
+      while (i < words.length) {
+        const arg = words[i]!;
+        if (arg.quoted) break;
+        const av = arg.value;
+        if (av === "--") { i += 1; break; }
+        if (av === "-S" || av.startsWith("-S") || av === "--split-string" || av.startsWith("--split-string=")) {
+          return { words: [], envDirOverrides, opaque: true };
+        }
+        if (av === "-C" || av === "--chdir") {
+          return { words: [], envDirOverrides, opaque: true };
+        }
+        if (av.startsWith("--chdir=")) {
+          return { words: [], envDirOverrides, opaque: true };
+        }
+        if (av.startsWith("-")) {
+          i += 1;
+          if (SANDBOX_ENV_VALUE_OPTS.has(av)) i += 1;
+          continue;
+        }
+        if (/^[A-Za-z_]\w*=/.test(av)) {
+          const eqIdx = av.indexOf("=");
+          const name = av.slice(0, eqIdx);
+          if (name === "GIT_DIR" || name === "GIT_WORK_TREE") {
+            envDirOverrides.push({ ...arg, value: av.slice(eqIdx + 1) });
+          }
+          i += 1;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+
+    break;
+  }
+
+  return { words: words.slice(i), envDirOverrides, opaque: false };
+}
+
+/** Extract non-redirect words and validate any non-benign output redirect target. */
+function filterRedirectsAndValidate(
+  args: SandboxShellWord[],
+  ctx: SandboxCheckCtx,
+): { ok: true; filtered: SandboxShellWord[] } | { ok: false; reason: string } {
+  const filtered: SandboxShellWord[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]!;
+    if (!w.quoted && REDIRECT_TOKEN.test(w.value)) {
+      const bareOp = /^(?:[0-9]*>{1,2}|&>|[0-9]*<)$/.test(w.value);
+      let targetWord: SandboxShellWord | null = null;
+      if (bareOp) {
+        targetWord = args[i + 1] ?? null;
+        i += 1;
+      } else {
+        const strippedTarget = w.value.replace(/^(?:[0-9]*>{1,2}|&>|[0-9]*<)/, "");
+        if (strippedTarget && !/^&\d+$/.test(strippedTarget) && strippedTarget !== "/dev/null") {
+          targetWord = { ...w, value: strippedTarget };
+        }
+      }
+      if (
+        targetWord &&
+        !/^&\d+$/.test(targetWord.value) &&
+        targetWord.value !== "/dev/null" &&
+        !w.value.startsWith("<")
+      ) {
+        const check = isSandboxTargetSafe(targetWord, ctx);
+        if (!check.safe) return { ok: false, reason: `redirect ${check.reason}` };
+      }
+      continue;
+    }
+    filtered.push(w);
+  }
+  return { ok: true, filtered };
+}
+
+function cmdBasename(word: SandboxShellWord | undefined): string {
+  if (!word) return "";
+  const v = word.value;
+  const slash = v.lastIndexOf("/");
+  return slash === -1 ? v : v.slice(slash + 1);
+}
+
+function validateRmArgs(
+  args: SandboxShellWord[],
+  ctx: SandboxCheckCtx,
+  opts?: { allowEmptyTargets?: boolean; placeholder?: string },
+): SandboxTargetCheck {
+  const redir = filterRedirectsAndValidate(args, ctx);
+  if (!redir.ok) return { safe: false, reason: redir.reason };
+  const targets: SandboxShellWord[] = [];
+  let pastSep = false;
+  for (const w of redir.filtered) {
+    if (!pastSep && !w.quoted && w.value === "--") {
+      pastSep = true;
+      continue;
+    }
+    if (!pastSep && !w.quoted && w.value.startsWith("-")) continue;
+    targets.push(w);
+  }
+  const placeholder = opts?.placeholder;
+  if (targets.length === 0 && !opts?.allowEmptyTargets) {
+    return { safe: false, reason: "rm has no explicit target" };
+  }
+  for (const t of targets) {
+    if (placeholder !== undefined && placeholder.length > 0 && t.value === placeholder && !t.hasDynamicExpansion) {
+      continue;
+    }
+    if (placeholder !== undefined && placeholder.length > 0 && t.value.includes(placeholder)) {
+      const idx = t.value.indexOf(placeholder);
+      const replaced: SandboxShellWord = {
+        ...t,
+        value: t.value.slice(0, idx) + "*" + t.value.slice(idx + placeholder.length),
+        hasGlob: true,
+        firstGlobIndex: t.hasGlob ? Math.min(t.firstGlobIndex, idx) : idx,
+      };
+      const check = isSandboxTargetSafe(replaced, ctx);
+      if (!check.safe) return check;
+      continue;
+    }
+    const check = isSandboxTargetSafe(t, ctx);
+    if (!check.safe) return check;
+  }
+  return { safe: true };
+}
+
+function validateChmodChownStage(words: SandboxShellWord[], ctx: SandboxCheckCtx): SandboxTargetCheck {
+  const base = cmdBasename(words[0]);
+  if (base !== "chmod" && base !== "chown") {
+    return { safe: false, reason: `unexpected command "${words[0]?.value ?? ""}" for chmod/chown rule` };
+  }
+  const redir = filterRedirectsAndValidate(words.slice(1), ctx);
+  if (!redir.ok) return { safe: false, reason: redir.reason };
+  let pastSep = false;
+  let hasReference = false;
+  const positionals: SandboxShellWord[] = [];
+  for (let i = 0; i < redir.filtered.length; i++) {
+    const w = redir.filtered[i]!;
+    if (!pastSep && !w.quoted && w.value === "--") {
+      pastSep = true;
+      continue;
+    }
+    if (!pastSep && !w.quoted && w.value.startsWith("-")) {
+      if (w.value === "--reference" || w.value === "--from") {
+        if (w.value === "--reference") hasReference = true;
+        i += 1;
+      } else if (w.value.startsWith("--reference=")) {
+        hasReference = true;
+      }
+      continue;
+    }
+    positionals.push(w);
+  }
+  const targets = hasReference ? positionals : positionals.slice(1);
+  if (targets.length === 0) {
+    return { safe: false, reason: `${base} has no explicit target` };
+  }
+  for (const t of targets) {
+    const check = isSandboxTargetSafe(t, ctx);
+    if (!check.safe) return check;
+  }
+  return { safe: true };
+}
+
+function extractFindStartingPoints(words: SandboxShellWord[]): { ok: true; startPoints: SandboxShellWord[]; exprStart: number } | { ok: false; reason: string } {
+  if (cmdBasename(words[0]) !== "find") {
+    return { ok: false, reason: `unexpected command "${words[0]?.value ?? ""}" for find rule` };
+  }
+  let i = 1;
+  while (i < words.length) {
+    const w = words[i]!;
+    if (!w.quoted && /^-(?:H|L|P|O\d*)$/.test(w.value)) {
+      i += 1;
+      continue;
+    }
+    if (!w.quoted && w.value === "-D") {
+      i += 2;
+      continue;
+    }
+    break;
+  }
+  const startPoints: SandboxShellWord[] = [];
+  while (i < words.length) {
+    const w = words[i]!;
+    if (!w.quoted && (w.value.startsWith("-") || w.value === "!" || w.value === "(" || w.value === ",")) {
+      break;
+    }
+    startPoints.push(w);
+    i += 1;
+  }
+  return { ok: true, startPoints, exprStart: i };
+}
+
+function validateFindStage(words: SandboxShellWord[], ctx: SandboxCheckCtx): SandboxTargetCheck {
+  const redir = filterRedirectsAndValidate(words.slice(1), ctx);
+  if (!redir.ok) return { safe: false, reason: redir.reason };
+  const rebuilt = [words[0]!, ...redir.filtered];
+  const parsed = extractFindStartingPoints(rebuilt);
+  if (!parsed.ok) return { safe: false, reason: parsed.reason };
+
+  const startPoints: SandboxShellWord[] =
+    parsed.startPoints.length > 0
+      ? parsed.startPoints
+      : [{
+          value: ".",
+          quoted: false,
+          hasDynamicExpansion: false,
+          hasGlob: false,
+          firstGlobIndex: -1,
+          startsWithUnquotedTilde: false,
+          unterminatedQuote: false,
+        }];
+
+  for (const sp of startPoints) {
+    const check = isSandboxTargetSafe(sp, ctx);
+    if (!check.safe) return check;
+  }
+
+  // Inspect expression tokens: reject dangerous find actions (-ok, -fprint, etc.)
+  // and validate every -exec / -execdir clause (must invoke rm only, and any extra
+  // non-{} targets passed to rm must also be safe).
+  const expr = rebuilt.slice(parsed.exprStart);
+  for (let i = 0; i < expr.length; i++) {
+    const w = expr[i]!;
+    if (w.unterminatedQuote) return { safe: false, reason: "unterminated quote in find expression" };
+    if (!w.quoted && SANDBOX_FIND_DANGEROUS_ACTIONS.has(w.value)) {
+      return { safe: false, reason: `disallowed find action "${w.value}"` };
+    }
+    if (!w.quoted && (w.value === "-exec" || w.value === "-execdir")) {
+      const execCmd = expr[i + 1];
+      if (!execCmd || cmdBasename(execCmd) !== "rm") {
+        return { safe: false, reason: `find ${w.value} invokes non-rm command "${execCmd?.value ?? ""}"` };
+      }
+      const rmArgs: SandboxShellWord[] = [];
+      let j = i + 2;
+      while (j < expr.length) {
+        const ew = expr[j]!;
+        if (!ew.quoted && (ew.value === "+" || ew.value === ";" || ew.value === "\\")) {
+          break;
+        }
+        rmArgs.push(ew);
+        j += 1;
+      }
+      const rmCheck = validateRmArgs(rmArgs, ctx, { allowEmptyTargets: false, placeholder: "{}" });
+      if (!rmCheck.safe) return rmCheck;
+      i = j;
+    }
+  }
+  return { safe: true };
+}
+
+function validateGitResetCleanStage(
+  words: SandboxShellWord[],
+  envDirOverrides: SandboxShellWord[],
+  ctx: SandboxCheckCtx,
+): SandboxTargetCheck {
+  if (cmdBasename(words[0]) !== "git") {
+    return { safe: false, reason: `unexpected command "${words[0]?.value ?? ""}" for git rule` };
+  }
+  const redir = filterRedirectsAndValidate(words.slice(1), ctx);
+  if (!redir.ok) return { safe: false, reason: redir.reason };
+
+  for (const ov of envDirOverrides) {
+    const check = isSandboxTargetSafe(ov, ctx);
+    if (!check.safe) return check;
+  }
+
+  let effectiveGitCwd = ctx.effectiveCwd;
+  const args = redir.filtered;
+  let i = 0;
+  let subcmd: string | null = null;
+  while (i < args.length) {
+    const w = args[i]!;
+    if (w.unterminatedQuote) return { safe: false, reason: "unterminated quote in git command" };
+    const v = w.value;
+    if (!w.quoted && v === "-C") {
+      const dirWord = args[i + 1];
+      if (!dirWord) return { safe: false, reason: "git -C missing directory" };
+      const check = isSandboxTargetSafe(dirWord, { ...ctx, effectiveCwd: effectiveGitCwd });
+      if (!check.safe) return check;
+      if (dirWord.hasGlob) return { safe: false, reason: "git -C glob cannot be verified" };
+      effectiveGitCwd = resolveLiteralDir(dirWord, effectiveGitCwd, ctx.home);
+      i += 2;
+      continue;
+    }
+    if (!w.quoted && v.startsWith("-C") && v.length > 2) {
+      const dirWord: SandboxShellWord = { ...w, value: v.slice(2) };
+      const check = isSandboxTargetSafe(dirWord, { ...ctx, effectiveCwd: effectiveGitCwd });
+      if (!check.safe) return check;
+      if (dirWord.hasGlob) return { safe: false, reason: "git -C glob cannot be verified" };
+      effectiveGitCwd = resolveLiteralDir(dirWord, effectiveGitCwd, ctx.home);
+      i += 1;
+      continue;
+    }
+    if (!w.quoted && (v === "--work-tree" || v === "--git-dir")) {
+      const dirWord = args[i + 1];
+      if (!dirWord) return { safe: false, reason: `git ${v} missing directory` };
+      const check = isSandboxTargetSafe(dirWord, { ...ctx, effectiveCwd: effectiveGitCwd });
+      if (!check.safe) return check;
+      i += 2;
+      continue;
+    }
+    if (!w.quoted && (v.startsWith("--work-tree=") || v.startsWith("--git-dir="))) {
+      const dirWord: SandboxShellWord = { ...w, value: v.slice(v.indexOf("=") + 1) };
+      const check = isSandboxTargetSafe(dirWord, { ...ctx, effectiveCwd: effectiveGitCwd });
+      if (!check.safe) return check;
+      i += 1;
+      continue;
+    }
+    if (!w.quoted && (v === "-c" || v === "--config-env" || v === "--namespace" || v === "--super-prefix")) {
+      i += 2;
+      continue;
+    }
+    if (!w.quoted && v.startsWith("-")) {
+      i += 1;
+      continue;
+    }
+    subcmd = v;
+    i += 1;
+    break;
+  }
+
+  if (subcmd !== "reset" && subcmd !== "clean") {
+    return { safe: false, reason: `unexpected git subcommand "${subcmd ?? ""}"` };
+  }
+
+  const cwdCheck = checkLiteralPathSafe(".", { ...ctx, effectiveCwd: effectiveGitCwd });
+  if (!cwdCheck.safe) return cwdCheck;
+
+  if (subcmd === "clean") {
+    let pastSep = false;
+    for (let j = i; j < args.length; j++) {
+      const w = args[j]!;
+      if (!pastSep && !w.quoted && w.value === "--") {
+        pastSep = true;
+        continue;
+      }
+      if (!pastSep && !w.quoted && (w.value === "-e" || w.value === "--exclude")) {
+        j += 1;
+        continue;
+      }
+      if (!pastSep && !w.quoted && w.value.startsWith("-")) continue;
+      const check = isSandboxTargetSafe(w, { ...ctx, effectiveCwd: effectiveGitCwd });
+      if (!check.safe) return check;
+    }
+  }
+  return { safe: true };
+}
+
+function validateXargsUpstreamStage(stage: string, ctx: SandboxCheckCtx, isFirstStage: boolean): SandboxTargetCheck {
+  if (extractSubshells(stage).length > 0) {
+    return { safe: false, reason: "subshell in xargs upstream pipeline" };
+  }
+  const stripped = stripSandboxWrappers(tokenizeSandboxWords(stage));
+  if (stripped.opaque || stripped.words.length === 0) {
+    return { safe: false, reason: "opaque upstream command feeding xargs rm" };
+  }
+  const words = stripped.words;
+  const base = cmdBasename(words[0]);
+
+  if (!isFirstStage && SANDBOX_SAFE_PIPE_FILTERS.has(base)) {
+    for (const w of words.slice(1)) {
+      if (w.unterminatedQuote || w.hasDynamicExpansion) {
+        return { safe: false, reason: `dynamic token in upstream filter "${base}"` };
+      }
+    }
+    return { safe: true };
+  }
+
+  if (base === "find") {
+    return validateFindStage(words, ctx);
+  }
+
+  if (base === "git") {
+    for (const ov of stripped.envDirOverrides) {
+      const check = isSandboxTargetSafe(ov, ctx);
+      if (!check.safe) return check;
+    }
+    let effectiveGitCwd = ctx.effectiveCwd;
+    for (let i = 1; i < words.length; i++) {
+      const w = words[i]!;
+      if (w.unterminatedQuote || w.hasDynamicExpansion) {
+        return { safe: false, reason: "dynamic token in upstream git command" };
+      }
+      if (!w.quoted && w.value === "-C" && words[i + 1]) {
+        const check = isSandboxTargetSafe(words[i + 1]!, { ...ctx, effectiveCwd: effectiveGitCwd });
+        if (!check.safe) return check;
+        effectiveGitCwd = resolveLiteralDir(words[i + 1]!, effectiveGitCwd, ctx.home);
+        i += 1;
+      }
+    }
+    return checkLiteralPathSafe(".", { ...ctx, effectiveCwd: effectiveGitCwd });
+  }
+
+  if (base === "echo" || base === "printf") {
+    const redir = filterRedirectsAndValidate(words.slice(1), ctx);
+    if (!redir.ok) return { safe: false, reason: redir.reason };
+    let args = redir.filtered;
+    let escapeEnabled = base === "printf";
+    if (base === "echo") {
+      let idx = 0;
+      while (idx < args.length && !args[idx]!.quoted && /^-[neE]+$/.test(args[idx]!.value)) {
+        if (args[idx]!.value.includes("e")) escapeEnabled = true;
+        idx += 1;
+      }
+      args = args.slice(idx);
+    }
+    if (args.length === 0) return { safe: false, reason: `empty ${base} feeding xargs rm` };
+    for (let idx = 0; idx < args.length; idx++) {
+      const w = args[idx]!;
+      if (w.unterminatedQuote || w.hasDynamicExpansion) {
+        return { safe: false, reason: `dynamic ${base} argument feeding xargs rm` };
+      }
+      if (base === "printf" && idx === 0 && /^%(?:[0-9.$+-]*[a-zA-Z])(?:\\[n0tr])*$/.test(w.value)) {
+        continue;
+      }
+      if (escapeEnabled && /\\(?:x|u|U|[0-7])/.test(w.value)) {
+        return { safe: false, reason: `encoded escape sequence in ${base} feeding xargs rm` };
+      }
+      const pieces = w.value
+        .replace(/\\[n0tr]/g, "\n")
+        .split(/\s+/)
+        .filter(Boolean);
+      for (const piece of pieces) {
+        const pieceWord: SandboxShellWord = {
+          value: piece,
+          quoted: w.quoted,
+          hasDynamicExpansion: false,
+          hasGlob: w.hasGlob && /[*?[\]{}]/.test(piece),
+          firstGlobIndex: w.hasGlob ? piece.search(/[*?[\]{}]/) : -1,
+          startsWithUnquotedTilde: !w.quoted && piece.startsWith("~"),
+          unterminatedQuote: false,
+        };
+        const check = isSandboxTargetSafe(pieceWord, ctx);
+        if (!check.safe) return check;
+      }
+    }
+    return { safe: true };
+  }
+
+  if (base === "ls" || base === "fd" || base === "rg") {
+    const redir = filterRedirectsAndValidate(words.slice(1), ctx);
+    if (!redir.ok) return { safe: false, reason: redir.reason };
+    const cwdCheck = checkLiteralPathSafe(".", ctx);
+    if (!cwdCheck.safe) return cwdCheck;
+    let pastSep = false;
+    for (const w of redir.filtered) {
+      if (w.unterminatedQuote || w.hasDynamicExpansion) {
+        return { safe: false, reason: `dynamic argument in upstream ${base}` };
+      }
+      if (!pastSep && !w.quoted && w.value === "--") {
+        pastSep = true;
+        continue;
+      }
+      if (!pastSep && !w.quoted && w.value.startsWith("-")) continue;
+      const check = isSandboxTargetSafe(w, ctx);
+      if (!check.safe) return check;
+    }
+    return { safe: true };
+  }
+
+  return { safe: false, reason: `unverifiable upstream command "${base}" feeding xargs rm` };
+}
+
+function validateXargsRmStage(
+  words: SandboxShellWord[],
+  upstreamStages: readonly string[],
+  ctx: SandboxCheckCtx,
+): SandboxTargetCheck {
+  if (cmdBasename(words[0]) !== "xargs") {
+    return { safe: false, reason: `unexpected command "${words[0]?.value ?? ""}" for xargs rm rule` };
+  }
+  if (upstreamStages.length === 0) {
+    return { safe: false, reason: "xargs rm without verifiable upstream pipeline" };
+  }
+  // Reject stdin file redirection `<` on xargs itself
+  for (const w of words.slice(1)) {
+    if (!w.quoted && /^[0-9]*</.test(w.value)) {
+      return { safe: false, reason: "xargs rm reading opaque stdin redirection" };
+    }
+  }
+  const redir = filterRedirectsAndValidate(words.slice(1), ctx);
+  if (!redir.ok) return { safe: false, reason: redir.reason };
+  const args = redir.filtered;
+  let i = 0;
+  let replStr: string | undefined;
+  while (i < args.length) {
+    const w = args[i]!;
+    if (w.unterminatedQuote) return { safe: false, reason: "unterminated quote in xargs" };
+    if (w.quoted || !w.value.startsWith("-")) break;
+    const v = w.value;
+    if (v === "--") { i += 1; break; }
+    if (v === "-a" || v.startsWith("-a") || v === "--arg-file" || v.startsWith("--arg-file=")) {
+      return { safe: false, reason: "xargs -a/--arg-file reads targets from opaque file" };
+    }
+    if (v === "-I" || v === "--replace") {
+      replStr = args[i + 1]?.value ?? "{}";
+      i += 2;
+      continue;
+    }
+    if (v.startsWith("-I") && v.length > 2) {
+      replStr = v.slice(2);
+      i += 1;
+      continue;
+    }
+    if (v.startsWith("--replace=")) {
+      replStr = v.slice("--replace=".length) || "{}";
+      i += 1;
+      continue;
+    }
+    if (SANDBOX_XARGS_VALUE_OPTS.has(v)) {
+      i += 2;
+      continue;
+    }
+    i += 1;
+  }
+  const invoked = args[i];
+  if (!invoked || cmdBasename(invoked) !== "rm") {
+    return { safe: false, reason: `xargs invokes non-rm command "${invoked?.value ?? ""}"` };
+  }
+  const rmCheck = validateRmArgs(args.slice(i + 1), ctx, { allowEmptyTargets: true, placeholder: replStr });
+  if (!rmCheck.safe) return rmCheck;
+
+  const cwdCheck = checkLiteralPathSafe(".", ctx);
+  if (!cwdCheck.safe) return cwdCheck;
+
+  for (let u = 0; u < upstreamStages.length; u++) {
+    const upCheck = validateXargsUpstreamStage(upstreamStages[u]!, ctx, u === 0);
+    if (!upCheck.safe) return upCheck;
+  }
+  return { safe: true };
+}
+
+function resolveLiteralDir(word: SandboxShellWord, currentCwd: string | null, home: string | null): string | null {
+  if (word.unterminatedQuote || word.hasDynamicExpansion || word.hasGlob) return null;
+  let v = word.value;
+  if (word.startsWithUnquotedTilde) {
+    if (!home) return null;
+    if (v === "~" || v.startsWith("~/")) {
+      v = home + v.slice(1);
+    } else {
+      return null;
+    }
+  }
+  if (path.isAbsolute(v)) return normalizeAbsPath(v);
+  if (currentCwd === null) return null;
+  return normalizeAbsPath(path.resolve(currentCwd, v));
+}
+
+function updateCwdFromCdStage(stage: string, currentCwd: string | null, home: string | null, homeMutatedInCmd: boolean): string | null {
+  const stripped = stripSandboxWrappers(tokenizeSandboxWords(stage));
+  if (stripped.opaque || stripped.words.length === 0) return currentCwd;
+  const cmd = stripped.words[0]!;
+  if (cmd.quoted) return currentCwd;
+  if (cmd.value === "popd") return null;
+  if (cmd.value !== "cd" && cmd.value !== "pushd") return currentCwd;
+  const args = stripped.words.slice(1).filter((w) => w.quoted || (w.value !== "--" && !/^-[LPeq]+$/.test(w.value)));
+  if (args.length === 0) {
+    return homeMutatedInCmd ? null : home;
+  }
+  const target = args[0]!;
+  if (!target.quoted && target.value === "-") return null;
+  return resolveLiteralDir(target, currentCwd, homeMutatedInCmd ? null : home);
+}
+
+function checkPodmanSandboxStageSafety(
+  stage: string,
+  matchedRules: readonly DangerousRule[],
+  upstreamStages: readonly string[],
+  ctx: SandboxCheckCtx,
+): SandboxTargetCheck {
+  if (extractSubshells(stage).length > 0) {
+    return { safe: false, reason: "command substitution in destructive statement" };
+  }
+  const stripped = stripSandboxWrappers(tokenizeSandboxWords(stage));
+  if (stripped.opaque || stripped.words.length === 0) {
+    return { safe: false, reason: "opaque wrapper in destructive statement" };
+  }
+  const cmd = cmdBasename(stripped.words[0]);
+  const labels = matchedRules.map((r) => r.label);
+
+  if (cmd === "rm" && labels.every((l) => l === "recursive delete (rm -r)")) {
+    return validateRmArgs(stripped.words.slice(1), ctx);
+  }
+  if (
+    cmd === "find" &&
+    labels.every((l) => l === "find -delete" || l === "find -exec rm" || l === "recursive delete (rm -r)")
+  ) {
+    return validateFindStage(stripped.words, ctx);
+  }
+  if (cmd === "xargs" && labels.every((l) => l === "xargs rm" || l === "recursive delete (rm -r)")) {
+    return validateXargsRmStage(stripped.words, upstreamStages, ctx);
+  }
+  if ((cmd === "chmod" || cmd === "chown") && labels.every((l) => l === "chmod/chown 777")) {
+    return validateChmodChownStage(stripped.words, ctx);
+  }
+  if (cmd === "git" && labels.every((l) => l === "git reset --hard" || l === "git clean --force")) {
+    return validateGitResetCleanStage(stripped.words, stripped.envDirOverrides, ctx);
+  }
+  return {
+    safe: false,
+    reason: `command "${stripped.words[0]?.value ?? ""}" does not match sandbox-relaxable rule(s): ${labels.join(", ")}`,
+  };
+}
+
+type PodmanSandboxEvalResult =
+  | { kind: "exempt_all"; rules: string[]; exemptCount: number }
+  | { kind: "block_protected"; reason: string; rules: string[] }
+  | { kind: "passthrough"; exemptStatements: Set<string> };
+
+/**
+ * Evaluate all dangerous statements in `command` under a verified rootless Podman
+ * peer sandbox. Relaxable container-local rules pass only when every target is verified
+ * disjoint from shared `:rw` COMS mounts (`$PI_COMS_DIR`, `~/.pi/coms`), `/`, `$HOME`,
+ * and `/home/peer`. Non-relaxable rules (`sudo`, `mkfs`, `dd`, bare shell) always stay
+ * strictly enforced.
+ */
+function evaluatePodmanSandboxRelaxation(
+  command: string,
+  sessionCwd: string,
+  comsDir?: string,
+): PodmanSandboxEvalResult {
+  const normalized = stripHeredocBodies(command).replace(/\\\r?\n/g, " ");
+  const homeMutatedInCmd = /(?:^|[\s;&|(])HOME=/.test(normalized);
+  const { home, protectedComsRoots } = buildPodmanProtectedRoots(comsDir);
+
+  const chains = normalized
+    .split(/\n|;|&&|(?<!>)&|\|\|/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  let currentCwd: string | null = normalizeAbsPath(sessionCwd);
+  const exemptStatements = new Set<string>();
+  const exemptRules = new Set<string>();
+  let exemptCount = 0;
+  let nonRelaxableCount = 0;
+
+  for (const chain of chains) {
+    const stages = chain
+      .split(/\|/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    for (let s = 0; s < stages.length; s++) {
+      const stage = stages[s]!;
+      if (isReadOnlyStatement(stage) || isNoexecSyntaxCheck(stage)) continue;
+      const matchedRules = DANGEROUS_RULES.filter((r) => r.pattern.test(stage));
+      if (matchedRules.length === 0) continue;
+
+      if (!matchedRules.every((r) => r.podmanSandboxRelaxable === true)) {
+        nonRelaxableCount += 1;
+        continue;
+      }
+
+      const ctx: SandboxCheckCtx = {
+        effectiveCwd: currentCwd,
+        sessionCwd,
+        home,
+        protectedRoots: protectedComsRoots,
+        homeMutatedInCmd,
+      };
+      const safety = checkPodmanSandboxStageSafety(stage, matchedRules, stages.slice(0, s), ctx);
+      if (!safety.safe) {
+        return {
+          kind: "block_protected",
+          reason: safety.reason,
+          rules: matchedRules.map((r) => r.label),
+        };
+      }
+      exemptStatements.add(stage);
+      exemptCount += 1;
+      for (const r of matchedRules) exemptRules.add(r.label);
+    }
+
+    if (stages.length === 1) {
+      currentCwd = updateCwdFromCdStage(stages[0]!, currentCwd, home, homeMutatedInCmd);
+    }
+  }
+
+  if (nonRelaxableCount === 0 && exemptCount > 0) {
+    return { kind: "exempt_all", rules: [...exemptRules], exemptCount };
+  }
+  return { kind: "passthrough", exemptStatements };
+}
+
 /** Dangerous command evaluation + interactive UI / allowlist / session-grant loop. */
 async function checkDangerousCommands(
   command: string,
   cwd: string,
   sessionId: string | null,
   ui?: BashPolicyUi | null,
+  podmanSandbox?: { containerName: string; comsDir?: string } | null,
 ): Promise<EnforcementResult> {
   const statements = splitBashStatements(command);
   const hasDangerous = statements.some((stmt) => {
@@ -6055,10 +7130,45 @@ async function checkDangerousCommands(
   });
   if (!hasDangerous) return undefined;
 
+  let podmanExemptStatements: Set<string> | null = null;
+  if (podmanSandbox) {
+    const sandboxEval = evaluatePodmanSandboxRelaxation(command, cwd, podmanSandbox.comsDir);
+    if (sandboxEval.kind === "block_protected") {
+      enfLog.warn("dangerous_gate_podman_sandbox_protected_target", {
+        container: podmanSandbox.containerName,
+        rules: sandboxEval.rules,
+        reason: sandboxEval.reason,
+        statementHash: createHash("sha256").update(command).digest("hex").slice(0, 12),
+      });
+      return {
+        block: true,
+        reason:
+          `⛔ Blocked inside Podman peer sandbox: destructive command targets a protected path ` +
+          `($PI_COMS_DIR, ~/.pi/coms, $HOME, /home/peer, or /) or an unresolvable dynamic target ` +
+          `(${sandboxEval.reason}). Shared host COMS mounts and root/home directories remain strictly protected.`,
+      };
+    }
+    if (sandboxEval.kind === "exempt_all") {
+      enfLog.info("dangerous_gate_podman_sandbox_exempt", {
+        container: podmanSandbox.containerName,
+        rules: sandboxEval.rules,
+        statements: sandboxEval.exemptCount,
+        statementHash: createHash("sha256").update(command).digest("hex").slice(0, 12),
+      });
+      return undefined;
+    }
+    if (sandboxEval.exemptStatements.size > 0) {
+      podmanExemptStatements = sandboxEval.exemptStatements;
+    }
+  }
+
   const relativeRm = statements
     .map((stmt) => ({
       stmt,
-      target: isReadOnlyStatement(stmt) ? null : relativeRecursiveRmTarget(stmt),
+      target:
+        isReadOnlyStatement(stmt) || podmanExemptStatements?.has(stmt)
+          ? null
+          : relativeRecursiveRmTarget(stmt),
     }))
     .find((r) => r.target !== null);
   if (relativeRm && relativeRm.target !== null) {
@@ -6081,7 +7191,13 @@ async function checkDangerousCommands(
   }
 
   const allRmInTmp = statements
-    .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt) && !isNoexecSyntaxCheck(stmt))
+    .filter(
+      (stmt) =>
+        DANGEROUS.some((p) => p.test(stmt)) &&
+        !isReadOnlyStatement(stmt) &&
+        !isNoexecSyntaxCheck(stmt) &&
+        !podmanExemptStatements?.has(stmt),
+    )
     .every((stmt) => isRmInProjectTmp(stmt, cwd));
   if (allRmInTmp) {
     enfLog.info("dangerous_gate_rm_scratch_exempt", {
@@ -6094,7 +7210,13 @@ async function checkDangerousCommands(
   const dangerousStmts = [
     ...new Set(
       statements
-        .filter((stmt) => DANGEROUS.some((p) => p.test(stmt)) && !isReadOnlyStatement(stmt) && !isNoexecSyntaxCheck(stmt))
+        .filter(
+          (stmt) =>
+            DANGEROUS.some((p) => p.test(stmt)) &&
+            !isReadOnlyStatement(stmt) &&
+            !isNoexecSyntaxCheck(stmt) &&
+            !podmanExemptStatements?.has(stmt),
+        )
         .map((stmt) => normalizeDangerousStatement(stmt)),
     ),
   ];
@@ -7684,7 +8806,17 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     return { action: "block", reason: tmpCheck.reason };
   }
 
-  const dangerCheck = await checkDangerousCommands(command, input.cwd, sessionId, input.ui);
+  const podmanContainerName = verifiedPodmanPeerSandbox(
+    input.inContainer,
+    input.comsContainerName !== undefined ? input.comsContainerName : process.env.PI_COMS_CONTAINER_NAME,
+  );
+  const dangerCheck = await checkDangerousCommands(
+    command,
+    input.cwd,
+    sessionId,
+    input.ui,
+    podmanContainerName ? { containerName: podmanContainerName, comsDir: input.comsDir } : null,
+  );
   if (dangerCheck && "block" in dangerCheck) {
     return { action: "block", reason: dangerCheck.reason };
   }
