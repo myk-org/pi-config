@@ -192,7 +192,7 @@ export interface ComsPeerRuntime {
 
 // ━━ Types ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-type EnvelopeType = "prompt" | "response" | "ping" | "task_update" | "queue_manage" | "task_manage" | "presence" | "progress" | "describe";
+type EnvelopeType = "prompt" | "response" | "ping" | "task_update" | "queue_manage" | "task_manage" | "presence" | "progress" | "describe" | "shutdown";
 
 interface Envelope {
 	type: EnvelopeType;
@@ -308,6 +308,13 @@ interface Pong {
 /** #1083: `/coms list` drilldown request. The reply is `{ type: "describe_reply", detail }`. */
 interface DescribeEnvelope extends Envelope {
 	type: "describe";
+}
+
+/** #1488: graceful in-process RPC peer shutdown request (`cleanShutdown()` + Pi 1.7.0 `ctx.shutdown()`). */
+interface ShutdownEnvelope extends Envelope {
+	type: "shutdown";
+	reason?: string;
+	shutdown_token?: string;
 }
 
 interface PendingReply {
@@ -947,6 +954,31 @@ function isHeadlessOrSupervisedPeer(peerCtx?: ExtensionContext | null): boolean 
 	return false;
 }
 
+/** Constant-time capability token check for supervised RPC shutdown envelopes (#1488). */
+export function isAuthorizedShutdownToken(provided: unknown, expected: string | undefined): boolean {
+	if (typeof provided !== "string" || !provided || typeof expected !== "string" || !expected) {
+		return false;
+	}
+	const a = Buffer.from(provided, "utf-8");
+	const b = Buffer.from(expected, "utf-8");
+	if (a.length !== b.length) return false;
+	return crypto.timingSafeEqual(a, b);
+}
+
+/** True only for supervised headless COMS RPC peers eligible for in-process `ctx.shutdown()` (#1488). */
+export function isSupervisedRpcShutdownCtx(
+	ctx: unknown,
+	env: NodeJS.ProcessEnv = process.env,
+): ctx is { mode: "rpc"; shutdown: () => void; isIdle?: () => boolean } {
+	return (
+		env.PI_COMS_SUPERVISED_PEER === "1" &&
+		Boolean(ctx) &&
+		typeof ctx === "object" &&
+		(ctx as { mode?: unknown }).mode === "rpc" &&
+		typeof (ctx as { shutdown?: unknown }).shutdown === "function"
+	);
+}
+
 // ━━ Compact TUI Message Renderers (#1454) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export function renderComsPeerJoinedMessage(
@@ -1555,6 +1587,7 @@ export function createComsPeerRuntime(
 			const containerName = (process.env.PI_COMS_CONTAINER_NAME || "").trim() || undefined;
 			const hostPidParsed = Number.parseInt((process.env.PI_COMS_HOST_PID || "").trim(), 10);
 			const hostPid = Number.isInteger(hostPidParsed) && hostPidParsed > 0 ? hostPidParsed : undefined;
+			const instanceId = (process.env.PI_COMS_INSTANCE_ID || "").trim() || undefined;
 			const effectivePid = hostPid ?? (containerName ? 0 : process.pid);
 			const live: RegistryEntry = {
 				coms_session_id: identity.coms_session_id,
@@ -1582,6 +1615,7 @@ export function createComsPeerRuntime(
 				workload: workload?.counts ?? null,
 				...(containerName ? { container: containerName } : {}),
 				...(hostPid ? { host_pid: hostPid } : {}),
+				...(instanceId ? { instance_id: instanceId } : {}),
 			};
 			registry.writeEntryAtomic(live, identity.project);
 			lastReportedBusy = busy;
@@ -2348,6 +2382,8 @@ export function createComsPeerRuntime(
 					void handlePing(socket, parsed as PingEnvelope).catch(() => nack(socket, parsed.msg_id, "internal error"));
 				} else if (parsed.type === "describe") {
 					handleDescribe(socket, parsed as DescribeEnvelope);
+				} else if (parsed.type === "shutdown") {
+					handleShutdown(socket, parsed as ShutdownEnvelope);
 				} else if (parsed.type === "task_update") {
 					handleTaskUpdate(socket, parsed as TaskUpdateEnvelope);
 				} else if (parsed.type === "queue_manage") {
@@ -2754,6 +2790,7 @@ export function createComsPeerRuntime(
 		sessionGeneration++;
 		const startGen = sessionGeneration;
 		shuttingDown = false;
+		rpcShutdownPromise = null;
 		finalizingInbound = false;
 		agentRunning = false;
 		beforeAgentStartPending = false;
@@ -2859,6 +2896,7 @@ export function createComsPeerRuntime(
 		const containerName = (process.env.PI_COMS_CONTAINER_NAME || "").trim() || undefined;
 		const hostPidParsed = Number.parseInt((process.env.PI_COMS_HOST_PID || "").trim(), 10);
 		const hostPid = Number.isInteger(hostPidParsed) && hostPidParsed > 0 ? hostPidParsed : undefined;
+		const instanceId = (process.env.PI_COMS_INSTANCE_ID || "").trim() || undefined;
 		const effectivePid = hostPid ?? (containerName ? 0 : process.pid);
 		const entry: RegistryEntry = {
 			coms_session_id: comsSessionId,
@@ -2877,6 +2915,7 @@ export function createComsPeerRuntime(
 			origin: activationOrigin,
 			...(containerName ? { container: containerName } : {}),
 			...(hostPid ? { host_pid: hostPid } : {}),
+			...(instanceId ? { instance_id: instanceId } : {}),
 		};
 		let registryFile: string;
 		try {
@@ -5639,7 +5678,134 @@ Do not respond to this message.`;
 	// ━━ Clean shutdown ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	let shuttingDown = false;
 	let shutdownPromise: Promise<void> | null = null;
+	let rpcShutdownPromise: Promise<boolean> | null = null;
+	const pendingShutdownAcks = new Set<Promise<void>>();
 	let nonReloadStopReason: string | null = null;
+
+	/** Best-effort persist own piSessionId to our native supervisor record so `/coms` `r` revive can resume after graceful self-exit. */
+	function persistOwnSessionForRevive(ident: typeof identity): void {
+		if (process.env.PI_COMS_SUPERVISED_PEER !== "1" || !ident?.pi_session_id) return;
+		const statePath = path.join(registry.peersDir(), `${ident.name}@${ident.project}.json`);
+		if (!fs.existsSync(statePath)) return;
+		try {
+			const parsed = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.childPid === process.pid) {
+				parsed.piSessionId = ident.pi_session_id;
+				fs.writeFileSync(statePath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
+				log.debug("rpc_shutdown_session_persisted", { name: ident.name, project: ident.project });
+			}
+		} catch (err) {
+			log.warn("rpc_shutdown_session_persist_failed", {
+				statePath,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	/** Flush a shutdown ack line before `cleanShutdown()` closes the listening server. */
+	function flushShutdownAck(socket: net.Socket, payload: Record<string, unknown>): Promise<void> {
+		// Detach from `connections` so `cleanShutdown()` will not `destroy()` this socket
+		// before the client drains the ack bytes from the Unix socket buffer.
+		connections.delete(socket);
+		const p = new Promise<void>((resolve) => {
+			let done = false;
+			const finish = () => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				socket.unref?.();
+				resolve();
+			};
+			const timer = setTimeout(finish, 150);
+			timer.unref?.();
+			try {
+				socket.end(`${JSON.stringify(payload)}\n`, finish);
+			} catch {
+				finish();
+			}
+		});
+		pendingShutdownAcks.add(p);
+		void p.finally(() => pendingShutdownAcks.delete(p));
+		return p;
+	}
+
+	async function runGracefulRpcShutdown(
+		shutdownCtx: { mode: "rpc"; shutdown: () => void; isIdle?: () => boolean },
+		reason: string,
+		beforeCleanup?: () => Promise<void>,
+	): Promise<boolean> {
+		const busy = isAgentBusy();
+		const identSnapshot = identity;
+		log.info("rpc_shutdown_requested", {
+			name: identSnapshot?.name ?? null,
+			project: identSnapshot?.project ?? null,
+			reason,
+			busy,
+		});
+		if (beforeCleanup) {
+			try { await beforeCleanup(); } catch { /* best-effort */ }
+		}
+		// Give already-connected concurrent shutdown requesters a brief tick to finish
+		// receiving their detached duplicate ack before `cleanShutdown()` closes the server.
+		if (connections.size > 0 || pendingShutdownAcks.size > 0) {
+			await new Promise<void>((resolve) => {
+				const t = setTimeout(resolve, 25);
+				t.unref?.();
+			});
+			if (pendingShutdownAcks.size > 0) {
+				await Promise.allSettled([...pendingShutdownAcks]);
+			}
+		}
+		persistOwnSessionForRevive(identSnapshot);
+		try {
+			await cleanShutdown({ reason });
+		} catch (err) {
+			log.warn("rpc_shutdown_cleanup_failed", {
+				reason,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		} finally {
+			try {
+				shutdownCtx.shutdown();
+				log.info("rpc_shutdown_invoked", { reason, busy });
+			} catch (err) {
+				log.warn("rpc_shutdown_ctx_failed", {
+					reason,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+		return true;
+	}
+
+	function handleShutdown(socket: net.Socket, env: ShutdownEnvelope): void {
+		const shutdownCtx = currentCtx;
+		if (!isSupervisedRpcShutdownCtx(shutdownCtx)) {
+			log.warn("shutdown_envelope_rejected", {
+				msgId: env.msg_id,
+				supervised: process.env.PI_COMS_SUPERVISED_PEER === "1",
+				mode: shutdownCtx?.mode ?? null,
+			});
+			nack(socket, env.msg_id, "shutdown only supported on supervised rpc peers");
+			return;
+		}
+		if (!isAuthorizedShutdownToken(env.shutdown_token, process.env.PI_COMS_SHUTDOWN_TOKEN)) {
+			log.warn("shutdown_envelope_unauthorized", { msgId: env.msg_id });
+			nack(socket, env.msg_id, "unauthorized shutdown");
+			return;
+		}
+		const busy = isAgentBusy();
+		if (rpcShutdownPromise !== null || shuttingDown) {
+			log.debug("shutdown_envelope_duplicate", { msgId: env.msg_id, busy });
+			void flushShutdownAck(socket, { type: "ack", msg_id: env.msg_id, busy, already_shutting_down: true });
+			return;
+		}
+		const reason = typeof env.reason === "string" && env.reason.trim() ? env.reason.trim() : "rpc_shutdown";
+		// Claim synchronously before awaiting socket flush so concurrent requests deduplicate cleanly.
+		rpcShutdownPromise = runGracefulRpcShutdown(shutdownCtx, reason, () =>
+			flushShutdownAck(socket, { type: "ack", msg_id: env.msg_id, busy }),
+		);
+	}
 	async function stopPingWorker(worker: Worker): Promise<void> {
 		let timeout: NodeJS.Timeout | undefined;
 		const exited = new Promise<boolean>((resolve) => worker.once("exit", () => resolve(true)));

@@ -17,11 +17,13 @@
  * State: ~/.pi/coms/peers/<cname>@<project>.json
  */
 import { execFileSync, spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createLoggerCore } from "../extensions/shared/logger-core.mjs";
 import { extractAgentDirFromArgv, normalizeAgentDir } from "../extensions/shared/pi-agent-dir-parser.mjs";
+import { requestPeerShutdown } from "../extensions/coms/coms-shutdown-client.mjs";
 import {
   buildPeerContainerName,
   buildPodmanRunArgs,
@@ -100,6 +102,66 @@ const STOP_TIMEOUT_MS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : STOP_TIMEOUT_DEFAULT_MS;
 })();
 
+const socketsDir = path.join(comsBase, "sockets");
+/** Per-launch instance identity written to the child's registry entry (`instance_id`) so an old supervisor never stops or erases a replacement peer. */
+const instanceId = crypto.randomUUID();
+/** Per-launch capability secret held ONLY in supervisor memory and the child's env (`PI_COMS_SHUTDOWN_TOKEN`) — never persisted to disk. */
+const shutdownToken = crypto.randomBytes(32).toString("hex");
+
+/** Bounded grace window for Pi 1.7.0 in-process RPC `ctx.shutdown()` before escalating to SIGTERM / podman stop (#1488). */
+function computeGraceTimeoutMs(totalMs) {
+  return Math.max(100, Math.min(3000, Math.floor(totalMs * 0.6)));
+}
+
+/** Verify a registry endpoint lives under this COMS sockets directory (or Windows pipe prefix) before connecting or unlinking. */
+function isEndpointUnderSocketsDir(endpoint) {
+  if (typeof endpoint !== "string" || !endpoint.trim()) return false;
+  if (process.platform === "win32") {
+    return endpoint.startsWith("\\\\.\\pipe\\pi-coms-");
+  }
+  const resolvedBase = path.resolve(socketsDir);
+  const resolvedEndpoint = path.resolve(endpoint);
+  return resolvedEndpoint.startsWith(`${resolvedBase}${path.sep}`);
+}
+
+/** Look up the live COMS registry entry owned by THIS supervisor's exact `instanceId` (never by reusable PID or container name). */
+function findOwnRegistryEntry() {
+  const agentsDir = path.join(comsBase, "projects", project, "agents");
+  let files;
+  try {
+    files = fs.readdirSync(agentsDir);
+  } catch {
+    return null;
+  }
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const filePath = path.join(agentsDir, file);
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      if (!parsed || typeof parsed !== "object" || parsed.name !== cname) continue;
+      if (parsed.instance_id === instanceId) return { filePath, entry: parsed };
+    } catch {
+      /* ignore corrupt or racing entry */
+    }
+  }
+  return null;
+}
+
+/** Remove any leftover COMS registry/socket files for THIS supervisor's exact `instanceId` (e.g. after SIGKILL). */
+function cleanupOwnRegistryEntry() {
+  const found = findOwnRegistryEntry();
+  if (!found) return;
+  try {
+    fs.unlinkSync(found.filePath);
+    log.debug("stale_registry_entry_cleaned", { cname, filePath: found.filePath });
+  } catch { /* already gone */ }
+  const endpoint = found.entry?.endpoint;
+  if (process.platform !== "win32" && isEndpointUnderSocketsDir(endpoint)) {
+    try { fs.unlinkSync(endpoint); } catch { /* already gone */ }
+    try { fs.unlinkSync(`${endpoint}.ping`); } catch { /* already gone */ }
+  }
+}
+
 /** Set once: later records (stop/exit) must not rewrite the peer's real start time. */
 const startedAt = new Date().toISOString();
 
@@ -149,6 +211,8 @@ function scrubPeerEnv() {
   // Mark only the spawned child process as a supervised headless COMS peer so interactive-only
   // tools like ask_user stay disabled on the peer without touching the spawner's environment.
   env.PI_COMS_SUPERVISED_PEER = "1";
+  env.PI_COMS_INSTANCE_ID = instanceId;
+  env.PI_COMS_SHUTDOWN_TOKEN = shutdownToken;
   if (parentSessionId) {
     env.PI_COMS_PARENT_SESSION_ID = parentSessionId;
   } else {
@@ -360,9 +424,13 @@ function startPodmanPeer() {
   });
 
   let stopping = false;
+  let podmanStopStarted = false;
   let stopSignal = null;
   let stoppedAt = null;
+  let shutdownMode = null;
+  let capturedSessionId = null;
   let forced = false;
+  let graceTimer = null;
   let forceTimer = null;
   let exited = false;
   let containerRemoved = false;
@@ -419,16 +487,22 @@ function startPodmanPeer() {
     if (exited) return;
     exited = true;
     clearInterval(pollTimer);
+    if (graceTimer) clearTimeout(graceTimer);
     if (forceTimer) clearTimeout(forceTimer);
     // Always remove THIS supervisor's exited container (by immutable containerId) so stopped
     // containers never accumulate or block `pruneStalePeerImages`.
     removeOwnContainer();
-    log.info("podman_peer_exited", { containerName, cid: containerId.slice(0, 12), code, signal, forced, containerRemoved });
+    log.info("podman_peer_exited", { containerName, cid: containerId.slice(0, 12), code, signal, forced, shutdownMode, containerRemoved });
     const { owned, preservedSessionId } = preserveSessionAndCheckOwner();
     if (!owned) process.exit(0);
+    cleanupOwnRegistryEntry();
+    const sessionField = preservedSessionId.piSessionId
+      ? preservedSessionId
+      : (capturedSessionId ? { piSessionId: capturedSessionId } : {});
     writeStateRecord(baseFields, {
-      ...preservedSessionId,
+      ...sessionField,
       ...(stopping ? { stoppedAt, stopSignal } : {}),
+      ...(shutdownMode ? { shutdownMode } : {}),
       exitedAt: new Date().toISOString(),
       exitCode: code,
       exitSignal: signal,
@@ -438,18 +512,9 @@ function startPodmanPeer() {
     process.exit(0);
   };
 
-  const stopContainer = (signal) => {
-    if (stopping) return;
-    stopping = true;
-    stopSignal = signal;
-    stoppedAt = new Date().toISOString();
-    const { owned } = preserveSessionAndCheckOwner();
-    if (!owned) {
-      log.info("podman_stop_skipped_not_owner", { containerName, cid: containerId.slice(0, 12), signal });
-      // Still clean up ONLY our own containerId (never touching the replacement's containerName).
-      removeOwnContainer();
-      process.exit(0);
-    }
+  const escalateToPodmanStop = (signal) => {
+    if (exited || podmanStopStarted) return;
+    podmanStopStarted = true;
     const stopSeconds = Math.max(1, Math.ceil(STOP_TIMEOUT_MS / 1000));
     log.info("podman_peer_stopping_graceful", { containerName, cid: containerId.slice(0, 12), signal, stopSeconds });
 
@@ -476,6 +541,74 @@ function startPodmanPeer() {
     forceTimer.unref?.();
   };
 
+  const stopContainer = (signal) => {
+    if (stopping) return;
+    stopping = true;
+    stopSignal = signal;
+    stoppedAt = new Date().toISOString();
+    const stopStartedAt = Date.now();
+    const { owned } = preserveSessionAndCheckOwner();
+    if (!owned) {
+      log.info("podman_stop_skipped_not_owner", { containerName, cid: containerId.slice(0, 12), signal });
+      // Still clean up ONLY our own containerId (never touching the replacement's containerName).
+      removeOwnContainer();
+      process.exit(0);
+    }
+
+    const ownEntry = findOwnRegistryEntry();
+    if (typeof ownEntry?.entry?.pi_session_id === "string" && ownEntry.entry.pi_session_id.trim()) {
+      capturedSessionId = ownEntry.entry.pi_session_id.trim();
+    }
+    const endpoint = ownEntry?.entry?.endpoint;
+    if (isEndpointUnderSocketsDir(endpoint)) {
+      const graceMs = computeGraceTimeoutMs(STOP_TIMEOUT_MS);
+      const ackTimeoutMs = Math.min(1000, Math.max(100, Math.floor(graceMs / 2)));
+      void requestPeerShutdown(endpoint, {
+        timeoutMs: ackTimeoutMs,
+        senderSession: `supervisor:${process.pid}`,
+        reason: `supervisor_${signal}`,
+        shutdownToken,
+      }).then((res) => {
+        if (exited) return;
+        if (res.ok) {
+          shutdownMode = "rpc-graceful";
+          log.info("podman_peer_graceful_shutdown_acked", {
+            containerName,
+            cid: containerId.slice(0, 12),
+            signal,
+            busy: res.busy,
+            graceMs,
+          });
+          const remainingGraceMs = Math.max(50, graceMs - (Date.now() - stopStartedAt));
+          graceTimer = setTimeout(() => {
+            if (exited) return;
+            shutdownMode = "signal";
+            log.warn("podman_peer_graceful_shutdown_timeout", {
+              containerName,
+              cid: containerId.slice(0, 12),
+              signal,
+              timeoutMs: graceMs,
+            });
+            escalateToPodmanStop(signal);
+          }, remainingGraceMs);
+          graceTimer.unref?.();
+          return;
+        }
+        shutdownMode = "signal";
+        log.debug("podman_peer_graceful_shutdown_fallback", {
+          containerName,
+          cid: containerId.slice(0, 12),
+          reason: res.reason,
+        });
+        escalateToPodmanStop(signal);
+      });
+      return;
+    }
+
+    shutdownMode = "signal";
+    escalateToPodmanStop(signal);
+  };
+
   process.on("SIGTERM", () => stopContainer("SIGTERM"));
   process.on("SIGINT", () => stopContainer("SIGINT"));
   process.on("SIGHUP", () => stopContainer("SIGHUP"));
@@ -484,7 +617,7 @@ function startPodmanPeer() {
   let waitOut = "";
   waiter.stdout.on("data", (d) => { waitOut += String(d); });
   waiter.on("exit", () => {
-    if (stopping) return; // stopContainer finalizes after container removal
+    if (podmanStopStarted) return; // escalateToPodmanStop finalizes after container removal
     const parsedCode = Number.parseInt(waitOut.trim(), 10);
     finalize(Number.isInteger(parsedCode) ? parsedCode : null, null);
   });
@@ -544,36 +677,97 @@ function startNativePeer() {
   let stopping = false;
   let stopSignal = null;
   let stoppedAt = null;
+  let shutdownMode = null;
+  let capturedSessionId = null;
   let forced = false;
+  let childExited = false;
+  let graceTimer = null;
   let stopTimer = null;
+
+  const escalateToSignal = (remainingMs) => {
+    if (childExited) return;
+    try { child.stdin.end(); } catch { /* already gone */ }
+    try { child.kill("SIGTERM"); } catch { /* already gone */ }
+    const sigkillDelayMs = Math.max(50, remainingMs);
+    stopTimer = setTimeout(() => {
+      if (childExited) return;
+      forced = true;
+      log.warn("native_peer_sigkill", { cname, timeoutMs: STOP_TIMEOUT_MS });
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    }, sigkillDelayMs);
+    stopTimer.unref?.();
+  };
 
   const stop = (signal) => {
     if (stopping) return;
     stopping = true;
     stopSignal = signal;
     stoppedAt = new Date().toISOString();
+    const stopStartedAt = Date.now();
     log.info("native_peer_stopping", { cname, signal });
-    try { child.stdin.end(); } catch { /* already gone */ }
-    try { child.kill("SIGTERM"); } catch { /* already gone */ }
-    stopTimer = setTimeout(() => {
-      forced = true;
-      log.warn("native_peer_sigkill", { cname, timeoutMs: STOP_TIMEOUT_MS });
-      try { child.kill("SIGKILL"); } catch { /* already gone */ }
-    }, STOP_TIMEOUT_MS);
-    stopTimer.unref?.();
+
+    const ownEntry = findOwnRegistryEntry();
+    if (typeof ownEntry?.entry?.pi_session_id === "string" && ownEntry.entry.pi_session_id.trim()) {
+      capturedSessionId = ownEntry.entry.pi_session_id.trim();
+    }
+    const endpoint = ownEntry?.entry?.endpoint;
+    if (isEndpointUnderSocketsDir(endpoint)) {
+      const graceMs = computeGraceTimeoutMs(STOP_TIMEOUT_MS);
+      const ackTimeoutMs = Math.min(1000, Math.max(100, Math.floor(graceMs / 2)));
+      void requestPeerShutdown(endpoint, {
+        timeoutMs: ackTimeoutMs,
+        senderSession: `supervisor:${process.pid}`,
+        reason: `supervisor_${signal}`,
+        shutdownToken,
+      }).then((res) => {
+        if (childExited) return;
+        if (res.ok) {
+          shutdownMode = "rpc-graceful";
+          log.info("native_peer_graceful_shutdown_acked", { cname, signal, busy: res.busy, graceMs });
+          const remainingGraceMs = Math.max(50, graceMs - (Date.now() - stopStartedAt));
+          graceTimer = setTimeout(() => {
+            if (childExited) return;
+            shutdownMode = "signal";
+            log.warn("native_peer_graceful_shutdown_timeout", { cname, signal, timeoutMs: graceMs });
+            escalateToSignal(STOP_TIMEOUT_MS - (Date.now() - stopStartedAt));
+          }, remainingGraceMs);
+          graceTimer.unref?.();
+          return;
+        }
+        shutdownMode = "signal";
+        log.debug("native_peer_graceful_shutdown_fallback", {
+          cname,
+          signal,
+          reason: res.reason,
+          error: res.error ?? null,
+        });
+        escalateToSignal(STOP_TIMEOUT_MS - (Date.now() - stopStartedAt));
+      });
+      return;
+    }
+
+    shutdownMode = "signal";
+    escalateToSignal(STOP_TIMEOUT_MS);
   };
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGHUP", () => stop("SIGHUP"));
 
   child.on("exit", (code, signal) => {
+    childExited = true;
+    if (graceTimer) clearTimeout(graceTimer);
     if (stopTimer) clearTimeout(stopTimer);
-    log.info("native_peer_exited", { cname, code, signal });
+    log.info("native_peer_exited", { cname, code, signal, shutdownMode });
     const { owned, preservedSessionId } = preserveSessionAndCheckOwner();
     if (!owned) process.exit(0);
+    cleanupOwnRegistryEntry();
+    const sessionField = preservedSessionId.piSessionId
+      ? preservedSessionId
+      : (capturedSessionId ? { piSessionId: capturedSessionId } : {});
     writeStateRecord(baseFields(), {
-      ...preservedSessionId,
+      ...sessionField,
       ...(stopping ? { stoppedAt, stopSignal } : {}),
+      ...(shutdownMode ? { shutdownMode } : {}),
       exitedAt: new Date().toISOString(),
       exitCode: code,
       exitSignal: signal,
