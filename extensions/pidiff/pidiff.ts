@@ -50,6 +50,18 @@ function isGitRepo(cwd: string): boolean {
   try { execFileSync("git", ["rev-parse", "--git-dir"], { cwd, stdio: "ignore" }); return true; } catch { return false; }
 }
 
+/** Resolve host for PiDiff daemon HTTP health checks and WebSocket connections (#1512). */
+export function resolvePidiffHost(env: Record<string, string | undefined> = process.env): string {
+  const configured = (env.PI_PIDIFF_HOST || "").trim();
+  return configured || "127.0.0.1";
+}
+
+/** Resolve optional explicit PiDiff port override (used when connecting to an authenticated host daemon). */
+export function resolvePidiffPortOverride(env: Record<string, string | undefined> = process.env): number | null {
+  const raw = Number.parseInt((env.PI_PIDIFF_PORT || "").trim(), 10);
+  return Number.isInteger(raw) && raw > 0 && raw <= 65535 ? raw : null;
+}
+
 /**
  * Format a pidiff `publish-review` payload into a compact follow-up message.
  *
@@ -113,6 +125,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
   function doSpawn(port: number, cwd: string): void {
     ensureUiBuilt(import.meta.url, "pidiff-ui", debugLog);
+    // Keep ordinary host pidiff daemons strictly bound to loopback 127.0.0.1.
     spawnDaemon({
       serverScript: "pidiff-server.ts",
       logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidiff-server.log"),
@@ -121,23 +134,32 @@ export function registerPidiff(pi: ExtensionAPI): void {
     });
   }
 
+  const pidiffHost = resolvePidiffHost(process.env);
+  const pidiffPortOverride = resolvePidiffPortOverride(process.env);
+  const probePidiffHealth = (port: number) => checkHealth(port, pidiffHost);
+
   const client = createDaemonClient(pi, {
     name: "pidiff",
     settingKey: "pidiff_enable",
     statusKey: "8-diff",
+    host: pidiffHost,
     log,
+    shouldAutoSpawn: () => {
+      const normalized = pidiffHost.trim().toLowerCase();
+      return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1" || normalized === "[::1]";
+    },
 
     canConnect() {
-      return Boolean(lockDir);
+      return Boolean(lockDir || pidiffPortOverride);
     },
 
     findRunningPort() {
-      const preferred = activePort || readLockfile(lockDir, legacyLockDir)?.port || 0;
-      return findRunningPidiffPort(lockDir, legacyLockDir, preferred);
+      const preferred = activePort || pidiffPortOverride || readLockfile(lockDir, legacyLockDir)?.port || 0;
+      return findRunningPidiffPort(lockDir, legacyLockDir, preferred, probePidiffHealth);
     },
 
     getStatusPort() {
-      return activePort || readLockfile(lockDir, legacyLockDir)?.port || null;
+      return activePort || pidiffPortOverride || readLockfile(lockDir, legacyLockDir)?.port || null;
     },
 
     async acquireSpawnLock(ctx) {
@@ -159,7 +181,7 @@ export function registerPidiff(pi: ExtensionAPI): void {
         await new Promise((r) => setTimeout(r, 1000));
         if (!isLiveExtensionCtx(ctx)) return { acquired: false, port: null };
         const lock = readLockfile(lockDir, legacyLockDir);
-        if (lock && await checkHealth(lock.port)) {
+        if (lock && await probePidiffHealth(lock.port)) {
           return { acquired: false, port: lock.port };
         }
       }

@@ -140,7 +140,7 @@ P2P local agent communication (direct Unix sockets, no server needed). Activate 
 | `coms_queue_clear` | Irreversibly clear only an inspect preview |
 | `coms_local_queue` | List or kill messages in THIS session's own inbound coms queue (TUI: `/coms` → `q`) |
 | `coms_start` / `coms_stop` | Start or stop coms for THIS session from a tool call — no slash command, no new process |
-| `coms_peer_spawn` | Start a peer: a supervised `pi --coms` process with its own session, addressable by name |
+| `coms_peer_spawn` | Start a peer: a supervised `pi --coms` process (native by default, or opt-in rootless Podman container via `sandbox: "podman"` / `coms_peer_sandbox`) |
 | `coms_peers` | List peers with live state — this session's project by default, `project: "*"` for the machine |
 | `coms_peer_kill` | Stop a peer by `name` (+`project` when ambiguous) or `all: true` — supervised peers only |
 

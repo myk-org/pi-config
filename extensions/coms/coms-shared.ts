@@ -522,6 +522,7 @@ export interface ComsPeerCard {
 	queue_depth?: number;
 	busy?: boolean;
 	tasks_summary?: unknown;
+	container?: string | null;
 	staleCount: number;
 }
 
@@ -539,6 +540,7 @@ export function buildComsPeersPayload(
 			queueDepth: card.queue_depth ?? 0,
 			contextUsedPct: card.context_used_pct ?? 0,
 			tasksSummary: card.tasks_summary ?? null,
+			...(card.container ? { container: card.container } : {}),
 		});
 	}
 	return {
@@ -557,6 +559,7 @@ export interface PidashRegistryPeerRow {
 	busy: boolean;
 	queueDepth: number | null;
 	contextUsedPct: number | null;
+	container?: string | null;
 }
 
 /**
@@ -586,6 +589,7 @@ export function buildPidashComsPeersPayload(args: {
 		contextUsedPct: number;
 		tasksSummary: unknown;
 		supervised: boolean;
+		container?: string | null;
 	}>;
 } {
 	const cardByKey = new Map<string, ComsPeerCard>();
@@ -604,6 +608,7 @@ export function buildPidashComsPeersPayload(args: {
 		contextUsedPct: number;
 		tasksSummary: unknown;
 		supervised: boolean;
+		container?: string | null;
 	}> = [];
 	const seenKeys = new Set<string>();
 	for (const row of args.rows) {
@@ -618,6 +623,7 @@ export function buildPidashComsPeersPayload(args: {
 		if (seenKeys.has(key)) continue;
 		seenKeys.add(key);
 		const card = cardByKey.get(key);
+		const container = row.container || card?.container || null;
 		peers.push({
 			name: row.name,
 			project: row.project,
@@ -629,6 +635,7 @@ export function buildPidashComsPeersPayload(args: {
 			contextUsedPct: card?.context_used_pct ?? row.contextUsedPct ?? 0,
 			tasksSummary: card?.tasks_summary ?? null,
 			supervised: args.supervisedKeys.has(key),
+			...(container ? { container } : {}),
 		});
 	}
 	// Include any local peerCard not yet visible in registry rows.
@@ -648,6 +655,7 @@ export function buildPidashComsPeersPayload(args: {
 			contextUsedPct: card.context_used_pct ?? 0,
 			tasksSummary: card.tasks_summary ?? null,
 			supervised: args.supervisedKeys.has(key),
+			...(card.container ? { container: card.container } : {}),
 		});
 	}
 	peers.sort((a, b) => (a.project === b.project ? a.name.localeCompare(b.name) : a.project.localeCompare(b.project)));

@@ -833,6 +833,26 @@ export PI_COMS_ENTRY_GRACE_PERIOD_MS=30000
 export PI_COMS_DIR=/run/user/1000/coms
 ```
 
+### `coms_peer_sandbox`, `coms_peer_sandbox_cpus`, `coms_peer_sandbox_memory`, `coms_peer_sandbox_base_image`
+
+Global-only settings (`global_only: true` — project overrides are ignored) controlling opt-in rootless Podman container isolation for supervised COMS peers spawned via `coms_peer_spawn`:
+
+| Parameter | Type | Default | Environment variable | Description |
+|---|---|---|---|---|
+| `coms_peer_sandbox` | string (`"off"` \| `"podman"`) | `"off"` | `PI_COMS_PEER_SANDBOX` | Default sandbox for `coms_peer_spawn` (`"off"` = native host process, `"podman"` = isolated rootless Podman container). Overridable per spawn via `coms_peer_spawn(..., sandbox)`. |
+| `coms_peer_sandbox_cpus` | int (`1`–`128`) | `4` | `PI_COMS_PEER_SANDBOX_CPUS` | `--cpus` limit applied to each Podman peer container. |
+| `coms_peer_sandbox_memory` | string | `"4g"` | `PI_COMS_PEER_SANDBOX_MEMORY` | `--memory` limit applied to each Podman peer container. |
+| `coms_peer_sandbox_base_image` | string | `"registry.fedoraproject.org/fedora:45"` | `PI_COMS_PEER_SANDBOX_BASE_IMAGE` | Pinned base image for `Containerfile.peer` builds (floating `:latest` is rejected). |
+
+```json
+{
+  "coms_peer_sandbox": "podman",
+  "coms_peer_sandbox_cpus": 4,
+  "coms_peer_sandbox_memory": "4g",
+  "coms_peer_sandbox_base_image": "registry.fedoraproject.org/fedora:45"
+}
+```
+
 See [Inter-Agent Communication](inter-agent-communication.html) for details.
 
 ## Sidecar Server Logging

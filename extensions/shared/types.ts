@@ -19,6 +19,8 @@ export interface SessionInfo {
   gitDirty?: boolean;
   gitChanges?: number;
   container?: boolean;
+  /** Deterministic rootless Podman container name (e.g. `pi-peer-<project>-<cname>`) when set (#1512). */
+  containerName?: string;
   contextWindow?: number;
   thinkingLevel?: string;
   diffPort?: number | null;

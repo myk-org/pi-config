@@ -1011,6 +1011,7 @@ function registeredSession(parsed: any): SessionInfo {
     gitDirty: parsed.gitDirty || false,
     gitChanges: parsed.gitChanges || 0,
     container: parsed.container || false,
+    ...(typeof parsed.containerName === "string" && parsed.containerName.trim() ? { containerName: parsed.containerName.trim() } : {}),
     contextWindow: parsed.contextWindow || 0,
     diffPort: parsed.diffPort || null,
     thinkingLevel: parsed.thinkingLevel || "medium",

@@ -1,0 +1,118 @@
+# syntax=docker/dockerfile:1.7
+# 3-layer rootless Podman sandbox image for supervised COMS peers.
+# - Layer 1 (cached forever): pinned BASE_IMAGE + OS deps + Chromium libs + peer user
+# - Layer 2 (changes only when scripts/install.py changes): install.py --all + single-RUN /opt/node_modules move
+# - Layer 3 (rebuilds in ~15s on host `pi update`): pinned host PI_VERSION (never hardcoded)
+# Host pi-orchestrator-config is bind-mounted :ro at /opt/pi-config (0s rebuild on daily edits).
+ARG BASE_IMAGE=registry.fedoraproject.org/fedora:45
+ARG NODE_VERSION=22.22.3
+FROM ${BASE_IMAGE}
+ARG NODE_VERSION
+
+# Layer 1: system dependencies, node-gyp toolchain (for trail), and Chromium shared libs (for agent-browser).
+# Do NOT install Fedora 45 `nodejs`/`npm` RPMs: Fedora 45's system libicu-78 SIGSEGVs (RC=139) on
+# Intl.Segmenter (visibleWidth / markdownlint-cli). Install official upstream Node 22 tarball below.
+# No socat or sshd: peers connect directly via PI_PIDASH_HOST/PI_PIDIFF_HOST and shells use `podman exec`.
+RUN --mount=type=cache,target=/var/cache/libdnf5,id=pi-peer-f45-dnf \
+    dnf install -y --setopt=install_weak_deps=False --setopt=keepcache=True \
+      git \
+      python3 \
+      curl \
+      ca-certificates \
+      gh \
+      ripgrep \
+      fd-find \
+      jq \
+      golang \
+      which \
+      procps-ng \
+      uv \
+      make \
+      gcc-c++ \
+      tar \
+      gzip \
+      xz \
+      unzip \
+      nss \
+      nspr \
+      atk \
+      at-spi2-atk \
+      cups-libs \
+      libdrm \
+      libxkbcommon \
+      libXcomposite \
+      libXdamage \
+      libXfixes \
+      libXrandr \
+      mesa-libgbm \
+      pango \
+      cairo \
+      alsa-lib \
+      dbus-libs \
+      expat \
+      libxcb \
+      libX11 \
+      libXext \
+      libxshmfence \
+      glib2 \
+      gtk3 \
+    && dnf clean all
+
+# Install official upstream Node 22 binary tarball (bundled ICU, pinned to 22.22.3 to avoid
+# node 22.23+ keep-alive regression nodejs/node#63989) matching container uname -m (x64/arm64).
+RUN arch="$(uname -m)" \
+    && case "$arch" in \
+         x86_64) node_arch="x64" ;; \
+         aarch64|arm64) node_arch="arm64" ;; \
+         *) echo "ERROR: unsupported architecture: $arch" >&2; exit 1 ;; \
+       esac \
+    && tarball="node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+    && curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${tarball}" \
+    && curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
+    && grep " ${tarball}$" SHASUMS256.txt | sha256sum -c - \
+    && tar -xJf "${tarball}" -C /usr/local --strip-components=1 --no-same-owner \
+    && rm -f "${tarball}" SHASUMS256.txt \
+    && node -e 'new Intl.Segmenter("en", { granularity: "grapheme" }).segment("ok")'
+
+# Create non-root peer user (uid 1000, gid 1000) and pre-own /opt & /home/peer/go/pkg
+RUN groupadd -g 1000 peer \
+    && useradd -u 1000 -g 1000 -m -d /home/peer -s /bin/bash peer \
+    && mkdir -p /opt/pi-config /home/peer/.npm-global/bin /home/peer/.local/bin /home/peer/.pi/lsp/bin /home/peer/go/bin /home/peer/go/pkg \
+    && chown -R 1000:1000 /home/peer /opt
+
+USER peer
+WORKDIR /home/peer
+
+ENV HOME=/home/peer \
+    NPM_CONFIG_PREFIX=/home/peer/.npm-global \
+    GOPATH=/home/peer/go \
+    UV_PYTHON_DOWNLOADS=automatic \
+    GOTOOLCHAIN=auto \
+    PATH=/home/peer/.npm-global/bin:/home/peer/.local/bin:/home/peer/.pi/lsp/bin:/home/peer/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Layer 2: full pi-config toolchain via scripts/install.py --all.
+# Runs BEFORE declaring ARG PI_VERSION so host `pi update` never invalidates this layer.
+# Scope UV_TOOL_BIN_DIR strictly to this build-time RUN (never runtime ENV, which breaks
+# tests/python/test_install.py). Folds `mv node_modules /opt/node_modules` + symlink + cache
+# cleanup into ONE RUN layer to avoid ~900 MB layer duplication.
+COPY --chown=1000:1000 install.py install_sources.py /tmp/
+RUN --mount=type=cache,target=/home/peer/.npm,uid=1000,gid=1000,id=pi-peer-npm \
+    --mount=type=cache,target=/home/peer/.cache/uv,uid=1000,gid=1000,id=pi-peer-uv \
+    --mount=type=cache,target=/home/peer/go/pkg,uid=1000,gid=1000,id=pi-peer-gopkg \
+    --mount=type=cache,target=/home/peer/.cache/go-build,uid=1000,gid=1000,id=pi-peer-gobuild \
+    npm config set prefix /home/peer/.npm-global \
+    && npm install -g @earendil-works/pi-coding-agent agent-browser \
+    && agent-browser install \
+    && UV_TOOL_BIN_DIR=/home/peer/.local/bin uv run /tmp/install.py --all \
+    && mv /home/peer/.pi/agent/npm/node_modules /opt/node_modules \
+    && ln -s /opt/node_modules /home/peer/.pi/agent/npm/node_modules \
+    && rm -rf /tmp/install.py* /home/peer/.cache/pip /home/peer/.cache/node-gyp
+
+# Layer 3: pin exact host Pi version passed via --build-arg PI_VERSION (~15s rebuild on `pi update`).
+ARG PI_VERSION
+RUN --mount=type=cache,target=/home/peer/.npm,uid=1000,gid=1000,id=pi-peer-npm \
+    test -n "$PI_VERSION" || (echo "ERROR: --build-arg PI_VERSION is required" >&2 && exit 1) \
+    && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}"
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD pgrep -f "pi --mode rpc" >/dev/null || exit 1

@@ -318,6 +318,9 @@ interface PiClient {
   session: SessionInfo;
 }
 
+// Keep pidiff-server strictly bound to host loopback (127.0.0.1) — never expose a plaintext
+// diff listener on non-loopback interfaces; rootless Podman pasta/slirp4netns reaches host
+// loopback via host.containers.internal over a local-only channel.
 const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, start } = createDaemonServer({
   port,
   uiDir: resolveUiDir(process.argv[1], import.meta.url, "..", "extensions", "pidiff", "pidiff-ui", "dist"),

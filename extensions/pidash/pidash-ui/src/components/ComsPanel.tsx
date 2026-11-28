@@ -42,6 +42,7 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
   const [rawPeers, setRawPeers] = useState<ComsPeer[]>([]);
   const [ownProject, setOwnProject] = useState<string>("");
   const [self, setSelf] = useState<{ name?: string; purpose?: string; project?: string } | null>(null);
+  const [buildStatus, setBuildStatus] = useState<{ state: string; targetTag?: string | null; logPath?: string } | null>(null);
   const [confirmKillKey, setConfirmKillKey] = useState<string | null>(null);
   const [killingKey, setKillingKey] = useState<string | null>(null);
   const [queueItems, setQueueItems] = useState<ComsQueueItem[]>([]);
@@ -68,6 +69,12 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
   }, [sendCmd, scope]);
 
   useEffect(() => {
+    fetch("/api/podman-build-status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((snap) => {
+        if (snap && snap.state === "building") setBuildStatus(snap);
+      })
+      .catch(() => {});
     return onMessage((ev: any) => {
       if (ev.type === "coms-peers") {
         setRefreshing(false);
@@ -89,6 +96,13 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
         setRawPeers(nextSource);
         if (nextOwnProject) setOwnProject(nextOwnProject);
         setSelf(ev.self || null);
+      }
+      if (ev.type === "podman-build-status") {
+        if (ev.state === "building" || ev.state === "ready") {
+          setBuildStatus({ state: ev.state, targetTag: ev.targetTag, logPath: ev.logPath });
+        } else {
+          setBuildStatus(null);
+        }
       }
       if (ev.type === "coms-kill-result") {
         setKillingKey(null);
@@ -188,6 +202,17 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
         </button>
       </div>
 
+      {buildStatus && (buildStatus.state === "building" || buildStatus.state === "ready") && (
+        <div
+          data-testid="podman-build-banner"
+          className="px-2 py-1 rounded border border-border bg-muted/40 text-[10px] text-foreground flex items-center justify-between gap-2"
+          title={buildStatus.logPath ? `Build log: ${buildStatus.logPath}` : undefined}
+        >
+          <span>{buildStatus.state === "building" ? "🐳 Building peer image…" : "✓ Peer image ready"}</span>
+          {buildStatus.targetTag && <span className="text-muted-foreground truncate">{buildStatus.targetTag}</span>}
+        </div>
+      )}
+
       <div className="flex items-center gap-1 flex-wrap" role="group" aria-label="Coms project scope">
         <button
           type="button"
@@ -242,6 +267,15 @@ export function ComsPanel({ sendCmd, onMessage, notify, sessions = [], onWatch }
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span title={p.busy ? "busy" : "idle"}>{p.busy ? "⚙" : "●"}</span>
                   <span className="font-medium text-foreground flex-1 truncate">{p.name}</span>
+                  {p.container && (
+                    <span
+                      data-testid="coms-peer-container-badge"
+                      className="px-1 py-0.2 rounded border border-border text-[9px] text-cyan-700 dark:text-cyan-400 shrink-0 max-w-[10rem] truncate"
+                      title={`Container: ${p.container} — podman exec -it ${p.container} bash`}
+                    >
+                      🐳 {p.container}
+                    </span>
+                  )}
                   {p.supervised && (
                     <span className="px-1 py-0 text-[9px] rounded border border-border bg-muted text-muted-foreground shrink-0">
                       supervised

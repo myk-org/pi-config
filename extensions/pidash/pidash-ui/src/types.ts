@@ -123,6 +123,7 @@ export interface ComsPeer {
   queueDepth: number;
   contextUsedPct: number;
   tasksSummary?: string | null;
+  container?: string | null;
   supervised?: boolean;
 }
 

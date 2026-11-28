@@ -159,6 +159,21 @@ function isContainer(): boolean {
   } catch { return false; }
 }
 
+/** Resolve host for PiDash daemon HTTP health checks and WebSocket connections (#1512). */
+export function resolvePidashHost(env: Record<string, string | undefined> = process.env): string {
+  const configured = (env.PI_PIDASH_HOST || "").trim();
+  return configured || "127.0.0.1";
+}
+
+/** True when `host` refers to a valid local loopback address (`127.0.0.0/8`, `localhost`, `::1`). */
+export function isLocalDaemonHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "localhost" || normalized === "::1" || normalized === "[::1]") return true;
+  const parts = normalized.split(".");
+  if (parts.length !== 4 || parts[0] !== "127") return false;
+  return parts.every((octet) => /^(?:0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
+}
+
 function buildCustomEntryReplayEvent(entry: any): string | null {
   if (!entry || entry.type !== "custom" || entry.customType !== "lsp-startup-summary") {
     return null;
@@ -497,6 +512,9 @@ export function registerPidash(
   const registrationEnv: NodeJS.ProcessEnv = {
     PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD,
     PI_COMS_SUPERVISED_PEER: process.env.PI_COMS_SUPERVISED_PEER,
+    PI_PIDASH_HOST: process.env.PI_PIDASH_HOST,
+    PI_PIDASH_PORT: process.env.PI_PIDASH_PORT,
+    PI_COMS_CONTAINER_NAME: process.env.PI_COMS_CONTAINER_NAME,
   };
   const canConnectCtx = (ctx: unknown): boolean => isPidashConnectableCtx(ctx, registrationEnv);
   const fetchGitStatus = opts.fetchGitStatus ?? getGitStatus;
@@ -880,6 +898,7 @@ export function registerPidash(
           const cwd = client.lastCtx?.cwd || process.cwd();
           const result = applySetting(cwd, parsed.scope, String(parsed.key), "value" in parsed ? parsed.value : null);
           if (result.ok) {
+            try { pi.events.emit("orchestrator:settings-changed", { key: String(parsed.key), cwd }); } catch {}
             // Broadcast fresh state to EVERY connected browser — settings
             // files are shared across sessions (same project / global scope),
             // so browsers watching other sessions must not keep stale values
@@ -1001,19 +1020,22 @@ export function registerPidash(
 
   // ── Shared daemon client adapter ───────────────────────────────────
 
+  const pidashHost = resolvePidashHost(registrationEnv);
+
   const client = createDaemonClient<{ git: GitStatus; worktrees: WorktreeSummary | null }>(pi, {
     name: "pidash",
     settingKey: "pidash_enable",
     statusKey: "9-pidash",
     log,
     port: pidashPort,
+    host: pidashHost,
     startFailureHint: " — check ~/.pi/pidash-server.log",
     strictCommandUsage: true,
     reconnectPollIntervalMs: opts.reconnectPollIntervalMs,
     shouldConnectCtx: canConnectCtx,
-    // Only interactive TUI sessions auto-spawn pidash-server; supervised COMS RPC peers
-    // attach whenever pidash-server is already running and avoid burst-spawn races.
-    shouldAutoSpawn: (ctx) => ctx?.mode === "tui",
+    // Only interactive TUI sessions targeting local loopback auto-spawn pidash-server; supervised
+    // COMS RPC peers and containerized peers (`PI_PIDASH_HOST=host.containers.internal`) attach without spawning locally.
+    shouldAutoSpawn: (ctx) => ctx?.mode === "tui" && isLocalDaemonHost(pidashHost),
 
     spawn() {
       spawnDaemon(pidashPort);
@@ -1077,6 +1099,7 @@ export function registerPidash(
         env: registrationEnv,
       });
       const supervisedPeer = isSupervisedRpcPeerCtx(ctx, registrationEnv);
+      const containerName = (registrationEnv.PI_COMS_CONTAINER_NAME || "").trim() || undefined;
       const currentSessionFile = ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "";
       lastSessionFile = currentSessionFile;
       const reg = JSON.stringify({
@@ -1091,7 +1114,8 @@ export function registerPidash(
         worktreeCount: regWorktrees.worktreeCount,
         worktreeDirtyCount: regWorktrees.worktreeDirtyCount,
         inLinkedWorktree: regWorktrees.inLinkedWorktree,
-        container: isContainer(),
+        container: isContainer() || Boolean(containerName),
+        ...(containerName ? { containerName } : {}),
         model: m?.name || m?.id || "",
         reasoning: m?.reasoning === true,
         supportsImages: supportsImagesFor(m),
@@ -1383,6 +1407,12 @@ export function registerPidash(
       const d = data as { customType?: string; content?: string };
       if (!d?.customType) return;
       client.send({ type: "coms_peer_event", customType: d.customType, content: d.content || "" });
+    });
+
+    // Forward rootless Podman peer image build status to browser (#1512)
+    pi.events.on("pidash:podman-build-status", (data: unknown) => {
+      if (!data || typeof data !== "object") return;
+      client.send({ type: "podman-build-status", ...(data as Record<string, unknown>) });
     });
 
     // Forward display-only custom session entries (e.g. lsp-startup-summary) live

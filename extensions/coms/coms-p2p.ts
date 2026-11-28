@@ -290,6 +290,8 @@ interface AgentCard {
 	tasks_summary?: { total: number; completed: number; in_progress: number } | null;
 	/** #1083: the peer's own active workload. Absent = not reported = `unknown` (never 0). */
 	workload?: PeerWorkloadCounts | null;
+	/** #1512: rootless Podman container name when peer runs inside a container. */
+	container?: string | null;
 }
 
 interface Pong {
@@ -1545,13 +1547,17 @@ export function createComsPeerRuntime(
 			identity.task_store_path = taskStorePath;
 			const workload = ownWorkload();
 			const busy = processingInbound || isAgentBusy(busyCtx ?? ctx);
+			const containerName = (process.env.PI_COMS_CONTAINER_NAME || "").trim() || undefined;
+			const hostPidParsed = Number.parseInt((process.env.PI_COMS_HOST_PID || "").trim(), 10);
+			const hostPid = Number.isInteger(hostPidParsed) && hostPidParsed > 0 ? hostPidParsed : undefined;
+			const effectivePid = hostPid ?? (containerName ? 0 : process.pid);
 			const live: RegistryEntry = {
 				coms_session_id: identity.coms_session_id,
 				name: identity.name,
 				purpose: identity.purpose,
 				model: ctx?.model?.id ?? identity.model,
 				color: identity.color,
-				pid: process.pid,
+				pid: effectivePid,
 				endpoint: identity.endpoint,
 				cwd: identity.cwd,
 				started_at: nowIso(),
@@ -1569,6 +1575,8 @@ export function createComsPeerRuntime(
 				// #1083: counted from THIS peer's own state. A missing source is reported as no
 				// field at all, so a viewer shows `unknown` instead of a fabricated 0.
 				workload: workload?.counts ?? null,
+				...(containerName ? { container: containerName } : {}),
+				...(hostPid ? { host_pid: hostPid } : {}),
 			};
 			registry.writeEntryAtomic(live, identity.project);
 			lastReportedBusy = busy;
@@ -2845,13 +2853,17 @@ export function createComsPeerRuntime(
 		/** Which entry point activated coms: the `coms_start` tool, `/coms start`, or `pi --coms`. */
 		const activationOrigin: ComsActivationOrigin =
 			startOptions?.origin === "tool" || startOptions?.origin === "cli" ? startOptions.origin : "slash";
+		const containerName = (process.env.PI_COMS_CONTAINER_NAME || "").trim() || undefined;
+		const hostPidParsed = Number.parseInt((process.env.PI_COMS_HOST_PID || "").trim(), 10);
+		const hostPid = Number.isInteger(hostPidParsed) && hostPidParsed > 0 ? hostPidParsed : undefined;
+		const effectivePid = hostPid ?? (containerName ? 0 : process.pid);
 		const entry: RegistryEntry = {
 			coms_session_id: comsSessionId,
 			name,
 			purpose,
 			model,
 			color,
-			pid: process.pid,
+			pid: effectivePid,
 			endpoint,
 			cwd,
 			started_at: nowIso(),
@@ -2860,6 +2872,8 @@ export function createComsPeerRuntime(
 			pi_session_id: piSessionId,
 			task_store_path: taskStorePath,
 			origin: activationOrigin,
+			...(containerName ? { container: containerName } : {}),
+			...(hostPid ? { host_pid: hostPid } : {}),
 		};
 		let registryFile: string;
 		try {
@@ -2932,6 +2946,7 @@ export function createComsPeerRuntime(
 				tasks_summary: null,
 				staleCount: 0,
 				workload: entry.workload ?? null,
+				container: entry.container ?? null,
 			});
 			knownPeerSessions.set(entry.coms_session_id, entry.name);
 		}
@@ -2992,6 +3007,7 @@ Do not respond to this message.`;
 				// #1083: `null` is a real answer (sources missing) and must overwrite a
 				// previous count — a stale number is worse than `unknown`.
 				existing.workload = entry.workload ?? null;
+				existing.container = entry.container ?? existing.container ?? null;
 				existing.staleCount = 0;
 				log.debug(opts.refreshOnUpdate ? "fs_watch_heartbeat_rename" : "fs_watch_heartbeat", entry.name, "ctx", entry.context_used_pct, "busy", existing.busy);
 				if (opts.refreshOnUpdate) maybeRefreshWidget();
@@ -3003,6 +3019,7 @@ Do not respond to this message.`;
 				color: entry.color, context_used_pct: entry.context_used_pct ?? 0,
 				queue_depth: entry.queue_depth ?? 0, busy: entry.busy ?? false, tasks_summary: null, staleCount: 0,
 				workload: entry.workload ?? null,
+				container: entry.container ?? null,
 			};
 			peerCards.set(entry.coms_session_id, card);
 			log.info(opts.refreshOnUpdate ? "fs_watch_peer_added" : "fs_watch_peer_added_via_change", entry.name, entry.coms_session_id);

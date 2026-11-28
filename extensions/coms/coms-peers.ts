@@ -10,65 +10,22 @@ import { formatWorkloadSuffix, type PeerWorkloadCounts } from "./coms-workload.j
 import { sanitizePeerText } from "./peer-text.js";
 import { createLogger } from "../shared/logger.js";
 import type { HistoryRecord } from "./coms-history.js";
+import { buildPeerContainerName, isValidPeerContainerName } from "../../scripts/podman-peer-image.mjs";
 import {
   formatActivityEventPlain,
   type ActivityCategory,
   type ActivityEvent,
 } from "../orchestrator/overlay-activity-log.js";
+import {
+  isFreshHeartbeat,
+  pickSupervisionRecord,
+  type RegistryRow,
+  type SupervisionRecord,
+} from "./coms-registry-core.js";
+
+export { isFreshHeartbeat, pickSupervisionRecord, type RegistryRow, type SupervisionRecord };
 
 const log = createLogger("coms-peers");
-
-export interface RegistryRow {
-  /** Project namespace (the registry directory name). */
-  project: string;
-  name: string;
-  pid: number | null;
-  cwd: string;
-  purpose: string;
-  model?: string;
-  endpoint: string;
-  /** Heartbeat-refreshed live state — the closest thing to "watching" a headless peer. */
-  busy: boolean;
-  queueDepth: number | null;
-  contextUsedPct: number | null;
-  startedAt: string | null;
-  heartbeatAt: string | null;
-  /** Who activated coms in this session: `user` (slash command) or `agent` (coms_start tool). */
-  origin?: string | null;
-  /** Who spawned this peer as a process, from the supervisor's record, which is the more
-   *  authoritative answer when both exist. */
-  createdBy?: string | null;
-  /** Pi session id recorded in the registry or supervisor metadata (used by `r` revive to resume session). */
-  piSessionId?: string | null;
-  /** True for recently stopped supervised peers shown in `/coms` for `r` revive. */
-  stopped?: boolean;
-  /** ISO timestamp when a stopped supervised peer exited/stopped. */
-  stoppedAt?: string | null;
-  /** Exit code of a stopped supervised peer when known. */
-  exitCode?: number | null;
-  /** #1083: the peer's own active counts. `null`/absent = not reported = `unknown`, never 0. */
-  workload?: PeerWorkloadCounts | null;
-}
-
-/** Shape of a supervisor state JSON written to `~/.pi/coms/peers/<cname>@<project>.json`. */
-export interface SupervisionRecord {
-  cname?: string;
-  project?: string;
-  cwd?: string;
-  purpose?: string;
-  pid?: number;
-  childPid?: number | null;
-  session?: string | null;
-  piSessionId?: string | null;
-  createdBy?: string | null;
-  startedAt?: string;
-  stoppedAt?: string;
-  exitedAt?: string;
-  failedAt?: string;
-  exitCode?: number | null;
-  exitSignal?: string | null;
-  failure?: string;
-}
 
 export interface PeerFilter {
   project?: string | null;
@@ -97,7 +54,7 @@ export function selectKillTargets(
   request: { name?: string | null; project?: string | null; all?: boolean | null },
   isAlive: (row: RegistryRow) => boolean,
 ): KillSelection {
-  const live = rows.filter((row) => isAlive(row) && (row.pid ?? 0) > 0);
+  const live = rows.filter((row) => isAlive(row) && ((row.pid ?? 0) > 0 || Boolean(row.container)));
   if (request.all === true) {
     return { targets: live, missing: [], ambiguous: [] };
   }
@@ -119,9 +76,10 @@ export function formatPeerTable(rows: RegistryRow[]): string {
       const state = row.busy ? "busy" : "idle";
       const queue = row.queueDepth ? ` queue:${row.queueDepth}` : "";
       const ctx = row.contextUsedPct === null ? "" : ` ctx:${Math.round(row.contextUsedPct)}%`;
-      const pid = row.pid ? ` pid:${row.pid}` : "";
+      const pid = row.hostPid ? ` pid:${row.hostPid}` : (row.pid ? ` pid:${row.pid}` : "");
+      const ctr = row.container ? ` 🐳 ${sanitizePeerText(row.container, 48)}` : "";
       // #1084: peer-supplied text is sanitized before it reaches a terminal.
-      return `● ${sanitizePeerText(row.name, 40)} · ${sanitizePeerText(row.project, 40)} (${state}${queue}${ctx}${pid})${formatWorkloadSuffix(row.workload)} — ${sanitizePeerText(row.cwd, 120) || "?"}`;
+      return `● ${sanitizePeerText(row.name, 40)} · ${sanitizePeerText(row.project, 40)} (${state}${queue}${ctx}${pid}${ctr})${formatWorkloadSuffix(row.workload)} — ${sanitizePeerText(row.cwd, 120) || "?"}`;
     });
   // Counts only: how many peers could not report, never what they said.
   log.debug("peer_table_rendered", { rows: rows.length, unknown: rows.filter((row) => row.workload == null).length });
@@ -148,7 +106,8 @@ export function formatPeerDetailLines(row: RegistryRow, options: PeerDetailOptio
     `purpose   ${sanitizePeerText(row.purpose, 120) || "—"}`,
     `state     ${row.busy ? "busy" : "idle"}${row.queueDepth ? ` · queue ${row.queueDepth}` : ""}`,
     `created   ${origin.by === "unknown" ? "unknown (no record)" : sanitizePeerText(origin.by, 40)} · via ${sanitizePeerText(origin.via, 40)}`,
-    `pid       ${row.pid ?? "?"}`,
+    ...(row.container ? [`container ${sanitizePeerText(row.container, 64)}`] : []),
+    `pid       ${row.hostPid ?? row.pid ?? "?"}`,
     `socket    ${sanitizePeerText(row.endpoint, 80) || "?"}`,
     `heartbeat ${age === null || age === undefined ? "unknown" : `${age}s ago`} (last keep-alive)`,
     `context   ${row.contextUsedPct === null ? "?" : `${Math.round(row.contextUsedPct)}%`}`,
@@ -157,22 +116,6 @@ export function formatPeerDetailLines(row: RegistryRow, options: PeerDetailOptio
   ];
   if (options.status) lines.push(options.status);
   return lines;
-}
-
-/** A peer is live only while it keeps writing its heartbeat.
- *
- *  `kill -0` alone is not enough: a crashed peer's pid can be reused by an unrelated process, and a
- *  leftover record would then look alive forever. The heartbeat is refreshed while the peer runs,
- *  so an old one means the peer is gone even if the socket file was never unlinked. */
-export function isFreshHeartbeat(
-  heartbeatAt: string | null | undefined,
-  now: number,
-  maxAgeMs = 120_000,
-): boolean {
-  if (!heartbeatAt) return false;
-  const parsed = Date.parse(heartbeatAt);
-  if (Number.isNaN(parsed)) return false;
-  return now - parsed <= maxAgeMs;
 }
 
 /** Keys (`project::name`) of peers a supervisor is running.
@@ -198,6 +141,8 @@ export interface KillPlanEntry {
   project: string;
   /** Supervisor pid when one owns this peer, else the peer pid. */
   signalPid: number | null;
+  /** Rootless Podman container name when peer is containerized (#1512). */
+  container?: string | null;
   reason: "supervisor" | "peer" | "not-supervised" | "stale-record" | "ambiguous";
 }
 
@@ -209,7 +154,7 @@ export interface KillPlanEntry {
 export function planPeerKills(args: {
   rows: RegistryRow[];
   supervisedKeys: Set<string>;
-  records: Array<{ cname?: string; project?: string; pid?: number; childPid?: number | null; stoppedAt?: string; exitedAt?: string; failedAt?: string }>;
+  records: Array<{ cname?: string; project?: string; pid?: number; childPid?: number | null; container?: string | null; stoppedAt?: string; exitedAt?: string; failedAt?: string }>;
   request: { name?: string | null; project?: string | null; all?: boolean | null };
   isAlive: (row: RegistryRow) => boolean;
   logger?: { debug: (msg: string, data?: unknown) => void };
@@ -239,15 +184,44 @@ export function planPeerKills(args: {
       (r) => r?.cname === row.name && (r?.project ?? "default") === row.project,
     );
     if (!record) return { name: row.name, project: row.project, signalPid: null, reason: "stale-record" };
+    // #1512: derive container kill target strictly from the host-owned supervision record
+    // verified against the deterministic identity-hashed container name (never trust an
+    // arbitrary peer-written registry container name or peer-written host_pid).
+    const expectedContainer = buildPeerContainerName(row.project, row.name);
+    const recordContainer =
+      typeof record.container === "string" && isValidPeerContainerName(record.container.trim())
+        ? record.container.trim()
+        : null;
+    const verifiedContainer = recordContainer === expectedContainer ? recordContainer : null;
+    const isContainerized = Boolean(verifiedContainer);
+
     // A retired record is leftover bookkeeping, not a reason to leave a LIVE peer running.
     if (record.stoppedAt || record.exitedAt || record.failedAt) {
-      return { name: row.name, project: row.project, signalPid: row.pid ?? null, reason: "peer" };
+      return {
+        name: row.name,
+        project: row.project,
+        signalPid: isContainerized ? null : (row.pid ?? null),
+        ...(verifiedContainer ? { container: verifiedContainer } : {}),
+        reason: "peer",
+      };
     }
-    // Signal the supervisor only when its recorded child IS this peer.
-    if (Number.isInteger(record.pid) && record.childPid === row.pid) {
-      return { name: row.name, project: row.project, signalPid: record.pid as number, reason: "supervisor" };
+    // Signal the host supervisor when its recorded child matches or it owns the verified container.
+    if (Number.isInteger(record.pid) && (record.childPid === row.pid || Boolean(verifiedContainer))) {
+      return {
+        name: row.name,
+        project: row.project,
+        signalPid: record.pid as number,
+        ...(verifiedContainer ? { container: verifiedContainer } : {}),
+        reason: "supervisor",
+      };
     }
-    return { name: row.name, project: row.project, signalPid: row.pid ?? null, reason: "peer" };
+    return {
+      name: row.name,
+      project: row.project,
+      signalPid: isContainerized ? null : (row.pid ?? null),
+      ...(verifiedContainer ? { container: verifiedContainer } : {}),
+      reason: "peer",
+    };
   });
 }
 
@@ -270,23 +244,6 @@ export function describePeerOrigin(row: RegistryRow): { by: string; via: string 
   if (entry === "agent") return { by: "agent", via: "coms_start (legacy record)" };
   if (entry === "user") return { by: "user", via: "/coms start (legacy record)" };
   return { by: "unknown", via: "no record" };
-}
-
-/** The supervision record that belongs to THIS peer instance.
- *
- *  Records outlive the peer and accumulate per name+project, so "the first match" would label a new
- *  peer with an old creator. The live record whose child is this pid wins; otherwise the newest
- *  non-retired one; otherwise nothing — a retired record describes a peer that is gone. */
-export function pickSupervisionRecord<T extends { cname?: string; project?: string; childPid?: number | null; startedAt?: string; stoppedAt?: string; exitedAt?: string; failedAt?: string }>(
-  records: T[],
-  row: Pick<RegistryRow, "name" | "project" | "pid">,
-): T | null {
-  const same = records.filter((r) => r?.cname === row.name && (r?.project ?? "default") === row.project);
-  const live = same.filter((r) => !r.stoppedAt && !r.exitedAt && !r.failedAt);
-  const exact = live.find((r) => typeof row.pid === "number" && r.childPid === row.pid);
-  if (exact) return exact;
-  if (live.length === 0) return null;
-  return live.sort((a, b) => String(b.startedAt ?? "").localeCompare(String(a.startedAt ?? "")))[0];
 }
 
 /** Did activation actually produce a peer? The upstream start handler swallows socket-bind and
@@ -362,7 +319,17 @@ export function projectProblem(project: string): string | null {
  *  keep a name from becoming a shell/argv surprise in the supervisor. */
 export function buildPeerSpawn(
   supervisorPath: string,
-  args: { cname?: string | null; project?: string | null; cwd?: string | null; purpose?: string | null; session?: string | null },
+  args: {
+    cname?: string | null;
+    project?: string | null;
+    cwd?: string | null;
+    purpose?: string | null;
+    session?: string | null;
+    sandbox?: "off" | "podman" | null;
+    image?: string | null;
+    cpus?: number | null;
+    memory?: string | null;
+  },
   logger?: { warn: (msg: string, data?: unknown) => void },
 ): { ok: true; command: string[] } | { ok: false; message: string } {
   const refuse = (reason: string, message: string) => {
@@ -394,6 +361,20 @@ export function buildPeerSpawn(
       return refuse("invalid_session", "coms peer spawn: session must not contain control characters");
     }
     command.push("--session", session);
+  }
+  if (args.sandbox === "podman") {
+    const image = (args.image ?? "").trim();
+    if (!image || /[\x00-\x1f\s]/.test(image)) {
+      return refuse("invalid_image", "coms peer spawn: podman sandbox requires a valid image tag");
+    }
+    command.push("--sandbox", "podman", "--image", image);
+    if (typeof args.cpus === "number" && Number.isInteger(args.cpus) && args.cpus > 0) {
+      command.push("--cpus", String(args.cpus));
+    }
+    const memory = (args.memory ?? "").trim();
+    if (memory && !/[\x00-\x1f\s]/.test(memory)) {
+      command.push("--memory", memory);
+    }
   }
   return { ok: true, command };
 }
@@ -506,6 +487,8 @@ export function listStoppedSupervisedPeers(
         stoppedAt,
         exitCode: typeof record.exitCode === "number" ? record.exitCode : null,
         workload: null,
+        container: typeof record.container === "string" && record.container.trim() ? record.container.trim() : null,
+        sandbox: record.sandbox === "podman" || (typeof record.container === "string" && record.container.trim().length > 0) ? "podman" : "off",
       },
     });
   }

@@ -266,6 +266,8 @@ export interface PeerInfoSource {
   createdBy?: string | null;
   workload?: PeerWorkloadCounts | null;
   heartbeatAgeSeconds?: number | null;
+  container?: string | null;
+  hostPid?: number | null;
 }
 
 /**
@@ -283,7 +285,11 @@ export function buildPeerInfoRow(peer: PeerInfoSource): DrilldownRow {
     ["cwd", dash(sanitizePeerText(peer.cwd ?? "", 120))],
     ["Purpose", dash(sanitizePeerText(peer.purpose ?? "", 120))],
     ["Created by", origin.by === "unknown" ? "unknown (no record)" : `${sanitizePeerText(origin.by, 40)} · via ${sanitizePeerText(origin.via, 40)}`],
-    ["pid", peer.pid === null || peer.pid === undefined ? "—" : String(peer.pid)],
+    ...(peer.container ? [
+      ["Container", sanitizePeerText(peer.container, 64)] as [string, string],
+      ["Shell", `podman exec -it ${sanitizePeerText(peer.container, 64)} bash`] as [string, string],
+    ] : []),
+    ["pid", (peer.hostPid ?? peer.pid) === null || (peer.hostPid ?? peer.pid) === undefined ? "—" : String(peer.hostPid ?? peer.pid)],
     ["Socket", dash(sanitizePeerText(peer.endpoint ?? "", 80))],
     ["Heartbeat", typeof age === "number" ? `${age}s ago` : "unknown"],
     ["State", `${peer.busy ? "busy" : "idle"}${peer.queueDepth ? ` · queue ${peer.queueDepth}` : ""}${peer.contextUsedPct === null || peer.contextUsedPct === undefined ? "" : ` · ctx ${Math.round(peer.contextUsedPct)}%`}`],

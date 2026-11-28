@@ -59,7 +59,13 @@
     "templates/",
     "skills/",
     "settings-keys.json",
-    "scripts/coms-peer-supervisor.mjs"
+    "Containerfile.peer",
+    "scripts/coms-peer-supervisor.mjs",
+    "scripts/podman-peer-image.mjs",
+    "scripts/podman-peer-image.d.mts",
+    "scripts/podman-peer-entrypoint.sh",
+    "scripts/install.py",
+    "scripts/install_sources.py"
   ],
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
@@ -88,6 +94,7 @@
     "build:extension-uis": "bash scripts/build-extension-uis.sh",
     "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p tsconfig.tests.json && tsc -p packages/pi-vertex-claude/tsconfig.json && tsc -p packages/pi-sidecar/tsconfig.json && tsc -p extensions/shared/ui/tsconfig.json && tsc -p extensions/pidiff/pidiff-ui/tsconfig.json && tsc -p extensions/pidash/pidash-ui/tsconfig.json",
     "typecheck:tests": "tsc -p tsconfig.tests.json",
+    "test:podman-e2e": "PI_PODMAN_E2E=1 npx tsx --test tests/node/coms/podman-sandbox-e2e.test.ts",
     "prepack": "npm run build:extension-uis"
   },
   "allowScripts": {

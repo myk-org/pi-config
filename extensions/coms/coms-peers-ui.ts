@@ -444,6 +444,7 @@ export async function openComsPeersOverlay(
               idLabel: theme.fg("dim", sanitizePeerText(row.project, 100)),
               rightParts: [
                 isReviving ? theme.fg("warning", "reviving…") : theme.fg("muted", "stopped"),
+                ...(row.container ? [theme.fg("accent", `🐳 ${sanitizePeerText(row.container, 32)}`)] : []),
                 ...(row.piSessionId ? [theme.fg("dim", "session")] : []),
                 ...(typeof row.exitCode === "number" && row.exitCode !== 0
                   ? [theme.fg("error", `exit:${row.exitCode}`)]
@@ -463,7 +464,8 @@ export async function openComsPeersOverlay(
               theme.fg("muted", row.busy ? "busy" : "idle"),
               ...(row.queueDepth ? [theme.fg("dim", `queue:${row.queueDepth}`)] : []),
               ...(row.contextUsedPct === null ? [] : [theme.fg("dim", `ctx:${Math.round(row.contextUsedPct)}%`)]),
-              ...(row.pid ? [theme.fg("dim", `pid:${row.pid}`)] : []),
+              ...(row.container ? [theme.fg("accent", `🐳 ${sanitizePeerText(row.container, 32)}`)] : []),
+              ...((row.hostPid ?? row.pid) ? [theme.fg("dim", `pid:${row.hostPid ?? row.pid}`)] : []),
               ...(workload ? [workload] : []),
             ],
           };
@@ -658,6 +660,7 @@ export async function openComsPeersOverlay(
  *  old text pane is gone. */
 function peerHeader(row: Row, deps: ComsPeersOverlayDeps): string {
   const parts = [sanitizePeerText(row.name, 40), sanitizePeerText(row.project, 40), row.busy ? "busy" : "idle"];
+  if (row.container) parts.push(`🐳 ${sanitizePeerText(row.container, 32)}`);
   if (row.contextUsedPct !== null) parts.push(`ctx ${Math.round(row.contextUsedPct)}%`);
   if (row.queueDepth) parts.push(`queue ${row.queueDepth}`);
   const age = deps.heartbeatAgeSeconds?.(row);
@@ -687,6 +690,7 @@ async function openPeerDrilldown(
       ["Name", dash(sanitizePeerText(row.name, 40))],
       ["Project", dash(sanitizePeerText(row.project, 40))],
       ["State", isReviving ? "reviving… (starting supervisor)" : "stopped (supervised peer)"],
+      ...(row.container ? [["Container", sanitizePeerText(row.container, 64)] as [string, string]] : []),
       ["cwd", dash(sanitizePeerText(row.cwd, 120))],
       ["Purpose", dash(sanitizePeerText(row.purpose, 120))],
       ["Session", dash(sanitizePeerText(row.piSessionId ?? "", 80))],
