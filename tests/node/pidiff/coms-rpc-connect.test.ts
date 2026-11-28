@@ -13,11 +13,12 @@ import { WebSocketServer } from "ws";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isPidiffConnectableCtx, registerPidiff } from "../../../extensions/pidiff/pidiff.ts";
 import { setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
-import { isSameGitRepoCheckout } from "../../../scripts/pidiff-git-diff.ts";
+import { createRepoCheckoutMatcher, isSameGitRepoCheckout } from "../../../scripts/pidiff-git-diff.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 function createHarness() {
   const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => void>>();
+  const commands = new Map<string, (args: string, ctx: unknown) => Promise<void> | void>();
   const events = new EventEmitter();
   const pi = {
     events,
@@ -26,12 +27,14 @@ function createHarness() {
       list.push(handler);
       handlers.set(name, list);
     },
-    registerCommand: () => {},
+    registerCommand: (name: string, opts: { handler: (args: string, ctx: unknown) => Promise<void> | void }) => {
+      commands.set(name, opts.handler);
+    },
   } as unknown as ExtensionAPI;
   const emitPi = (name: string, event: unknown, ctx: unknown) => {
     for (const h of handlers.get(name) ?? []) h(event, ctx);
   };
-  return { pi, events, emitPi };
+  return { pi, events, emitPi, commands };
 }
 
 function makeCtx(mode: string, cwd: string, overrides: Record<string, unknown> = {}) {
@@ -477,5 +480,196 @@ describe("isSameGitRepoCheckout (#1501)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("supervised RPC daemon management guards (#1501)", () => {
+  type PidiffActionExec = (
+    action: string,
+    c: unknown,
+  ) => Promise<{ ok: boolean; abortedByGuard?: boolean; port?: number | null; running?: boolean }>;
+
+  function capturePidiffExecutor(events: EventEmitter): { current: PidiffActionExec | null } {
+    const holder: { current: PidiffActionExec | null } = { current: null };
+    events.on("daemon:register-handler", (data: any) => {
+      if (data?.name === "pidiff") holder.current = data.execute as PidiffActionExec;
+    });
+    return holder;
+  }
+
+  async function setupSupervisedWorktreePeer() {
+    const dir = makeTempDir("pidiff-rpc-guard-");
+    const repoDir = join(dir, "repo");
+    const wtDir = join(dir, "wt-peer");
+    const server = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
+    const sockets = new WebSocketServer({ server, path: "/ws/pi" });
+    mkdirSync(repoDir, { recursive: true });
+    initGitRepo(repoDir, "main");
+    execFileSync("git", ["worktree", "add", "-b", "feat/wt-guard", wtDir], { cwd: repoDir, stdio: "ignore" });
+    const port = await listenHttp(server);
+    mkdirSync(join(repoDir, ".pi", "run"), { recursive: true });
+    writeFileSync(join(repoDir, ".pi", "run", "pidiff.port"), String(port));
+    writeFileSync(join(repoDir, ".pi", "run", "pidiff.pid"), "999999");
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidiff_enable: true }));
+    return { dir, repoDir, wtDir, server, sockets, port };
+  }
+
+  it("blocks stop action from supervised rpc peer without removing shared hub lockfiles", async () => {
+    const { dir, repoDir, wtDir, server, sockets } = await setupSupervisedWorktreePeer();
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    const { pi, events, emitPi } = createHarness();
+    const ctx = makeCtx("rpc", wtDir);
+    const executor = capturePidiffExecutor(events);
+
+    try {
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      registerPidiff(pi, { reconnectPollIntervalMs: 50 });
+      emitPi("session_start", { reason: "startup" }, ctx);
+      assert.ok(executor.current, "pidiff daemon handler should register");
+
+      const res = await executor.current("stop", ctx);
+      assert.equal(res.ok, false);
+      assert.equal(res.abortedByGuard, true);
+      assert.equal(existsSync(join(repoDir, ".pi", "run", "pidiff.port")), true);
+      assert.equal(existsSync(join(repoDir, ".pi", "run", "pidiff.pid")), true);
+    } finally {
+      emitPi("session_shutdown", {}, ctx);
+      await closeServer(server, sockets);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks start action from supervised rpc peer", async () => {
+    const { dir, wtDir, server, sockets } = await setupSupervisedWorktreePeer();
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    const { pi, events, emitPi } = createHarness();
+    const ctx = makeCtx("rpc", wtDir);
+    const executor = capturePidiffExecutor(events);
+
+    try {
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      registerPidiff(pi, { reconnectPollIntervalMs: 50 });
+      emitPi("session_start", { reason: "startup" }, ctx);
+      assert.ok(executor.current, "pidiff daemon handler should register");
+      const res = await executor.current("start", ctx);
+      assert.equal(res.ok, false);
+      assert.equal(res.abortedByGuard, true);
+    } finally {
+      emitPi("session_shutdown", {}, ctx);
+      await closeServer(server, sockets);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks restart action from supervised rpc peer", async () => {
+    const { dir, repoDir, wtDir, server, sockets } = await setupSupervisedWorktreePeer();
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    const { pi, events, emitPi } = createHarness();
+    const ctx = makeCtx("rpc", wtDir);
+    const executor = capturePidiffExecutor(events);
+
+    try {
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      registerPidiff(pi, { reconnectPollIntervalMs: 50 });
+      emitPi("session_start", { reason: "startup" }, ctx);
+      assert.ok(executor.current, "pidiff daemon handler should register");
+      const res = await executor.current("restart", ctx);
+      assert.equal(res.ok, false);
+      assert.equal(res.abortedByGuard, true);
+      assert.equal(existsSync(join(repoDir, ".pi", "run", "pidiff.port")), true);
+    } finally {
+      emitPi("session_shutdown", {}, ctx);
+      await closeServer(server, sockets);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows status action from supervised rpc peer", async () => {
+    const { dir, wtDir, server, sockets, port } = await setupSupervisedWorktreePeer();
+    const prevChild = process.env.PI_SUBAGENT_CHILD;
+    const prevSupervised = process.env.PI_COMS_SUPERVISED_PEER;
+    const { pi, events, emitPi } = createHarness();
+    const ctx = makeCtx("rpc", wtDir);
+    const executor = capturePidiffExecutor(events);
+
+    try {
+      setGlobalSettingsPath(join(dir, "settings.json"));
+      delete process.env.PI_SUBAGENT_CHILD;
+      process.env.PI_COMS_SUPERVISED_PEER = "1";
+
+      registerPidiff(pi, { reconnectPollIntervalMs: 50 });
+      emitPi("session_start", { reason: "startup" }, ctx);
+      assert.ok(executor.current, "pidiff daemon handler should register");
+      const res = await executor.current("status", ctx);
+      assert.equal(res.ok, true);
+      assert.equal(res.port, port);
+      assert.equal(res.running, true);
+    } finally {
+      emitPi("session_shutdown", {}, ctx);
+      await closeServer(server, sockets);
+      setGlobalSettingsPath(null);
+      restoreEnv("PI_SUBAGENT_CHILD", prevChild);
+      restoreEnv("PI_COMS_SUPERVISED_PEER", prevSupervised);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("createRepoCheckoutMatcher (#1501)", () => {
+  it("accepts linked worktree asynchronously", async () => {
+    const dir = makeTempDir("pidiff-matcher-wt-");
+    const repoDir = join(dir, "repo");
+    const wtDir = join(dir, "wt-1");
+    try {
+      mkdirSync(repoDir, { recursive: true });
+      initGitRepo(repoDir, "main");
+      execFileSync("git", ["worktree", "add", "-b", "feat/wt-async", wtDir], { cwd: repoDir, stdio: "ignore" });
+      const matcher = createRepoCheckoutMatcher(repoDir);
+      assert.equal(matcher.isExactMatch(repoDir), true);
+      assert.equal(matcher.isExactMatch(wtDir), false);
+      assert.equal(await matcher.matchesAsync(wtDir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("caches git common dir lookups across repeated matchesAsync calls", async () => {
+    const calls: string[] = [];
+    const matcher = createRepoCheckoutMatcher("/repo/main", () => "git", async (_bin, cwd) => {
+      calls.push(cwd);
+      return "/repo/main/.git";
+    });
+
+    assert.equal(await matcher.matchesAsync("/repo/wt-1"), true);
+    assert.equal(await matcher.matchesAsync("/repo/wt-1"), true);
+    assert.deepEqual(calls, ["/repo/main", "/repo/wt-1"]);
+  });
+
+  it("rejects unrelated repository asynchronously", async () => {
+    const matcher = createRepoCheckoutMatcher("/repo/a", () => "git", async (_bin, cwd) => {
+      return cwd.startsWith("/repo/a") ? "/repo/a/.git" : "/repo/b/.git";
+    });
+    assert.equal(await matcher.matchesAsync("/repo/b"), false);
   });
 });

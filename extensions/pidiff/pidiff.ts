@@ -104,6 +104,15 @@ export function formatReviewMessage(parsed: { comments: any[]; summary?: string 
  * Excludes subagent children (`PI_SUBAGENT_CHILD=1`), unsupervised RPC sessions,
  * `print`/`json` modes, and missing/stale contexts.
  */
+export function isSupervisedRpcPeerCtx(
+  ctx: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env.PI_SUBAGENT_CHILD === "1") return false;
+  if (!isLiveExtensionCtx(ctx)) return false;
+  return (ctx as { mode?: unknown }).mode === "rpc" && env.PI_COMS_SUPERVISED_PEER === "1";
+}
+
 export function isPidiffConnectableCtx(
   ctx: unknown,
   env: NodeJS.ProcessEnv = process.env,
@@ -138,10 +147,20 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
     return;
   }
 
-  let lockDir = ""; // Set on session_start — write target (.pi/run) or shared repo lock dir for supervised peers
-  let legacyLockDir = ""; // Pre-#1020 read-only fallback (.pi/tmp)
-  let extraLockDirs: string[] = []; // Worktree-local fallback dirs for supervised peers
+  let lockDir = ""; // TUI-owned management lock dir (.pi/run); never points to shared repo dir for supervised peers
+  let legacyLockDir = ""; // Pre-#1020 read-only fallback (.pi/tmp) for TUI-owned management
+  let attachLockDirs: string[] = []; // Read-only lookup dirs used by findRunningPort / getStatusPort
+  let isSupervisedPeerSession = false;
   let activePort = 0;
+
+  function readFirstAttachLockPort(): number | null {
+    for (const dir of attachLockDirs) {
+      if (!dir) continue;
+      const lock = readLockfile(dir);
+      if (lock?.port) return lock.port;
+    }
+    return null;
+  }
 
   function setStatus(ctx: any): void {
     try {
@@ -188,22 +207,18 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
     },
 
     canConnect() {
-      return Boolean(lockDir || pidiffPortOverride);
+      return Boolean(attachLockDirs.length > 0 || pidiffPortOverride);
     },
 
     async findRunningPort() {
-      const preferred = activePort || pidiffPortOverride || readLockfile(lockDir, legacyLockDir)?.port || 0;
+      const preferred = activePort || pidiffPortOverride || readFirstAttachLockPort() || 0;
       if (preferred && await probePidiffHealth(preferred)) return preferred;
       const skipPorts = preferred ? new Set([preferred]) : undefined;
-      return findLiveLockfile([lockDir, legacyLockDir, ...extraLockDirs], skipPorts, probePidiffHealth);
+      return findLiveLockfile(attachLockDirs, skipPorts, probePidiffHealth);
     },
 
     getStatusPort() {
-      return activePort
-        || pidiffPortOverride
-        || readLockfile(lockDir, legacyLockDir)?.port
-        || (extraLockDirs.length ? readLockfile(extraLockDirs[0], extraLockDirs[1])?.port : null)
-        || null;
+      return activePort || pidiffPortOverride || readFirstAttachLockPort() || null;
     },
 
     async acquireSpawnLock(ctx) {
@@ -275,15 +290,24 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
       }
     },
 
-    beforeCommand(_args, ctx) {
+    beforeCommand(args, ctx) {
       if (isLiveExtensionCtx(ctx)) client.setLastCtx(ctx);
+      const action = (args || "").trim().toLowerCase();
+      const supervised = isSupervisedRpcPeerCtx(ctx, registrationEnv)
+        || (!isLiveExtensionCtx(ctx) && isSupervisedPeerSession);
+      if (supervised && (action === "start" || action === "stop" || action === "restart")) {
+        log.warn("supervised_rpc_daemon_mutation_blocked", { action, cwd: ctx?.cwd });
+        return false;
+      }
     },
 
     prepareRestart() {
+      if (!lockDir) return null;
       return activePort || readLockfile(lockDir, legacyLockDir)?.port || null;
     },
 
     stopDaemon() {
+      if (!lockDir) return;
       stopPidiffDaemon(lockDir, legacyLockDir, debugLog);
       activePort = 0;
     },
@@ -306,24 +330,31 @@ export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {
   // Session lifecycle
   pi.on("session_start", async (_event, ctx) => {
     client.setLastCtx(ctx);
+    isSupervisedPeerSession = isSupervisedRpcPeerCtx(ctx, registrationEnv);
     if (!isGitRepo(ctx.cwd)) {
       lockDir = "";
       legacyLockDir = "";
-      extraLockDirs = [];
+      attachLockDirs = [];
       return;
     }
-    if (ctx.mode === "rpc" && registrationEnv.PI_COMS_SUPERVISED_PEER === "1") {
+    if (isSupervisedPeerSession) {
       const repoRoot = resolveRepoRoot(ctx.cwd);
-      lockDir = path.join(repoRoot, ".pi", "run");
-      legacyLockDir = path.join(repoRoot, ".pi", "tmp");
-      extraLockDirs = path.resolve(ctx.cwd) !== path.resolve(repoRoot)
-        ? [path.join(ctx.cwd, ".pi", "run"), path.join(ctx.cwd, ".pi", "tmp")]
-        : [];
-      log.debug("supervised_rpc_lockdirs_resolved", { cwd: ctx.cwd, repoRoot, lockDir });
+      // Supervised peers are strictly attach-only: keep management lockDir empty
+      // so start/stop/restart cannot touch or hijack the main repo's pidiff hub.
+      lockDir = "";
+      legacyLockDir = "";
+      attachLockDirs = [
+        path.join(repoRoot, ".pi", "run"),
+        path.join(repoRoot, ".pi", "tmp"),
+        ...(path.resolve(ctx.cwd) !== path.resolve(repoRoot)
+          ? [path.join(ctx.cwd, ".pi", "run"), path.join(ctx.cwd, ".pi", "tmp")]
+          : []),
+      ];
+      log.debug("supervised_rpc_attach_dirs_resolved", { cwd: ctx.cwd, repoRoot, attachLockDirs });
     } else {
       lockDir = getProjectRunDir(ctx.cwd);
       legacyLockDir = getProjectLegacyRunDir(ctx.cwd);
-      extraLockDirs = [];
+      attachLockDirs = [lockDir, legacyLockDir];
     }
     if (!client.connected && canConnectCtx(ctx)) void client.connect(ctx);
   });

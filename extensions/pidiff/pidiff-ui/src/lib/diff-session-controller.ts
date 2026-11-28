@@ -433,6 +433,26 @@ export function createDiffSessionController(
     }
   }
 
+  function selectWorktree(worktree: Worktree): void {
+    commitsRequested = false;
+    clearRefreshTimer();
+    const sent = Boolean(send({ type: "watch-worktree", worktreePath: worktree.path }));
+    if (sent) armLoadingTimer();
+    else clearLoadingTimer();
+
+    commitState({
+      activeWorktree: worktree,
+      mode: "branch",
+      commits: null,
+      commitFrom: "",
+      commitTo: "",
+      stale: state.staleWorktrees.has(worktree.path),
+      diffData: { mode: "branch", files: [], branch: worktree.branch },
+      refreshing: false,
+      loading: sent,
+    });
+  }
+
   function applyDeepLinkResolution(
     resolved: DeepLinkResolution,
     sessions?: PiSession[],
@@ -446,7 +466,7 @@ export function createDiffSessionController(
     bindSession(resolved.session, { resetWorktree: true, sessions });
     const wt = resolved.worktree;
     if (wt && (!wt.isMain || normalizePath(wt.path) !== normalizePath(resolved.session.cwd))) {
-      switchWorktree(wt);
+      selectWorktree(wt);
     }
   }
 
@@ -507,13 +527,14 @@ export function createDiffSessionController(
       case "sessions-list": {
         if (!Array.isArray(ev.sessions)) return;
         const sessions: PiSession[] = ev.sessions;
-        if (!sessionBound && sessions.length > 0) {
+        if (pendingDeepLink && sessions.length > 0) {
           const deepLinked = resolveDeepLinkTarget(sessions, pendingDeepLink);
           if (deepLinked) {
             applyDeepLinkResolution(deepLinked, sessions);
             return;
           }
-          pendingDeepLink = null;
+        }
+        if (!sessionBound && sessions.length > 0) {
           const saved = state.activeSession ?? readStoredSession(storage);
           const target = saved
             ? sessions.find((s) => s.sessionId === saved.sessionId) || sessions[0]
@@ -543,12 +564,14 @@ export function createDiffSessionController(
         if (!ev.session) return;
         if (state.sessions.some((s) => s.sessionId === ev.session.sessionId)) return;
         const nextSessions = [...state.sessions, ev.session];
-        if (!sessionBound) {
+        if (pendingDeepLink) {
           const deepLinked = resolveDeepLinkTarget(nextSessions, pendingDeepLink);
           if (deepLinked) {
             applyDeepLinkResolution(deepLinked, nextSessions);
             return;
           }
+        }
+        if (!sessionBound) {
           log.info("auto-selected added session", { sessionId: ev.session.sessionId });
           bindSession(ev.session, { resetWorktree: true, sessions: nextSessions });
           return;
@@ -588,6 +611,13 @@ export function createDiffSessionController(
         const nextSessions = state.sessions.map((s) =>
           s.sessionId === ev.session.sessionId ? { ...s, ...ev.session } : s,
         );
+        if (pendingDeepLink) {
+          const deepLinked = resolveDeepLinkTarget(nextSessions, pendingDeepLink);
+          if (deepLinked) {
+            applyDeepLinkResolution(deepLinked, nextSessions);
+            return;
+          }
+        }
         if (state.activeSession?.sessionId === ev.session.sessionId) {
           const nextActive = { ...state.activeSession, ...ev.session };
           writeStoredSession(storage, nextActive);
@@ -604,29 +634,15 @@ export function createDiffSessionController(
   }
 
   function switchSession(session: PiSession): void {
+    pendingDeepLink = null;
     log.info("switchSession", { sessionId: session.sessionId, branch: session.branch });
     bindSession(session, { resetWorktree: true, clearStaleWorktrees: true });
   }
 
   function switchWorktree(worktree: Worktree): void {
+    pendingDeepLink = null;
     log.info("switchWorktree", { worktreePath: worktree.path, branch: worktree.branch });
-    commitsRequested = false;
-    clearRefreshTimer();
-    const sent = Boolean(send({ type: "watch-worktree", worktreePath: worktree.path }));
-    if (sent) armLoadingTimer();
-    else clearLoadingTimer();
-
-    commitState({
-      activeWorktree: worktree,
-      mode: "branch",
-      commits: null,
-      commitFrom: "",
-      commitTo: "",
-      stale: state.staleWorktrees.has(worktree.path),
-      diffData: { mode: "branch", files: [], branch: worktree.branch },
-      refreshing: false,
-      loading: sent,
-    });
+    selectWorktree(worktree);
   }
 
   function switchMode(nextMode: DiffMode): void {

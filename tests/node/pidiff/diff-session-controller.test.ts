@@ -1061,4 +1061,86 @@ describe("createDiffSessionController — URL deep-link selection (#1501)", () =
     ]);
     ctrl.dispose();
   });
+
+  it("switches from fallback to late peer matching pending deep-link on session_added", () => {
+    const sOther = makeSession({
+      sessionId: "other-1",
+      cwd: "/repo/other",
+      branch: "other",
+      worktrees: [{ path: "/repo/other", branch: "other", head: "111", isMain: true }],
+    });
+    const sPeer = makeSession({ sessionId: "peer-1", cwd: "/repo/wt-a", branch: "feat/a" });
+    const sent: object[] = [];
+    const ctrl = createDiffSessionController({
+      send: (m) => { sent.push(m); return true; },
+      locationSearch: "?session=peer-1&worktree=%2Frepo%2Fwt-a&branch=feat%2Fa",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [sOther] });
+    assert.equal(ctrl.getState().activeSession?.sessionId, "other-1");
+
+    sent.length = 0;
+    ctrl.handleMessage({ type: "session_added", session: sPeer });
+
+    assert.equal(ctrl.getState().activeSession?.sessionId, "peer-1");
+    assert.equal(ctrl.getState().activeWorktree?.path, "/repo/wt-a");
+    assert.equal(ctrl.getState().mode, "branch");
+    assert.deepEqual(sent, [
+      { type: "watch", sessionId: "peer-1" },
+      { type: "watch-worktree", worktreePath: "/repo/wt-a" },
+    ]);
+    ctrl.dispose();
+  });
+
+  it("preserves manual switchSession over pending deep-link when late peer arrives", () => {
+    const sOther = makeSession({
+      sessionId: "other-1",
+      cwd: "/repo/other",
+      branch: "other",
+      worktrees: [{ path: "/repo/other", branch: "other", head: "111", isMain: true }],
+    });
+    const sManual = makeSession({
+      sessionId: "manual-1",
+      cwd: "/repo/manual",
+      branch: "manual",
+      worktrees: [{ path: "/repo/manual", branch: "manual", head: "222", isMain: true }],
+    });
+    const sPeer = makeSession({ sessionId: "peer-1", cwd: "/repo/wt-a", branch: "feat/a" });
+    const ctrl = createDiffSessionController({
+      send: () => true,
+      locationSearch: "?session=peer-1&worktree=%2Frepo%2Fwt-a&branch=feat%2Fa",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [sOther, sManual] });
+    ctrl.switchSession(sManual);
+    ctrl.handleMessage({ type: "session_added", session: sPeer });
+
+    assert.equal(ctrl.getState().activeSession?.sessionId, "manual-1");
+    ctrl.dispose();
+  });
+
+  it("preserves manual switchWorktree over pending deep-link when late peer arrives", () => {
+    const sOther = makeSession({
+      sessionId: "other-1",
+      cwd: "/repo/other",
+      branch: "other",
+      worktrees: [
+        { path: "/repo/other", branch: "other", head: "111", isMain: true },
+        WORKTREE_B,
+      ],
+    });
+    const sPeer = makeSession({ sessionId: "peer-1", cwd: "/repo/wt-a", branch: "feat/a" });
+    const ctrl = createDiffSessionController({
+      send: () => true,
+      locationSearch: "?session=peer-1&worktree=%2Frepo%2Fwt-a&branch=feat%2Fa",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [sOther] });
+    ctrl.switchWorktree(WORKTREE_B);
+    ctrl.handleMessage({ type: "session_added", session: sPeer });
+
+    assert.equal(ctrl.getState().activeSession?.sessionId, "other-1");
+    assert.equal(ctrl.getState().activeWorktree?.path, WORKTREE_B.path);
+    ctrl.dispose();
+  });
 });

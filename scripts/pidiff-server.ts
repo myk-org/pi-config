@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 import { createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import {
   batchReadGitObjects,
-  isSameGitRepoCheckout,
+  createRepoCheckoutMatcher,
   parseDiffEntries,
   parseWorktreeList,
   type FileContentsData,
@@ -75,6 +75,8 @@ function resolveGitBin(): string {
 
 // Initial resolution
 resolveGitBin();
+
+const repoCheckoutMatcher = createRepoCheckoutMatcher(PROJECT_CWD, () => GIT_BIN);
 
 function gitExec(args: string[], cwd: string): string {
   try {
@@ -334,36 +336,50 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
       const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
       const cwd = parsed.cwd || "";
       if (!cwd) { log(`register rejected: empty cwd from ${sessionId}`); return; }
+      const completeRegister = (worktrees: WorktreeInfo[]) => {
+        if (ws.readyState !== 1) return;
+        const session: SessionInfo = { sessionId, cwd, branch: parsed.branch || "", repo: cwd.split("/").pop() || "", worktrees };
+        const piClient = { ws, session };
+        setPiClient(piClient);
+        piClients.set(sessionId, piClient);
+        log(`session registered: ${sessionId} (${session.repo})`);
+        broadcastToBrowsers({ type: "session_added", session });
+        // Auto-watch for browsers without a session (per-project mode); build payloads once lazily
+        let diffJson: string | null = null;
+        let commitsJson: string | null = null;
+        for (const browser of browserClients) {
+          const watchInfo = browserWatchMap.get(browser);
+          if (!watchInfo?.sessionId) {
+            browserWatchMap.set(browser, { sessionId, worktreePath: null });
+            if (diffJson === null) {
+              const { payload, defaultBranch } = buildDiffPayloadWithBranch(cwd, "branch");
+              diffJson = JSON.stringify(payload);
+              commitsJson = JSON.stringify({ type: "commits-list", commits: getLog(cwd, 30, defaultBranch) });
+            }
+            try { browser.send(diffJson); } catch { browserClients.delete(browser); continue; }
+            try { browser.send(commitsJson!); } catch { browserClients.delete(browser); }
+          }
+        }
+        for (const wt of session.worktrees) startWatching(sessionId, wt.path);
+        if (session.worktrees.length === 0) startWatching(sessionId, session.cwd);
+      };
+
       // In per-project mode, allow the project checkout and linked worktrees of the same repo
-      if (PROJECT_CWD && !isSameGitRepoCheckout(PROJECT_CWD, cwd, GIT_BIN)) {
-        log(`register rejected: cwd ${cwd} does not match PROJECT_CWD ${PROJECT_CWD}`);
+      if (!PROJECT_CWD || repoCheckoutMatcher.isExactMatch(cwd)) {
+        completeRegister(getWorktrees(cwd));
         return;
       }
-      const worktrees = getWorktrees(cwd);
-      const session: SessionInfo = { sessionId, cwd, branch: parsed.branch || "", repo: cwd.split("/").pop() || "", worktrees };
-      const piClient = { ws, session };
-      setPiClient(piClient);
-      piClients.set(sessionId, piClient);
-      log(`session registered: ${sessionId} (${session.repo})`);
-      broadcastToBrowsers({ type: "session_added", session });
-      // Auto-watch for browsers without a session (per-project mode); build payloads once lazily
-      let diffJson: string | null = null;
-      let commitsJson: string | null = null;
-      for (const browser of browserClients) {
-        const watchInfo = browserWatchMap.get(browser);
-        if (!watchInfo?.sessionId) {
-          browserWatchMap.set(browser, { sessionId, worktreePath: null });
-          if (diffJson === null) {
-            const { payload, defaultBranch } = buildDiffPayloadWithBranch(cwd, "branch");
-            diffJson = JSON.stringify(payload);
-            commitsJson = JSON.stringify({ type: "commits-list", commits: getLog(cwd, 30, defaultBranch) });
-          }
-          try { browser.send(diffJson); } catch { browserClients.delete(browser); continue; }
-          try { browser.send(commitsJson!); } catch { browserClients.delete(browser); }
+      void repoCheckoutMatcher.matchesAsync(cwd).then(async (allowed) => {
+        if (!allowed) {
+          log(`register rejected: cwd ${cwd} does not match PROJECT_CWD ${PROJECT_CWD}`);
+          return;
         }
-      }
-      for (const wt of session.worktrees) startWatching(sessionId, wt.path);
-      if (session.worktrees.length === 0) startWatching(sessionId, session.cwd);
+        if (ws.readyState !== 1) return;
+        const worktrees = await getWorktreesAsync(cwd);
+        completeRegister(worktrees);
+      }).catch((err: any) => {
+        slog.warn("register checkout validation failed", { sessionId, cwd, err: err?.message });
+      });
       return;
     }
 
