@@ -62,7 +62,7 @@ import { registerAdvisor } from "./advisor.js";
 import { registerLsp } from "./lsp.js";
 import { registerSnapshots } from "./snapshots.js";
 import { registerQaOverlay } from "./qa-overlay.js";
-import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
+import { assertMinPiVersionOnLoad, ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
@@ -83,6 +83,8 @@ ensureGitSshTimeout();
 const log = createLogger("orchestrator");
 
 export default function (pi: ExtensionAPI) {
+  assertMinPiVersionOnLoad("orchestrator");
+
   // Set global session ID FIRST so all fileLog callers get per-session files.
   pi.on("session_start", (_event, ctx) => {
     const reason = (_event as any)?.reason ?? "unknown";

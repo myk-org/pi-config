@@ -515,6 +515,23 @@ export const MessageItem = memo(function MessageItem({
     return <AskPromptCard msg={msg} onAskResponse={onAskResponse} onLocalAskAnswer={onLocalAskAnswer} hotkeyEnabled={hotkeyEnabled} />;
   }
 
+  if (msg.className === "lsp-startup-summary") {
+    return (
+      <div
+        className="flex items-center justify-between gap-2 min-w-0 py-0.5 text-xs text-muted-foreground"
+        data-testid="lsp-startup-summary"
+      >
+        <div className="flex items-center gap-1.5 min-w-0">
+          {msg.timestamp && <span className="text-[10px] shrink-0">[{formatClock(msg.timestamp)}]</span>}
+          <span className="break-words [overflow-wrap:anywhere] min-w-0">
+            <HighlightText text={msg.text} query={searchQuery} />
+          </span>
+        </div>
+        <CopyOutputButton text={msg.text} compact label="Copy LSP summary" />
+      </div>
+    );
+  }
+
   if (msg.role !== "user" && msg.role !== "assistant") {
     return <CollapsibleMessage msg={msg} searchQuery={searchQuery} />;
   }

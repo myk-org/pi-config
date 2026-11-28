@@ -104,6 +104,7 @@ function createMockPi(getCommandsImpl?: () => unknown[]) {
     registerCommand(name: string, def: any) {
       commands.set(name, def);
     },
+    registerTool() {},
     sendMessage(msg: any, opts: any) {
       messages.push({ msg, opts });
     },

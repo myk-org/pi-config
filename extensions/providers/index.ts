@@ -9,6 +9,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLogger } from "../shared/logger.js";
+import { assertMinPiVersionOnLoad } from "../shared/pi-version.js";
 import { isPiMetaInvocation } from "../orchestrator/utils.js";
 import { registerSessionRestore, type SessionRestoreOptions } from "./session-restore.js";
 
@@ -24,6 +25,8 @@ export default function (
     log.debug("providers skipping session wiring for meta invocation");
     return;
   }
+
+  assertMinPiVersionOnLoad("providers");
 
   registerSessionRestore(pi, {
     thinkingStatePath: testOptions?.thinkingStatePath,

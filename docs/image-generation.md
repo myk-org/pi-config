@@ -6,7 +6,7 @@ Generate images directly in chat using Pi's native `codemode` image API (`models
 
 ## Prerequisites
 
-- `pi` >= 1.6.1 (`pi` >= 1.7.0 for `{ aspectRatio, size }` options and Radius built-in image and classifier models; `pi-config` activates `codemode` automatically on `session_start` in default sessions unless excluded with `--no-tools`, `--exclude-tools`, `--tools -codemode`, or `defaultTools`)
+- `pi` >= 1.7.0 (includes `{ aspectRatio, size }` options and Radius built-in image and classifier models; `pi-config` activates `codemode` automatically on `session_start` in default sessions unless excluded with `--no-tools`, `--exclude-tools`, `--tools -codemode`, or `defaultTools`)
 - Credentials for a provider in Pi's model catalog that exposes an image model, such as OpenRouter (for example `google/gemini-2.5-flash-image` or `black-forest-labs/flux.2-pro`) or Radius (when enabled for the organization)
 
 ## Quick Example

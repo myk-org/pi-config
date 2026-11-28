@@ -13,6 +13,9 @@ import comsP2p, { PENDING_REPLY_CLEANUP_DELAY_MS } from "../../../extensions/com
 import { resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 const STALE_CTX_ERROR = "This extension ctx is stale after session replacement or reload";
 
@@ -57,6 +60,10 @@ function createFakePi(flags: Record<string, any>): FakePi {
 			tools.set(tool.name, tool);
 		},
 		registerCommand() {},
+		registerMessageRenderer() {},
+		getActiveTools() { return []; },
+		getAllTools() { return []; },
+		setActiveTools() {},
 		on(name: string, fn: Function) {
 			handlers.set(name, fn);
 		},

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,14 +11,20 @@ import {
   buildPeerContainerName,
   buildPeerImageTag,
   buildPodmanRunArgs,
+  clearCachedHostPiVersion,
   computePeerImageHash,
   detectHostPiVersion,
   isBuildLockActive,
   isSelinuxEnforcing,
+  isValidPeerContainerName,
+  prepareSandboxWorkspace,
   pruneStalePeerImages,
   readBuildStatus,
   resolveImageForSpawn,
+  resolveImageForSpawnAsync,
+  resolveSandboxBaseDir,
   rewriteRemoteToHttps,
+  startBackgroundPeerImageBuild,
   validateBaseImage,
 } from "../../../scripts/podman-peer-image.mjs";
 import { ComsRegistry, isRegistryRowAlive } from "../../../extensions/coms/coms-registry.ts";
@@ -44,7 +51,19 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function initTempGitRepo(dir: string, filename = "a.txt", content = "v1\n"): string {
+  fs.mkdirSync(dir, { recursive: true });
+  execFileSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Test User"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir, stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, filename), content);
+  execFileSync("git", ["add", filename], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: dir, stdio: "ignore" });
+  return execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+}
+
 afterEach(() => {
+  clearCachedHostPiVersion();
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()!;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -183,10 +202,17 @@ describe("Peer image validation", () => {
     assert.equal(ver, "1.8.2");
   });
 
-  it("rejects host Pi version below MIN_PI_VERSION", () => {
+  it("rejects host Pi version below MIN_PI_VERSION with actionable pi update guidance", () => {
     assert.throws(
-      () => detectHostPiVersion({ execFileSync: () => "1.5.0\n", minVersion: MIN_PI_VERSION }),
-      /below required minimum/,
+      () => detectHostPiVersion({ execFileSync: () => "1.6.1\n", minVersion: MIN_PI_VERSION }),
+      /below required minimum.*pi update/,
+    );
+  });
+
+  it("includes pi update guidance when Pi version output cannot be parsed", () => {
+    assert.throws(
+      () => detectHostPiVersion({ execFileSync: () => "unknown\n", minVersion: MIN_PI_VERSION }),
+      /Could not parse.*pi update/,
     );
   });
 });
@@ -230,6 +256,7 @@ describe("Content-hash peer image tags", () => {
 });
 
 describe("Host-agnostic Podman run argv builder", () => {
+  const expectedContainer = buildPeerContainerName("my-project", "worker-1");
   const baseRunOpts = {
     imageTag: "localhost/pi-peer:abcdef012345",
     uid: 12345,
@@ -251,8 +278,29 @@ describe("Host-agnostic Podman run argv builder", () => {
     env: { GITHUB_TOKEN: "ghp_secret_value" },
   };
 
-  it("builds deterministic pi-peer-<project>-<cname> names", () => {
-    assert.equal(buildPeerContainerName("My_Project", "Worker_01"), "pi-peer-my_project-worker_01");
+  it("builds deterministic identity-hashed pi-peer names", () => {
+    const n1 = buildPeerContainerName("My_Project", "Worker_01");
+    assert.match(n1, /^pi-peer-my_project-worker_01-[a-f0-9]{8}$/);
+    assert.equal(n1, buildPeerContainerName("My_Project", "Worker_01"));
+  });
+
+  it("assigns distinct container names when peer identities differ only in case", () => {
+    const lower = buildPeerContainerName("proj", "worker");
+    const upper = buildPeerContainerName("Proj", "Worker");
+    assert.notEqual(lower, upper);
+  });
+
+  it("assigns distinct container names when long peer names share a 26-char prefix", () => {
+    const a = buildPeerContainerName("my-project", "very-long-worker-name-prefix-alpha");
+    const b = buildPeerContainerName("my-project", "very-long-worker-name-prefix-beta");
+    assert.notEqual(a, b);
+  });
+
+  it("rejects non-peer or flag-like container names in isValidPeerContainerName", () => {
+    assert.equal(isValidPeerContainerName("-a"), false);
+    assert.equal(isValidPeerContainerName("--all"), false);
+    assert.equal(isValidPeerContainerName("other-container"), false);
+    assert.equal(isValidPeerContainerName(expectedContainer), true);
   });
 
   it("rewrites SCP-style SSH git remotes to HTTPS", () => {
@@ -261,6 +309,13 @@ describe("Host-agnostic Podman run argv builder", () => {
 
   it("rewrites ssh:// git remotes to HTTPS", () => {
     assert.equal(rewriteRemoteToHttps("ssh://git@github.com/myk-org/pi-config.git"), "https://github.com/myk-org/pi-config.git");
+  });
+
+  it("strips embedded credentials from HTTPS git remotes", () => {
+    assert.equal(
+      rewriteRemoteToHttps("https://user:secret-token@github.com/myk-org/pi-config.git"), // pragma: allowlist secret
+      "https://github.com/myk-org/pi-config.git",
+    );
   });
 
   it("detects SELinux enforcing state from /sys/fs/selinux/enforce", () => {
@@ -304,6 +359,19 @@ describe("Host-agnostic Podman run argv builder", () => {
     }
   });
 
+  it("mounts only the peer project registry and sockets dir instead of the full coms root", () => {
+    const argv = buildPodmanRunArgs(baseRunOpts);
+    assert.equal(argv.includes(`${baseRunOpts.comsDir}:${baseRunOpts.comsDir}:rw`), false);
+    assert.ok(argv.includes(`${path.join(baseRunOpts.comsDir, "projects", "my-project")}:${path.join(baseRunOpts.comsDir, "projects", "my-project")}:rw`));
+    assert.ok(argv.includes(`${path.join(baseRunOpts.comsDir, "sockets")}:${path.join(baseRunOpts.comsDir, "sockets")}:rw`));
+  });
+
+  it("places sandbox directories outside ~/.pi/coms", () => {
+    const base = resolveSandboxBaseDir("/tmp/fake-home");
+    assert.equal(base, path.join("/tmp/fake-home", ".pi", "sandboxes"));
+    assert.equal(base.includes("coms"), false);
+  });
+
   it("sets PI_PIDASH_HOST to host.containers.internal", () => {
     const argv = buildPodmanRunArgs(baseRunOpts);
     assert.ok(argv.includes("PI_PIDASH_HOST=host.containers.internal"));
@@ -316,7 +384,7 @@ describe("Host-agnostic Podman run argv builder", () => {
 
   it("sets PI_COMS_CONTAINER_NAME to deterministic container name", () => {
     const argv = buildPodmanRunArgs(baseRunOpts);
-    assert.ok(argv.includes("PI_COMS_CONTAINER_NAME=pi-peer-my-project-worker-1")); // pragma: allowlist secret
+    assert.ok(argv.includes(`PI_COMS_CONTAINER_NAME=${expectedContainer}`));
   });
 
   it("mounts host pi-orchestrator-config read-only at /opt/pi-config", () => {
@@ -343,6 +411,77 @@ describe("Host-agnostic Podman run argv builder", () => {
   });
 });
 
+describe("Sandbox workspace isolation", () => {
+  it("rejects non-Git host directories instead of mounting them writable", () => {
+    const nonGit = makeTempDir("pi-nongit-");
+    const sandboxDir = makeTempDir("pi-sandbox-");
+    assert.throws(
+      () => prepareSandboxWorkspace({ sandboxDir, sourceCwd: nonGit, project: "proj", cname: "w1" }),
+      /requires a Git repository/,
+    );
+  });
+
+  it("clones Git objects with distinct inodes via --no-hardlinks", () => {
+    const srcRepo = makeTempDir("pi-src-repo-");
+    const sandboxDir = makeTempDir("pi-sb-clone-");
+    initTempGitRepo(srcRepo);
+    const { workspaceDir } = prepareSandboxWorkspace({ sandboxDir, sourceCwd: srcRepo, project: "proj", cname: "w1" });
+
+    const findFirstLooseObject = (repoPath: string): string => {
+      const objRoot = path.join(repoPath, ".git", "objects");
+      for (const entry of fs.readdirSync(objRoot)) {
+        if (!/^[a-f0-9]{2}$/.test(entry)) continue;
+        const sub = path.join(objRoot, entry);
+        for (const file of fs.readdirSync(sub)) {
+          return path.join(sub, file);
+        }
+      }
+      throw new Error("no loose git object found");
+    };
+
+    const srcObj = findFirstLooseObject(srcRepo);
+    const relObj = path.relative(path.join(srcRepo, ".git", "objects"), srcObj);
+    const dstObj = path.join(workspaceDir, ".git", "objects", relObj);
+    assert.ok(fs.existsSync(dstObj), "cloned loose object should exist");
+    assert.notEqual(fs.statSync(srcObj).ino, fs.statSync(dstObj).ino);
+  });
+
+  it("re-clones when source repository path changes for the same peer name", () => {
+    const repoA = makeTempDir("pi-repo-a-");
+    const repoB = makeTempDir("pi-repo-b-");
+    const sandboxDir = makeTempDir("pi-sb-switch-");
+    initTempGitRepo(repoA, "only-a.txt", "A\n");
+    initTempGitRepo(repoB, "only-b.txt", "B\n");
+
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repoA, project: "proj", cname: "w1" });
+    assert.equal(fs.existsSync(path.join(first.workspaceDir, "only-a.txt")), true);
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repoB, project: "proj", cname: "w1" });
+    assert.equal(second.cloned, true);
+    assert.equal(fs.existsSync(path.join(second.workspaceDir, "only-b.txt")), true);
+    assert.equal(fs.existsSync(path.join(second.workspaceDir, "only-a.txt")), false);
+  });
+
+  it("reuses the existing sandbox clone on revive when cwd equals workspaceDir", () => {
+    const srcRepo = makeTempDir("pi-repo-revive-");
+    const sandboxDir = makeTempDir("pi-sb-revive-");
+    initTempGitRepo(srcRepo);
+
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: srcRepo, project: "proj", cname: "w1" });
+    fs.writeFileSync(path.join(first.workspaceDir, "uncommitted.txt"), "keep-me\n");
+
+    const revived = prepareSandboxWorkspace({
+      sandboxDir,
+      sourceCwd: first.workspaceDir,
+      project: "proj",
+      cname: "w1",
+    });
+    assert.equal(revived.revived, true);
+    assert.equal(revived.cloned, false);
+    assert.equal(fs.readFileSync(path.join(revived.workspaceDir, "uncommitted.txt"), "utf8"), "keep-me\n");
+  });
+});
+
 describe("File-locked background pre-warm", () => {
   it("prevents duplicate lock acquisition while owner PID is alive", () => {
     const dir = makeTempDir("pi-lock-");
@@ -364,6 +503,33 @@ describe("File-locked background pre-warm", () => {
     const acquired = acquireBuildLock(lockPath, { pid: process.pid, targetTag: "localhost/pi-peer:new" }, () => true);
     assert.equal(acquired.acquired, true);
     acquired.release();
+  });
+
+  it("writes building status before spawning worker so fast worker ready status is preserved", () => {
+    const dir = makeTempDir("pi-race-");
+    const statusPath = path.join(dir, "build.status.json");
+    const lockPath = path.join(dir, "build.lock");
+    const logPath = path.join(dir, "podman-build.log");
+    startBackgroundPeerImageBuild({
+      homeDir: dir,
+      lockPath,
+      statusPath,
+      logPath,
+      packageRoot: REPO_ROOT,
+      piVersion: "1.7.0",
+      execFileSync: (_cmd: string, args: string[]) => {
+        if (args[0] === "--version") return "podman version 6.2.0";
+        if (args[0] === "image" && args[1] === "exists") throw new Error("not found");
+        return "";
+      },
+      spawn: () => {
+        // Simulate fast worker finishing immediately and publishing ready before spawn returns
+        fs.writeFileSync(statusPath, JSON.stringify({ state: "ready", targetTag: "localhost/pi-peer:fast", logPath }));
+        return { pid: 55551, unref() {} };
+      },
+    });
+    const finalSnap = readBuildStatus({ lockPath, statusPath, logPath, pidAliveFn: () => false });
+    assert.equal(finalSnap.state, "ready");
   });
 
   it("boots immediately on prior cached tag while target tag builds in background", () => {
@@ -388,6 +554,23 @@ describe("File-locked background pre-warm", () => {
     assert.equal(res.usingFallback, true);
     assert.equal(res.imageTag, "localhost/pi-peer:000011112222");
     assert.equal(spawned, 1);
+  });
+
+  it("resolves target image asynchronously via resolveImageForSpawnAsync", async () => {
+    const dir = makeTempDir("pi-async-");
+    const res = await resolveImageForSpawnAsync({
+      homeDir: dir,
+      packageRoot: REPO_ROOT,
+      piVersion: "1.7.0",
+      execFile: async (_cmd: string, args: string[]) => {
+        if (args[0] === "--version") return { stdout: "podman version 6.2.0" };
+        if (args[0] === "image" && args[1] === "exists") return { stdout: "" };
+        return { stdout: "" };
+      },
+    });
+    assert.equal(res.action, "run");
+    assert.equal(res.usingFallback, false);
+    assert.match(res.imageTag ?? "", /^localhost\/pi-peer:[a-f0-9]{12}$/);
   });
 
   it("returns non-blocking building status on cold first build with no cached image", () => {
@@ -452,7 +635,7 @@ describe("COMS registry container liveness", () => {
       contextUsedPct: 10,
       startedAt: new Date().toISOString(),
       heartbeatAt: new Date().toISOString(),
-      container: "pi-peer-proj-ctr-peer",
+      container: buildPeerContainerName("proj", "ctr-peer"),
       hostPid: null,
       ...overrides,
     };
@@ -476,6 +659,7 @@ describe("COMS registry container liveness", () => {
   it("reads container field from registry JSON via ComsRegistry", () => {
     const dir = makeTempDir("pi-reg-");
     const reg = new ComsRegistry(dir);
+    const ctrName = buildPeerContainerName("demo", "box-peer");
     reg.writeEntryAtomic({
       coms_session_id: "sess-1",
       name: "box-peer",
@@ -488,17 +672,19 @@ describe("COMS registry container liveness", () => {
       started_at: new Date().toISOString(),
       explicit: false,
       version: 1,
-      container: "pi-peer-demo-box-peer",
+      container: ctrName,
       host_pid: process.pid,
     }, "demo");
     const rows = reg.readRows();
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].container, "pi-peer-demo-box-peer");
+    assert.equal(rows[0].container, ctrName);
     assert.equal(rows[0].hostPid, process.pid);
   });
 });
 
 describe("Container-aware peer kill", () => {
+  const verifiedBoxContainer = buildPeerContainerName("proj", "box");
+
   it("selects containerized live peers even when pid is 0", () => {
     const row: RegistryRow = {
       project: "proj",
@@ -512,14 +698,14 @@ describe("Container-aware peer kill", () => {
       contextUsedPct: 0,
       startedAt: new Date().toISOString(),
       heartbeatAt: new Date().toISOString(),
-      container: "pi-peer-proj-box",
+      container: verifiedBoxContainer,
     };
     const sel = selectKillTargets([row], { name: "box" }, () => true);
     assert.equal(sel.targets.length, 1);
   });
 
-  it("attaches container name in planPeerKills for supervised containerized peer", () => {
-    const records = [{ cname: "box", project: "proj", pid: 4000, childPid: 4001, container: "pi-peer-proj-box" }];
+  it("attaches verified container name from host supervision record in planPeerKills", () => {
+    const records = [{ cname: "box", project: "proj", pid: 4000, childPid: 4001, container: verifiedBoxContainer }];
     const row: RegistryRow = {
       project: "proj",
       name: "box",
@@ -532,7 +718,7 @@ describe("Container-aware peer kill", () => {
       contextUsedPct: 0,
       startedAt: new Date().toISOString(),
       heartbeatAt: new Date().toISOString(),
-      container: "pi-peer-proj-box",
+      container: verifiedBoxContainer,
     };
     const plan = planPeerKills({
       rows: [row],
@@ -544,22 +730,71 @@ describe("Container-aware peer kill", () => {
     assert.equal(plan.length, 1);
     assert.equal(plan[0].reason, "supervisor");
     assert.equal(plan[0].signalPid, 4000);
-    assert.equal(plan[0].container, "pi-peer-proj-box");
+    assert.equal(plan[0].container, verifiedBoxContainer);
   });
 
-  it("invokes container removal via podman rm -f in executePeerKillEntry", () => {
+  it("ignores tampered registry container flags like -a in planPeerKills", () => {
+    const records = [{ cname: "box", project: "proj", pid: 4000, childPid: 4001, container: verifiedBoxContainer }];
+    const row: RegistryRow = {
+      project: "proj",
+      name: "box",
+      pid: 0,
+      hostPid: 1,
+      cwd: "/tmp/work",
+      purpose: "",
+      endpoint: "/tmp/a.sock",
+      busy: false,
+      queueDepth: 0,
+      contextUsedPct: 0,
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      container: "-a",
+    };
+    const plan = planPeerKills({
+      rows: [row],
+      supervisedKeys: supervisedPeerKeys(records),
+      records,
+      request: { name: "box", project: "proj" },
+      isAlive: () => true,
+    });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].container, verifiedBoxContainer);
+    assert.equal(plan[0].signalPid, 4000);
+  });
+
+  it("signals host supervisor first for graceful shutdown in executePeerKillEntry", () => {
     const removed: string[] = [];
     const killed: Array<[number, string]> = [];
     const ok = executePeerKillEntry(
-      { name: "box", project: "proj", signalPid: 4000, container: "pi-peer-proj-box", reason: "supervisor" },
+      { name: "box", project: "proj", signalPid: 4000, container: verifiedBoxContainer, reason: "supervisor" },
       {
         removeContainer: (c) => removed.push(c),
         killPid: (pid, sig) => killed.push([pid, sig]),
       },
     );
     assert.equal(ok, true);
-    assert.deepEqual(removed, ["pi-peer-proj-box"]);
     assert.deepEqual(killed, [[4000, "SIGTERM"]]);
+    assert.deepEqual(removed, []);
+  });
+
+  it("falls back to container removal when no live supervisor is available", () => {
+    const removed: string[] = [];
+    const ok = executePeerKillEntry(
+      { name: "box", project: "proj", signalPid: null, container: verifiedBoxContainer, reason: "peer" },
+      { removeContainer: (c) => removed.push(c) },
+    );
+    assert.equal(ok, true);
+    assert.deepEqual(removed, [verifiedBoxContainer]);
+  });
+
+  it("refuses flag-like container names in executePeerKillEntry", () => {
+    const removed: string[] = [];
+    const ok = executePeerKillEntry(
+      { name: "box", project: "proj", signalPid: null, container: "-a", reason: "peer" },
+      { removeContainer: (c) => removed.push(c) },
+    );
+    assert.equal(ok, false);
+    assert.deepEqual(removed, []);
   });
 
   it("appends podman sandbox flags in buildPeerSpawn", () => {
@@ -603,9 +838,9 @@ describe("Container-aware peer kill", () => {
       contextUsedPct: 12,
       startedAt: null,
       heartbeatAt: null,
-      container: "pi-peer-proj-box",
+      container: verifiedBoxContainer,
     }]);
-    assert.match(table, /🐳 pi-peer-proj-box/);
+    assert.ok(table.includes(`🐳 ${verifiedBoxContainer}`));
   });
 
   it("renders container line in formatPeerDetailLines", () => {
@@ -622,9 +857,9 @@ describe("Container-aware peer kill", () => {
       contextUsedPct: 12,
       startedAt: null,
       heartbeatAt: null,
-      container: "pi-peer-proj-box",
+      container: verifiedBoxContainer,
     });
-    assert.ok(lines.some((line) => line.includes("container pi-peer-proj-box")));
+    assert.ok(lines.some((line) => line.includes(`container ${verifiedBoxContainer}`)));
   });
 
   it("renders Container detail row in buildPeerInfoRow", () => {
@@ -632,26 +867,30 @@ describe("Container-aware peer kill", () => {
       name: "box",
       project: "proj",
       busy: false,
-      container: "pi-peer-proj-box",
+      container: verifiedBoxContainer,
     });
-    assert.ok(row.items[0].detail.some(([k, v]) => k === "Container" && v === "pi-peer-proj-box"));
-    assert.ok(row.items[0].detail.some(([k, v]) => k === "Shell" && v === "podman exec -it pi-peer-proj-box bash"));
+    assert.ok(row.items[0].detail.some(([k, v]) => k === "Container" && v === verifiedBoxContainer));
+    assert.ok(row.items[0].detail.some(([k, v]) => k === "Shell" && v === `podman exec -it ${verifiedBoxContainer} bash`));
   });
 
-  it("preserves container metadata on stopped supervised peer rows", () => {
+  it("records explicit sandbox mode on stopped supervised peer rows", () => {
     const stopped = listStoppedSupervisedPeers(
-      [{ cname: "box", project: "proj", container: "pi-peer-proj-box", exitedAt: "2026-11-28T00:00:00.000Z" }],
+      [
+        { cname: "box", project: "proj", container: verifiedBoxContainer, sandbox: "podman", exitedAt: "2026-11-28T00:00:02.000Z" },
+        { cname: "native", project: "proj", exitedAt: "2026-11-28T00:00:01.000Z" },
+      ],
       [],
     );
-    assert.equal(stopped.length, 1);
-    assert.equal(stopped[0].container, "pi-peer-proj-box");
+    assert.equal(stopped.length, 2);
+    assert.equal(stopped[0].sandbox, "podman");
+    assert.equal(stopped[1].sandbox, "off");
   });
 
   it("propagates container field in buildComsPeersPayload", () => {
     const payload = buildComsPeersPayload(
-      [{ name: "box", purpose: "test", model: "m", color: "#ffffff", busy: false, queue_depth: 0, context_used_pct: 5, container: "pi-peer-proj-box", staleCount: 0 }],
+      [{ name: "box", purpose: "test", model: "m", color: "#ffffff", busy: false, queue_depth: 0, context_used_pct: 5, container: verifiedBoxContainer, staleCount: 0 }],
       { name: "main", project: "proj" },
     );
-    assert.equal(payload.peers[0].container, "pi-peer-proj-box");
+    assert.equal(payload.peers[0].container, verifiedBoxContainer);
   });
 });

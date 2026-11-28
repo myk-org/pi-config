@@ -27,9 +27,11 @@ import {
   buildPodmanRunArgs,
   isPidAlive,
   isSelinuxEnforcing,
+  isValidPeerContainerName,
+  prepareSandboxWorkspace,
   resolveHostGitIdentity,
-  resolveHostOriginHttpsUrl,
   resolvePackageRoot,
+  resolveSandboxBaseDir,
 } from "./podman-peer-image.mjs";
 
 // Provenance, read before the env is scrubbed below: a supervisor started from an agent's bash
@@ -157,48 +159,6 @@ function resolveHostAgentDir() {
   return path.join(os.homedir(), ".pi", "agent");
 }
 
-function prepareSandboxWorkspace(sandboxDir, sourceCwd) {
-  let isGit = false;
-  try {
-    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
-      cwd: sourceCwd,
-      stdio: "ignore",
-      timeout: 3000,
-    });
-    isGit = true;
-  } catch {
-    isGit = false;
-  }
-
-  if (!isGit) {
-    return sourceCwd;
-  }
-
-  const workspaceDir = path.join(sandboxDir, "workspace");
-  if (!fs.existsSync(path.join(workspaceDir, ".git"))) {
-    fs.mkdirSync(sandboxDir, { recursive: true, mode: 0o700 });
-    fs.rmSync(workspaceDir, { recursive: true, force: true });
-    execFileSync("git", ["clone", "--local", sourceCwd, workspaceDir], {
-      stdio: "ignore",
-      timeout: 120_000,
-    });
-    const httpsOrigin = resolveHostOriginHttpsUrl(sourceCwd);
-    if (httpsOrigin) {
-      try {
-        execFileSync("git", ["remote", "set-url", "origin", httpsOrigin], {
-          cwd: workspaceDir,
-          stdio: "ignore",
-          timeout: 5000,
-        });
-      } catch (err) {
-        log.warn("sandbox_origin_rewrite_failed", { error: err?.message ?? String(err) });
-      }
-    }
-    log.info("sandbox_workspace_cloned", { sourceCwd, workspaceDir, httpsOrigin: Boolean(httpsOrigin) });
-  }
-  return workspaceDir;
-}
-
 function prepareSandboxAgentDir(sandboxDir, hostAgentDir) {
   const agentDir = path.join(sandboxDir, "agent-dir");
   fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
@@ -269,19 +229,41 @@ function startPodmanPeer() {
     process.exit(1);
   }
   const containerName = buildPeerContainerName(project, cname);
+  if (!isValidPeerContainerName(containerName)) {
+    log.error("podman_invalid_container_name", { containerName, cname, project });
+    process.exit(1);
+  }
   const pkgRoot = resolvePackageRoot(import.meta.url);
   const entrypointPath = path.join(pkgRoot, "scripts", "podman-peer-entrypoint.sh");
   const hostAgentDir = resolveHostAgentDir();
-  const sandboxDir = path.join(comsBase, "sandboxes", containerName);
+  // Keep per-container sandboxes outside comsBase (`~/.pi/sandboxes/<container>`) so peers
+  // cannot access other peers' workspaces or host supervision records in `~/.pi/coms/peers/`.
+  const sandboxDir = path.join(resolveSandboxBaseDir(), containerName);
   fs.mkdirSync(sandboxDir, { recursive: true, mode: 0o700 });
+  // Ensure minimal COMS subdirectories exist before bind-mounting into container.
+  fs.mkdirSync(path.join(comsBase, "projects", project, "agents"), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(comsBase, "sockets"), { recursive: true, mode: 0o700 });
 
-  const workspacePath = prepareSandboxWorkspace(sandboxDir, cwd);
+  let workspacePath;
+  try {
+    const ws = prepareSandboxWorkspace({ sandboxDir, sourceCwd: cwd, project, cname, logger: log });
+    workspacePath = ws.workspaceDir;
+  } catch (err) {
+    const msg = err?.message ?? String(err);
+    log.error("sandbox_workspace_prepare_failed", { containerName, cwd, error: msg });
+    writeStateRecord(
+      { childPid: null, cwd, container: containerName, image: imageTag, sandbox: "podman" },
+      { failedAt: new Date().toISOString(), failure: msg },
+    );
+    process.exit(1);
+  }
+
   const { agentDir, hostAuthJsonPath, hostModelsJsonPath } = prepareSandboxAgentDir(sandboxDir, hostAgentDir);
   const gitconfigSeedPath = writeGitconfigSeed(sandboxDir, cwd);
 
-  // Stop any previous container with the same deterministic name
+  // Stop any previous container with the same verified identity-hashed container name.
   try {
-    execFileSync("podman", ["rm", "-f", containerName], { stdio: "ignore", timeout: 15_000 });
+    execFileSync("podman", ["rm", "-f", "--", containerName], { stdio: "ignore", timeout: 15_000 });
   } catch { /* not running */ }
 
   const containerEnv = scrubPeerEnv();
@@ -333,7 +315,7 @@ function startPodmanPeer() {
   let hostPid = null;
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      const raw = execFileSync("podman", ["inspect", "-f", "{{.State.Pid}}", containerName], {
+      const raw = execFileSync("podman", ["inspect", "-f", "{{.State.Pid}}", "--", containerName], {
         encoding: "utf8",
         timeout: 5000,
       }).trim();
@@ -367,13 +349,16 @@ function startPodmanPeer() {
   let stopping = false;
   let stopSignal = null;
   let stoppedAt = null;
+  let forced = false;
+  let forceTimer = null;
   let exited = false;
 
   const finalize = (code, signal) => {
     if (exited) return;
     exited = true;
     clearInterval(pollTimer);
-    log.info("podman_peer_exited", { containerName, code, signal });
+    if (forceTimer) clearTimeout(forceTimer);
+    log.info("podman_peer_exited", { containerName, code, signal, forced });
     const { owned, preservedSessionId } = preserveSessionAndCheckOwner();
     if (!owned) process.exit(0);
     writeStateRecord(baseFields, {
@@ -382,6 +367,7 @@ function startPodmanPeer() {
       exitedAt: new Date().toISOString(),
       exitCode: code,
       exitSignal: signal,
+      ...(forced ? { forced: true } : {}),
     });
     process.exit(0);
   };
@@ -391,21 +377,48 @@ function startPodmanPeer() {
     stopping = true;
     stopSignal = signal;
     stoppedAt = new Date().toISOString();
-    log.info("podman_peer_stopping", { containerName, signal });
-    try {
-      execFileSync("podman", ["rm", "-f", containerName], { stdio: "ignore", timeout: Math.max(STOP_TIMEOUT_MS, 10_000) });
-    } catch { /* already stopped/removed */ }
-    finalize(0, signal);
+    const stopSeconds = Math.max(1, Math.ceil(STOP_TIMEOUT_MS / 1000));
+    log.info("podman_peer_stopping_graceful", { containerName, signal, stopSeconds });
+
+    // Orderly stop first (`podman stop -t N -- <container>` sends SIGTERM to init -> entrypoint
+    // closes Pi stdin & stops gracefully), then clean up container and finalize after exit.
+    const stopper = spawn("podman", ["stop", "-t", String(stopSeconds), "--", containerName], {
+      stdio: "ignore",
+    });
+    stopper.on("exit", () => {
+      try {
+        execFileSync("podman", ["rm", "-f", "--", containerName], { stdio: "ignore", timeout: 10_000 });
+      } catch { /* already removed */ }
+      finalize(0, signal);
+    });
+    stopper.on("error", () => {
+      forced = true;
+      try {
+        execFileSync("podman", ["rm", "-f", "--", containerName], { stdio: "ignore", timeout: 10_000 });
+      } catch { /* already removed */ }
+      finalize(0, signal);
+    });
+
+    forceTimer = setTimeout(() => {
+      forced = true;
+      log.warn("podman_peer_stop_escalated", { containerName, timeoutMs: STOP_TIMEOUT_MS });
+      try {
+        execFileSync("podman", ["rm", "-f", "--", containerName], { stdio: "ignore", timeout: 10_000 });
+      } catch { /* already gone */ }
+      finalize(0, signal);
+    }, STOP_TIMEOUT_MS + 3000);
+    forceTimer.unref?.();
   };
 
   process.on("SIGTERM", () => stopContainer("SIGTERM"));
   process.on("SIGINT", () => stopContainer("SIGINT"));
   process.on("SIGHUP", () => stopContainer("SIGHUP"));
 
-  const waiter = spawn("podman", ["wait", containerName], { stdio: ["ignore", "pipe", "ignore"] });
+  const waiter = spawn("podman", ["wait", "--", containerName], { stdio: ["ignore", "pipe", "ignore"] });
   let waitOut = "";
   waiter.stdout.on("data", (d) => { waitOut += String(d); });
   waiter.on("exit", () => {
+    if (stopping) return; // stopContainer finalizes after container removal
     const parsedCode = Number.parseInt(waitOut.trim(), 10);
     finalize(Number.isInteger(parsedCode) ? parsedCode : null, null);
   });
@@ -414,7 +427,7 @@ function startPodmanPeer() {
   });
 
   const pollTimer = setInterval(() => {
-    if (hostPid && !isPidAlive(hostPid)) {
+    if (!stopping && hostPid && !isPidAlive(hostPid)) {
       finalize(null, null);
     }
   }, 5000);

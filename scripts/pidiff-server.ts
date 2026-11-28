@@ -318,12 +318,34 @@ interface PiClient {
   session: SessionInfo;
 }
 
+function isLoopbackAddr(addr: string | undefined): boolean {
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
+
+function isPrivateOrContainerAddr(addr: string | undefined): boolean {
+  if (!addr) return false;
+  if (isLoopbackAddr(addr)) return true;
+  const v4 = addr.startsWith("::ffff:") ? addr.slice(7) : addr;
+  return /^(?:10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.)/.test(v4) || /^(?:fe80:|fc|fd)/i.test(addr);
+}
+
+const listenAddress = (process.env.PI_PIDIFF_LISTEN_HOST || "").trim() || "127.0.0.1";
+
 const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToMatchingBrowsers, start } = createDaemonServer({
   port,
   uiDir: resolveUiDir(process.argv[1], import.meta.url, "..", "extensions", "pidiff", "pidiff-ui", "dist"),
   uiName: "pidiff-ui",
   log,
-  listenAddress: "127.0.0.1",
+  listenAddress,
+  // When bound beyond loopback for opt-in Podman sandbox peers, keep browser UI and /api/sessions
+  // strictly loopback-only; allow private/container gateway clients ONLY on /api/health and /ws/pi
+  // (where register additionally enforces exact PROJECT_CWD match).
+  allowRequest: listenAddress === "127.0.0.1"
+    ? undefined
+    : (pathname, remoteAddress) => {
+        if (isLoopbackAddr(remoteAddress)) return true;
+        return (pathname === "/api/health" || pathname === "/ws/pi") && isPrivateOrContainerAddr(remoteAddress);
+      },
 
   onPiMessage: (ws, parsed, getPiClient, setPiClient) => {
     if (parsed.type === "register") {

@@ -181,6 +181,7 @@ describe("registerAsyncAgents.reviveAsyncJob integration (#1417)", () => {
       },
       registerCommand: () => {},
       registerTool: () => {},
+      registerMessageRenderer: () => {},
       events: { on: () => () => {}, emit: () => {} },
       sendMessage: () => {},
     } as unknown as ExtensionAPI;
@@ -280,6 +281,7 @@ describe("registerAsyncAgents.reviveAsyncJob integration (#1417)", () => {
       },
       registerCommand: () => {},
       registerTool: () => {},
+      registerMessageRenderer: () => {},
       events: { on: () => () => {}, emit: () => {} },
       sendMessage: () => {},
     } as unknown as ExtensionAPI;

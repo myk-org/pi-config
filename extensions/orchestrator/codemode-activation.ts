@@ -14,7 +14,6 @@ export interface CodemodeActivationResult {
     | "already_active"
     | "excluded"
     | "not_registered"
-    | "api_unavailable"
     | "error";
   /** Number of extension tools activated directly as a fallback when codemode is unavailable. */
   fallbackCount?: number;
@@ -124,10 +123,8 @@ export function isCodemodeExcludedByArgv(argv: readonly string[] = process.argv)
 
 /** Check Pi settings `defaultTools` for an explicit `-<name>` exclusion. */
 function isToolExcludedBySettings(pi: ExtensionAPI, toolName: string): boolean {
-  const getSettings = (pi as any).getSettings;
-  if (typeof getSettings !== "function") return false;
   try {
-    const defaultTools = getSettings.call(pi)?.defaultTools;
+    const defaultTools = pi.getSettings()?.defaultTools;
     if (!Array.isArray(defaultTools)) return false;
     let excluded = false;
     for (const entry of defaultTools) {
@@ -143,10 +140,8 @@ function isToolExcludedBySettings(pi: ExtensionAPI, toolName: string): boolean {
 
 /** Check Pi settings `defaultTools` for an explicit selection of `toolName` (plain entry or `+name`, not later removed by `-name`). */
 function isToolSelectedBySettings(pi: ExtensionAPI, toolName: string): boolean {
-  const getSettings = (pi as any).getSettings;
-  if (typeof getSettings !== "function") return false;
   try {
-    const defaultTools = getSettings.call(pi)?.defaultTools;
+    const defaultTools = pi.getSettings()?.defaultTools;
     if (!Array.isArray(defaultTools)) return false;
     // Match Pi's resolveDefaultTools: plain names form the base set, then +name/-name modifiers apply in order.
     let selected = defaultTools.some(
@@ -232,15 +227,6 @@ export function ensureCodemodeActive(
   pi: ExtensionAPI,
   argv: readonly string[] = process.argv,
 ): CodemodeActivationResult {
-  if (
-    typeof (pi as any).getAllTools !== "function" ||
-    typeof (pi as any).getActiveTools !== "function" ||
-    typeof (pi as any).setActiveTools !== "function"
-  ) {
-    log.debug("codemode_auto_activate_skipped", { reason: "api_unavailable" });
-    return { activated: false, reason: "api_unavailable" };
-  }
-
   const parsedArgv = parseToolArgv(argv);
 
   try {

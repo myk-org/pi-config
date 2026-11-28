@@ -51,6 +51,8 @@ child.on("error", (err) => {
 });
 for (const sig of ["SIGTERM", "SIGINT"]) {
   process.on(sig, () => {
+    // Close stdin first so Pi runs its graceful EOF shutdown sequence before receiving signal.
+    try { child.stdin.end(); } catch {}
     try { child.kill(sig); } catch {}
   });
 }

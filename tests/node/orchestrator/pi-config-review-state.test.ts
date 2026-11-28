@@ -680,6 +680,7 @@ describe("commit gate honours git -C", () => {
       on: (name: string, handler: Function) => hooks.set(name, handler),
       registerTool: () => {},
       registerCommand: () => {},
+      getAllTools: () => [],
     } as any);
   });
 

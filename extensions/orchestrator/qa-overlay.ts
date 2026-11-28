@@ -1214,7 +1214,7 @@ export function registerQaOverlay(
   });
 
   const configuredKey = resolveConfiguredQaShortcut(options.cwd || process.cwd());
-  if (configuredKey && typeof (pi as { registerShortcut?: unknown }).registerShortcut === "function") {
+  if (configuredKey) {
     try {
       pi.registerShortcut(configuredKey, {
         description: "Open /qa human Q&A reader overlay",
@@ -1280,9 +1280,7 @@ export function registerQaOverlay(
       if (matched?.isCron) {
         if (trimmed !== matched.rawCmd) {
           try {
-            if (typeof (pi as any).appendEntry === "function") {
-              (pi as any).appendEntry(CRON_USER_MESSAGE_ENTRY_TYPE, { command: trimmed });
-            }
+            pi.appendEntry(CRON_USER_MESSAGE_ENTRY_TYPE, { command: trimmed });
           } catch (err: unknown) {
             log.warn("qa_cron_provenance_record_failed", {
               error: err instanceof Error ? err.message : String(err),

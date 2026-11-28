@@ -29,13 +29,14 @@ import {
 } from "../shared/widget-visibility.js";
 import { Type } from "typebox";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { getSetting } from "../orchestrator/project-settings.js";
 import {
+    isValidPeerContainerName,
     readBuildStatus,
-    resolveImageForSpawn,
-    startBackgroundPeerImageBuild,
+    resolveImageForSpawnAsync,
+    startBackgroundPeerImageBuildAsync,
 } from "../../scripts/podman-peer-image.mjs";
 import {
     activationVerified,
@@ -80,8 +81,13 @@ export interface ExecutePeerKillDeps {
 
 /**
  * Stop one planned peer kill entry.
- * For containerized peers (#1512), runs `podman rm -f <container>` AND signals the host
- * supervisor so its state record cleans up cleanly.
+ * For containerized peers (#1512):
+ * 1. Validates container name against `VALID_PEER_CONTAINER_RE` before any Podman invocation.
+ * 2. Signals the host supervisor (`SIGTERM`) FIRST when `reason === "supervisor"`, letting the
+ *    supervisor perform graceful `podman stop -t N -- <container>` followed by cleanup without
+ *    blocking the interactive session event loop.
+ * 3. Falls back to detached non-blocking `podman rm -f -- <container>` only when no live
+ *    supervisor was signalled (e.g. retired/crashed supervisor).
  */
 export function executePeerKillEntry(
     entry: KillPlanEntry,
@@ -89,37 +95,46 @@ export function executePeerKillEntry(
 ): boolean {
     const killPid = deps.killPid ?? ((pid: number, sig: NodeJS.Signals) => { process.kill(pid, sig); });
     const removeContainer = deps.removeContainer ?? ((containerName: string) => {
-        execFileSync("podman", ["rm", "-f", containerName], { stdio: "ignore", timeout: 15_000 });
+        const child = spawn("podman", ["rm", "-f", "--", containerName], { detached: true, stdio: "ignore" });
+        child.unref();
     });
 
-    let stopped = false;
-    if (entry.container) {
-        try {
-            removeContainer(entry.container);
-            stopped = true;
-            log.info("coms_peer_container_removed", { name: entry.name, project: entry.project, container: entry.container });
-        } catch (error: unknown) {
-            log.warn("coms_peer_container_remove_failed", {
-                name: entry.name,
-                container: entry.container,
-                error: error instanceof Error ? error.message : String(error),
-            });
-        }
+    const validContainer = entry.container && isValidPeerContainerName(entry.container) ? entry.container : null;
+    if (entry.container && !validContainer) {
+        log.warn("coms_peer_container_name_rejected", { name: entry.name, project: entry.project, container: entry.container });
     }
+
+    let supervisorSignalled = false;
     if (entry.signalPid !== null && entry.signalPid > 0) {
         try {
             killPid(entry.signalPid, "SIGTERM");
-            stopped = true;
+            supervisorSignalled = entry.reason === "supervisor";
+            if (!validContainer) return true;
         } catch (error: unknown) {
             log.warn("coms_peer_kill failed", {
                 name: entry.name,
                 pid: entry.signalPid,
-                container: entry.container ?? null,
+                container: validContainer,
                 error: error instanceof Error ? error.message : String(error),
             });
         }
     }
-    return stopped;
+
+    if (validContainer && !supervisorSignalled) {
+        try {
+            removeContainer(validContainer);
+            log.info("coms_peer_container_remove_dispatched", { name: entry.name, project: entry.project, container: validContainer });
+            return true;
+        } catch (error: unknown) {
+            log.warn("coms_peer_container_remove_failed", {
+                name: entry.name,
+                container: validContainer,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+
+    return supervisorSignalled;
 }
 
 export interface RegisterComsOptions {
@@ -222,19 +237,20 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             return;
         }
         if (mode !== "podman") return;
-        // Run non-blockingly off the session_start / settings event tick
+        // Run fully async off the session_start / settings event tick so interactive TUI never stalls.
         setImmediate(() => {
-            try {
-                const baseImage = String(getSetting(cwd, "coms_peer_sandbox_base_image") || "");
-                const bg = startBackgroundPeerImageBuild({ baseImage: baseImage || undefined });
-                if (bg.status === "building") {
-                    trackPodmanBuildProgress(ctx, bg.targetTag, bg.logPath);
-                } else if (bg.status === "error") {
-                    log.warn("podman_prewarm_failed", { error: bg.error });
-                }
-            } catch (err: unknown) {
-                log.warn("podman_prewarm_threw", { error: err instanceof Error ? err.message : String(err) });
-            }
+            const baseImage = String(getSetting(cwd, "coms_peer_sandbox_base_image") || "");
+            void startBackgroundPeerImageBuildAsync({ baseImage: baseImage || undefined })
+                .then((bg) => {
+                    if (bg.status === "building") {
+                        trackPodmanBuildProgress(ctx, bg.targetTag, bg.logPath);
+                    } else if (bg.status === "error") {
+                        log.warn("podman_prewarm_failed", { error: bg.error });
+                    }
+                })
+                .catch((err: unknown) => {
+                    log.warn("podman_prewarm_threw", { error: err instanceof Error ? err.message : String(err) });
+                });
         });
     };
 
@@ -581,7 +597,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                     project: scope === "all" ? undefined : ownProject(),
                 });
             },
-            revivePeer: (row) => {
+            revivePeer: async (row) => {
                 const key = `${row.project}::${row.name}`;
                 const now = Date.now();
                 const liveAll = getRegistry().readLiveRows(now);
@@ -611,16 +627,24 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                         revivingPeers.delete(key);
                     }
                 };
-                const res = spawnSupervisedPeer({
+                // Preserve the stopped peer's original sandbox mode explicitly ("off" for native peers,
+                // never undefined which would flip a native peer into a container when global setting changes).
+                const recordedSandbox: "off" | "podman" =
+                    row.sandbox === "podman" || Boolean(row.container) ? "podman" : "off";
+                const res = await spawnSupervisedPeer({
                     cname: row.name,
                     purpose: row.purpose,
                     project: row.project,
                     cwd: row.cwd || liveCtx?.cwd || process.cwd(),
                     session: row.piSessionId ?? undefined,
-                    sandbox: row.container ? "podman" : undefined,
+                    sandbox: recordedSandbox,
                     onSpawnFailure: releaseOwnClaim,
                 });
                 if (!res.ok) {
+                    releaseOwnClaim();
+                    return { ok: false, reason: res.message };
+                }
+                if (res.building) {
                     releaseOwnClaim();
                     return { ok: false, reason: res.message };
                 }
@@ -730,11 +754,26 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
     const attachCreatedBy = (rows: RegistryRow[], records = readSupervisionRecords()): RegistryRow[] => {
         for (const row of rows) {
             const record = pickSupervisionRecord(records, row);
-            if (record && typeof (record as any).createdBy === "string") row.createdBy = (record as any).createdBy;
-            if (record && !row.container && typeof (record as any).container === "string" && (record as any).container.trim()) {
-                row.container = (record as any).container.trim();
+            if (!record) continue;
+            if (typeof (record as any).createdBy === "string") row.createdBy = (record as any).createdBy;
+            const recContainer =
+                typeof (record as any).container === "string" && (record as any).container.trim()
+                    ? (record as any).container.trim()
+                    : null;
+            const isPodmanRecord = (record as any).sandbox === "podman" || Boolean(recContainer);
+            if (recContainer && !row.container) {
+                row.container = recContainer;
             }
-            if (record && !row.hostPid && Number.isInteger((record as any).childPid) && (record as any).childPid > 0) {
+            // Only populate hostPid from supervision record for containerized peers whose container matches
+            // — never let a stale record's childPid override a live native peer's row.pid.
+            if (
+                isPodmanRecord &&
+                recContainer &&
+                row.container === recContainer &&
+                !row.hostPid &&
+                Number.isInteger((record as any).childPid) &&
+                (record as any).childPid > 0
+            ) {
                 row.hostPid = (record as any).childPid;
             }
         }
@@ -788,7 +827,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         }
     };
 
-    const spawnSupervisedPeer = (params: {
+    const spawnSupervisedPeer = async (params: {
         cname?: string | null;
         purpose?: string | null;
         project?: string | null;
@@ -796,7 +835,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
         session?: string | null;
         sandbox?: "off" | "podman" | null;
         onSpawnFailure?: () => void;
-    }): { ok: true; pid: number | null; building?: boolean; message: string } | { ok: false; pid: null; message: string } => {
+    }): Promise<{ ok: true; pid: number | null; building?: boolean; message: string } | { ok: false; pid: null; message: string }> => {
         const here = path.dirname(fileURLToPath(import.meta.url));
         const supervisor = [
             path.join(here, "..", "..", "scripts", "coms-peer-supervisor.mjs"),
@@ -822,7 +861,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
 
         if (effectiveSandbox === "podman") {
             const baseImage = String(getSetting(resolvedCwd, "coms_peer_sandbox_base_image") || "");
-            const imgRes = resolveImageForSpawn({ baseImage: baseImage || undefined });
+            const imgRes = await resolveImageForSpawnAsync({ baseImage: baseImage || undefined });
             if (imgRes.action === "error") {
                 log.warn("coms_peer_spawn_podman_error", { cname: params.cname, error: imgRes.error });
                 return { ok: false, pid: null, message: `coms peer spawn (podman): ${imgRes.error}` };
@@ -971,7 +1010,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
                 })),
             }),
             async execute(_id: string, params: any) {
-                const res = spawnSupervisedPeer({
+                const res = await spawnSupervisedPeer({
                     cname: params?.cname,
                     purpose: params?.purpose,
                     project: params?.project ?? ownProject(),

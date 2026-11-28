@@ -118,6 +118,8 @@ function createIntegratedHarness(
       if (spec.name === "cron_manage") cronTool = spec;
     },
     registerCommand() {},
+    registerMessageRenderer() {},
+    appendEntry() {},
     sendMessage(message: any, options?: any) {
       messages.push({ message, options });
     },

@@ -7,8 +7,12 @@ import * as pidashReact from "../../../extensions/pidash/pidash-ui/node_modules/
 import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import { createRoot, type Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
 import { resolvePidashHost } from "../../../extensions/pidash/pidash.ts";
-import { resolvePidiffHost } from "../../../extensions/pidiff/pidiff.ts";
-import { registerPidashSession, type PiClient } from "../../../scripts/pidash-session-state.ts";
+import { resolvePidiffHost, resolvePidiffListenHost } from "../../../extensions/pidiff/pidiff.ts";
+import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
+import { isLoopbackAddress, registerPidashSession, type PiClient } from "../../../scripts/pidash-session-state.ts";
+import { createDaemonServer } from "../../../scripts/daemon-shared.ts";
+import fs from "node:fs";
+import os from "node:os";
 import type { SessionInfo } from "../../../extensions/shared/types.ts";
 import { elements, installReactDomShim } from "./react-dom-shim.mjs";
 
@@ -58,6 +62,56 @@ describe("Native daemon host resolution", () => {
 
   it("honors PI_PIDIFF_HOST override", () => {
     assert.equal(resolvePidiffHost({ PI_PIDIFF_HOST: "host.containers.internal" }), "host.containers.internal");
+  });
+
+  it("defaults resolvePidiffListenHost to 127.0.0.1 when sandbox is off", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pidiff-listen-"));
+    setGlobalSettingsPath(path.join(tmpDir, "global.json"));
+    try {
+      clearSettingsCache();
+      assert.equal(resolvePidiffListenHost(tmpDir), "127.0.0.1");
+    } finally {
+      setGlobalSettingsPath(null);
+      clearSettingsCache();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 0.0.0.0 from resolvePidiffListenHost when coms_peer_sandbox is podman", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pidiff-listen-podman-"));
+    const globalFile = path.join(tmpDir, "global.json");
+    fs.writeFileSync(globalFile, JSON.stringify({ coms_peer_sandbox: "podman" }));
+    setGlobalSettingsPath(globalFile);
+    try {
+      clearSettingsCache();
+      assert.equal(resolvePidiffListenHost(tmpDir), "0.0.0.0");
+    } finally {
+      setGlobalSettingsPath(null);
+      clearSettingsCache();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects non-loopback HTTP requests when allowRequest denies remoteAddress", async () => {
+    const daemon = createDaemonServer({
+      port: 0,
+      uiDir: os.tmpdir(),
+      uiName: "test-ui",
+      log: () => {},
+      allowRequest: (_pathname, remoteAddress) => remoteAddress === "10.99.99.99",
+      onPiMessage: () => {},
+      onPiClose: () => {},
+    });
+    await new Promise<void>((resolve) => daemon.server.listen(0, "127.0.0.1", resolve));
+    try {
+      const addr = daemon.server.address() as { port: number };
+      const res = await fetch(`http://127.0.0.1:${addr.port}/api/health`);
+      assert.equal(res.status, 403);
+      assert.equal(isLoopbackAddress("192.168.1.50"), false);
+      assert.equal(isLoopbackAddress("127.0.0.1"), true);
+    } finally {
+      await new Promise<void>((resolve) => daemon.server.close(() => resolve()));
+    }
   });
 });
 

@@ -26,6 +26,9 @@ import {
 	resetSessionBridge,
 } from "../../../extensions/shared/session-bridge.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 const MIN = 60_000;
 const BASE_MS = 2 * MIN;

@@ -161,6 +161,7 @@ pi-config/
 │   │   ├── session-bridge.ts        # Unified per-session globalThis[Symbol.for(...)] Map bridge (taskStore, workload, malformedRecovery, comsActive, streamLoopAborted) with auto-pruning (#1364, #1374)
 │   │   ├── file-lock.ts             # Shared cross-process file/dir locking + syncSleep
 │   │   ├── pi-agent-dir.ts          # resolvePiAgentDir, extractAgentDirFromArgv, normalizeAgentDir, withPropagatedPiAgentDirEnv helpers (Pi 1.7.0 `--agent-dir` + `PI_CODING_AGENT_DIR`, used by restore-default-model, last-thinking-level, session-search, openai-compatible-discovery, subagent-child-spec, coms-wrapper)
+│   │   ├── pi-version.ts            # Shared process-authoritative MIN_PI_VERSION floor check, semver comparison, per-process caching, and assertMinPiVersionOnLoad() guard across all standalone extensions
 │   │   ├── pi-agent-dir-parser.mjs  # Shared value-aware `--agent-dir` argv parser & tilde/path normalizer (consumed by pi-agent-dir.ts and scripts/coms-peer-supervisor.mjs; typed via pi-agent-dir-parser.d.mts)
 │   │   ├── secret-patterns.mjs      # Shared built-in credential regexes & env-var secret filters (consumed by secret-obfuscation.ts and scripts/diagnostic-report-collect.mjs; typed via secret-patterns.d.mts)
 │   │   ├── tool-namespaces.ts       # Shared Pi 1.6 ToolNamespace definitions (memory, coms, tasks, trail, runtime) and read-only annotation constant

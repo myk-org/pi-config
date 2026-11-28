@@ -10,6 +10,9 @@ import { fakeCommandCtx } from "../helpers/fake-extension-ctx.js";
 import { tasksOverlayDeps, taskDetailRows } from "../../../extensions/pitasks/tasks-view.js";
 import { registerTaskTools } from "../../../extensions/pitasks/task-tools.js";
 import { autoCompleteTask, autoMarkInProgress } from "../../../extensions/orchestrator/task-lifecycle.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 const creator = { type: "local" as const, origin: "user", session: "", project: "" };
 for (const status of ["in_progress", "completed"]) {

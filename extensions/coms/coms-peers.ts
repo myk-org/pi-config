@@ -10,6 +10,7 @@ import { formatWorkloadSuffix, type PeerWorkloadCounts } from "./coms-workload.j
 import { sanitizePeerText } from "./peer-text.js";
 import { createLogger } from "../shared/logger.js";
 import type { HistoryRecord } from "./coms-history.js";
+import { buildPeerContainerName, isValidPeerContainerName } from "../../scripts/podman-peer-image.mjs";
 import {
   formatActivityEventPlain,
   type ActivityCategory,
@@ -51,6 +52,8 @@ export interface RegistryRow {
   container?: string | null;
   /** #1512: real host PID (`State.Pid`) for a containerized peer when known. */
   hostPid?: number | null;
+  /** #1512: recorded sandbox runtime mode (`"off"` | `"podman"`) for stopped-peer revive fidelity. */
+  sandbox?: "off" | "podman" | null;
 }
 
 /** Shape of a supervisor state JSON written to `~/.pi/coms/peers/<cname>@<project>.json`. */
@@ -249,19 +252,44 @@ export function planPeerKills(args: {
       (r) => r?.cname === row.name && (r?.project ?? "default") === row.project,
     );
     if (!record) return { name: row.name, project: row.project, signalPid: null, reason: "stale-record" };
-    const container = row.container || (typeof record.container === "string" && record.container.trim() ? record.container.trim() : null);
+    // #1512: derive container kill target strictly from the host-owned supervision record
+    // verified against the deterministic identity-hashed container name (never trust an
+    // arbitrary peer-written registry container name or peer-written host_pid).
+    const expectedContainer = buildPeerContainerName(row.project, row.name);
+    const recordContainer =
+      typeof record.container === "string" && isValidPeerContainerName(record.container.trim())
+        ? record.container.trim()
+        : null;
+    const verifiedContainer = recordContainer === expectedContainer ? recordContainer : null;
+    const isContainerized = Boolean(verifiedContainer);
+
     // A retired record is leftover bookkeeping, not a reason to leave a LIVE peer running.
     if (record.stoppedAt || record.exitedAt || record.failedAt) {
-      return { name: row.name, project: row.project, signalPid: row.hostPid ?? row.pid ?? null, ...(container ? { container } : {}), reason: "peer" };
+      return {
+        name: row.name,
+        project: row.project,
+        signalPid: isContainerized ? null : (row.pid ?? null),
+        ...(verifiedContainer ? { container: verifiedContainer } : {}),
+        reason: "peer",
+      };
     }
-    // Signal the supervisor when its recorded child or container matches this peer.
-    if (
-      Number.isInteger(record.pid) &&
-      (record.childPid === row.pid || (row.hostPid && record.childPid === row.hostPid) || (container && record.container === container))
-    ) {
-      return { name: row.name, project: row.project, signalPid: record.pid as number, ...(container ? { container } : {}), reason: "supervisor" };
+    // Signal the host supervisor when its recorded child matches or it owns the verified container.
+    if (Number.isInteger(record.pid) && (record.childPid === row.pid || Boolean(verifiedContainer))) {
+      return {
+        name: row.name,
+        project: row.project,
+        signalPid: record.pid as number,
+        ...(verifiedContainer ? { container: verifiedContainer } : {}),
+        reason: "supervisor",
+      };
     }
-    return { name: row.name, project: row.project, signalPid: row.hostPid ?? row.pid ?? null, ...(container ? { container } : {}), reason: "peer" };
+    return {
+      name: row.name,
+      project: row.project,
+      signalPid: isContainerized ? null : (row.pid ?? null),
+      ...(verifiedContainer ? { container: verifiedContainer } : {}),
+      reason: "peer",
+    };
   });
 }
 
@@ -545,6 +573,7 @@ export function listStoppedSupervisedPeers(
         exitCode: typeof record.exitCode === "number" ? record.exitCode : null,
         workload: null,
         container: typeof record.container === "string" && record.container.trim() ? record.container.trim() : null,
+        sandbox: record.sandbox === "podman" || (typeof record.container === "string" && record.container.trim().length > 0) ? "podman" : "off",
       },
     });
   }

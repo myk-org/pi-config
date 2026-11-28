@@ -67,6 +67,10 @@ function makeFakePi(flags: Record<string, unknown> = {}) {
 		getFlag: (name: string) => flags[name],
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: (name: string, def: any) => commands.set(name, def),
+		registerMessageRenderer: () => {},
+		getActiveTools: () => [],
+		getAllTools: () => [],
+		setActiveTools: () => {},
 		on: (event: string, fn: Function) => {
 			const list = handlers.get(event) ?? [];
 			list.push(fn);

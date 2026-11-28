@@ -1,26 +1,33 @@
 #!/usr/bin/env node
 /**
  * Host-agnostic rootless Podman COMS peer image builder, tag hasher,
- * non-blocking file-locked background pre-warm, and `podman run` argv builder.
+ * non-blocking file-locked background pre-warm, workspace isolator, and `podman run` argv builder.
  *
  * Zero hardcoded host paths, usernames, UIDs, or Pi versions.
  * All runtime logging goes through `createLoggerCore` (never `console.*`).
  */
 
-import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { createLoggerCore } from "../extensions/shared/logger-core.mjs";
+
+const execFileAsync = promisify(execFile);
 
 export const DEFAULT_BASE_IMAGE = "registry.fedoraproject.org/fedora:45";
 export const IMAGE_REPO = "localhost/pi-peer";
-export const MIN_PI_VERSION = "1.6.1";
+/** Kept in sync with `extensions/shared/pi-version.ts`. */
+export const MIN_PI_VERSION = "1.7.0";
 export const DEFAULT_PIDS_LIMIT = 512;
 export const DEFAULT_PIDASH_HOST = "host.containers.internal";
 export const DEFAULT_PIDIFF_HOST = "host.containers.internal";
+
+/** Strict validation pattern for deterministic Podman peer container names (`pi-peer-...`). */
+export const VALID_PEER_CONTAINER_RE = /^pi-peer-[a-z0-9][a-z0-9._-]{0,55}$/;
 
 export const DEFAULT_PASSTHROUGH_ENV_KEYS = [
   "GITHUB_TOKEN",
@@ -37,6 +44,12 @@ export const DEFAULT_PASSTHROUGH_ENV_KEYS = [
 ];
 
 const LEVEL_ORDER = { off: -1, debug: 0, info: 1, warn: 2, error: 3 };
+
+let cachedHostPiVersion = null;
+
+export function clearCachedHostPiVersion() {
+  cachedHostPiVersion = null;
+}
 
 export function createPodmanLogger(logPath = resolveDefaultBuildPaths().logPath) {
   const levelName = (process.env.PI_LOG_COMS || process.env.PI_LOG_LEVEL || "info").toLowerCase();
@@ -58,8 +71,17 @@ export function resolveDefaultBuildPaths(homeDir = os.homedir()) {
   };
 }
 
+/** Per-container sandboxes live under `~/.pi/sandboxes/<container>` — outside `~/.pi/coms/`. */
+export function resolveSandboxBaseDir(homeDir = os.homedir()) {
+  return path.join(homeDir, ".pi", "sandboxes");
+}
+
 export function resolvePackageRoot(moduleUrl = import.meta.url) {
   return path.resolve(path.dirname(fileURLToPath(moduleUrl)), "..");
+}
+
+export function isValidPeerContainerName(value) {
+  return typeof value === "string" && VALID_PEER_CONTAINER_RE.test(value);
 }
 
 export function validateBaseImage(baseImage) {
@@ -108,26 +130,85 @@ export function compareSemver(a, b) {
   return pa.patch - pb.patch;
 }
 
-export function detectHostPiVersion(opts = {}) {
-  const execFn = opts.execFileSync ?? execFileSync;
-  const minVersion = opts.minVersion ?? MIN_PI_VERSION;
-  let raw = opts.piVersion;
-  if (!raw) {
-    try {
-      raw = String(execFn("pi", ["--version"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] })).trim();
-    } catch (err) {
-      throw new Error(`Could not detect host Pi version via \`pi --version\`: ${err?.message ?? err}`);
+function readPiVersionFromEnvPackageDir() {
+  const dir = (process.env.PI_PACKAGE_DIR || "").trim();
+  if (!dir) return null;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+    if (pkg?.name === "@earendil-works/pi-coding-agent" && typeof pkg.version === "string") {
+      return pkg.version;
     }
-  }
+  } catch { /* fall through */ }
+  return null;
+}
+
+function validateParsedPiVersion(raw, minVersion) {
   const parsed = parseSemver(raw);
   if (!parsed) {
-    throw new Error(`Could not parse host Pi version "${raw}"; requires >= ${minVersion}`);
+    throw new Error(
+      `Could not parse host Pi version "${raw}"; requires >= ${minVersion}. Run \`pi update\` and restart Pi.`,
+    );
   }
   const cmp = compareSemver(parsed.version, minVersion);
   if (cmp === null || cmp < 0) {
-    throw new Error(`Host Pi version ${parsed.version} is below required minimum ${minVersion}`);
+    throw new Error(
+      `Host Pi version ${parsed.version} is below required minimum ${minVersion}. Run \`pi update\` and restart Pi.`,
+    );
   }
   return parsed.version;
+}
+
+export function detectHostPiVersion(opts = {}) {
+  const minVersion = opts.minVersion ?? MIN_PI_VERSION;
+  const hasCustomOverride = Boolean(opts.piVersion || opts.execFileSync);
+  if (!hasCustomOverride && cachedHostPiVersion) {
+    return validateParsedPiVersion(cachedHostPiVersion, minVersion);
+  }
+
+  let raw = opts.piVersion;
+  if (!raw && !opts.execFileSync) {
+    raw = readPiVersionFromEnvPackageDir();
+  }
+  if (!raw) {
+    const execFn = opts.execFileSync ?? execFileSync;
+    try {
+      raw = String(execFn("pi", ["--version"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] })).trim();
+    } catch (err) {
+      throw new Error(
+        `Could not detect host Pi version via \`pi --version\`: ${err?.message ?? err}. Run \`pi update\` and restart Pi.`,
+      );
+    }
+  }
+  const version = validateParsedPiVersion(raw, minVersion);
+  if (!hasCustomOverride) cachedHostPiVersion = version;
+  return version;
+}
+
+export async function detectHostPiVersionAsync(opts = {}) {
+  const minVersion = opts.minVersion ?? MIN_PI_VERSION;
+  const hasCustomOverride = Boolean(opts.piVersion || opts.execFile);
+  if (!hasCustomOverride && cachedHostPiVersion) {
+    return validateParsedPiVersion(cachedHostPiVersion, minVersion);
+  }
+
+  let raw = opts.piVersion;
+  if (!raw && !opts.execFile) {
+    raw = readPiVersionFromEnvPackageDir();
+  }
+  if (!raw) {
+    const execFn = opts.execFile ?? execFileAsync;
+    try {
+      const out = await execFn("pi", ["--version"], { encoding: "utf8", timeout: 5000 });
+      raw = String(typeof out === "string" ? out : out?.stdout ?? "").trim();
+    } catch (err) {
+      throw new Error(
+        `Could not detect host Pi version via \`pi --version\`: ${err?.message ?? err}. Run \`pi update\` and restart Pi.`,
+      );
+    }
+  }
+  const version = validateParsedPiVersion(raw, minVersion);
+  if (!hasCustomOverride) cachedHostPiVersion = version;
+  return version;
 }
 
 export function computePeerImageHash(inputs) {
@@ -145,14 +226,8 @@ export function buildPeerImageTag(hash) {
   return `${IMAGE_REPO}:${hash}`;
 }
 
-export function resolveTargetPeerImage(opts = {}) {
+function finalizeTargetPeerImage(opts, baseImageValue, piVersion) {
   const pkgRoot = opts.packageRoot ?? resolvePackageRoot();
-  const baseImageInput = opts.baseImage ?? DEFAULT_BASE_IMAGE;
-  const baseCheck = validateBaseImage(baseImageInput);
-  if (!baseCheck.ok) {
-    throw new Error(baseCheck.error);
-  }
-  const piVersion = detectHostPiVersion({ piVersion: opts.piVersion, execFileSync: opts.execFileSync });
   const containerfilePath = opts.containerfilePath ?? path.join(pkgRoot, "Containerfile.peer");
   const installPyPath = opts.installPyPath ?? path.join(pkgRoot, "scripts", "install.py");
   const installSourcesPath = opts.installSourcesPath ?? path.join(pkgRoot, "scripts", "install_sources.py");
@@ -166,11 +241,11 @@ export function resolveTargetPeerImage(opts = {}) {
     containerfileContent,
     installPyContent,
     installSourcesContent,
-    baseImage: baseCheck.value,
+    baseImage: baseImageValue,
     piVersion,
   });
   return {
-    baseImage: baseCheck.value,
+    baseImage: baseImageValue,
     piVersion,
     hash,
     tag: buildPeerImageTag(hash),
@@ -180,7 +255,27 @@ export function resolveTargetPeerImage(opts = {}) {
   };
 }
 
-export function sanitizeContainerToken(value, maxLen = 26) {
+export function resolveTargetPeerImage(opts = {}) {
+  const baseImageInput = opts.baseImage ?? DEFAULT_BASE_IMAGE;
+  const baseCheck = validateBaseImage(baseImageInput);
+  if (!baseCheck.ok) {
+    throw new Error(baseCheck.error);
+  }
+  const piVersion = detectHostPiVersion({ piVersion: opts.piVersion, execFileSync: opts.execFileSync });
+  return finalizeTargetPeerImage(opts, baseCheck.value, piVersion);
+}
+
+export async function resolveTargetPeerImageAsync(opts = {}) {
+  const baseImageInput = opts.baseImage ?? DEFAULT_BASE_IMAGE;
+  const baseCheck = validateBaseImage(baseImageInput);
+  if (!baseCheck.ok) {
+    throw new Error(baseCheck.error);
+  }
+  const piVersion = await detectHostPiVersionAsync({ piVersion: opts.piVersion, execFile: opts.execFile });
+  return finalizeTargetPeerImage(opts, baseCheck.value, piVersion);
+}
+
+export function sanitizeContainerToken(value, maxLen = 20) {
   const cleaned = String(value ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
@@ -191,10 +286,18 @@ export function sanitizeContainerToken(value, maxLen = 26) {
   return cleaned || "peer";
 }
 
+/**
+ * Deterministic, collision-free Podman container name for a `(project, cname)` identity.
+ * Appends an 8-char SHA-256 suffix of exact `${project}\0${cname}` so identities differing
+ * only in case or beyond the display prefix never collide.
+ */
 export function buildPeerContainerName(project, cname) {
-  const proj = sanitizeContainerToken(project, 26);
-  const name = sanitizeContainerToken(cname, 26);
-  return `pi-peer-${proj}-${name}`;
+  const exactProject = String(project ?? "");
+  const exactCname = String(cname ?? "");
+  const proj = sanitizeContainerToken(exactProject, 20);
+  const name = sanitizeContainerToken(exactCname, 20);
+  const hash8 = createHash("sha256").update(`${exactProject}\0${exactCname}`).digest("hex").slice(0, 8);
+  return `pi-peer-${proj}-${name}-${hash8}`;
 }
 
 export function isSelinuxEnforcing(readFileFn = fs.readFileSync) {
@@ -205,20 +308,41 @@ export function isSelinuxEnforcing(readFileFn = fs.readFileSync) {
   }
 }
 
+/**
+ * Normalize a git remote URL to credential-free HTTPS.
+ * Strips any embedded URL username/password so secrets are never written into container `.git/config`.
+ */
 export function rewriteRemoteToHttps(remoteUrl) {
   if (typeof remoteUrl !== "string") return null;
   const trimmed = remoteUrl.trim();
   if (!trimmed) return null;
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  const scpMatch = trimmed.match(/^[^@\s]+@([^:\s/]+):(.+)$/);
-  if (scpMatch) {
-    return `https://${scpMatch[1]}/${scpMatch[2].replace(/^\/+/, "")}`;
+
+  let candidate = null;
+  if (/^https?:\/\//i.test(trimmed)) {
+    candidate = trimmed;
+  } else {
+    const scpMatch = trimmed.match(/^[^@\s]+@([^:\s/]+):(.+)$/);
+    if (scpMatch) {
+      candidate = `https://${scpMatch[1]}/${scpMatch[2].replace(/^\/+/, "")}`;
+    } else {
+      const sshMatch = trimmed.match(/^ssh:\/\/(?:[^@\s/]+@)?([^/\s]+)\/(.+)$/i);
+      if (sshMatch) {
+        candidate = `https://${sshMatch[1]}/${sshMatch[2].replace(/^\/+/, "")}`;
+      }
+    }
   }
-  const sshMatch = trimmed.match(/^ssh:\/\/(?:[^@\s/]+@)?([^/\s]+)\/(.+)$/i);
-  if (sshMatch) {
-    return `https://${sshMatch[1]}/${sshMatch[2].replace(/^\/+/, "")}`;
+  if (!candidate) return null;
+
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+    if (!parsed.hostname) return null;
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString();
+  } catch {
+    return null;
   }
-  return null;
 }
 
 export function resolveHostGitIdentity(cwd, execFn = execFileSync) {
@@ -241,8 +365,139 @@ export function resolveHostOriginHttpsUrl(cwd, execFn = execFileSync) {
   }
 }
 
+/**
+ * Prepare an isolated workspace clone for a containerized peer.
+ * - Rejects non-Git directories (never bind-mounts a host non-Git directory `:rw`).
+ * - Uses `git clone --no-hardlinks` so container writes cannot corrupt host Git object inodes.
+ * - Records `{ sourceCwd, headSha, project, cname }` in `sandboxDir/source.json`; re-clones when
+ *   source path or HEAD changed, while preserving the existing clone on revive (`cwd === workspaceDir`).
+ */
+export function prepareSandboxWorkspace(opts) {
+  const { sandboxDir, sourceCwd, project, cname } = opts;
+  const execFn = opts.execFileSync ?? execFileSync;
+  const log = opts.logger ?? createPodmanLogger();
+
+  const resolvedSource = path.resolve(sourceCwd);
+  const workspaceDir = path.join(sandboxDir, "workspace");
+  const resolvedWorkspace = path.resolve(workspaceDir);
+  const markerPath = path.join(sandboxDir, "source.json");
+
+  let existingMarker = null;
+  try {
+    existingMarker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+  } catch {
+    existingMarker = null;
+  }
+
+  if (
+    existingMarker &&
+    (existingMarker.project !== project || existingMarker.cname !== cname)
+  ) {
+    throw new Error(
+      `Sandbox directory ${sandboxDir} belongs to peer ${existingMarker.cname}@${existingMarker.project}, not ${cname}@${project}`,
+    );
+  }
+
+  // Revive path: `/coms` revive passes the peer's recorded sandbox workspace path directly.
+  if (resolvedSource === resolvedWorkspace && fs.existsSync(path.join(workspaceDir, ".git"))) {
+    log.info("sandbox_workspace_revived", { workspaceDir, project, cname });
+    return { workspaceDir, cloned: false, revived: true };
+  }
+
+  let isGit = false;
+  try {
+    execFn("git", ["rev-parse", "--is-inside-work-tree"], {
+      cwd: resolvedSource,
+      stdio: "ignore",
+      timeout: 3000,
+    });
+    isGit = true;
+  } catch {
+    isGit = false;
+  }
+
+  if (!isGit) {
+    throw new Error(
+      `Podman peer sandbox requires a Git repository (${resolvedSource} is not a Git work tree). Pass sandbox: "off" for non-Git directories.`,
+    );
+  }
+
+  let sourceHead = "";
+  try {
+    sourceHead = String(execFn("git", ["rev-parse", "HEAD"], {
+      cwd: resolvedSource,
+      encoding: "utf8",
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
+    })).trim();
+  } catch {
+    sourceHead = "";
+  }
+
+  const hasExistingClone = fs.existsSync(path.join(workspaceDir, ".git"));
+  const matchesSource =
+    hasExistingClone &&
+    existingMarker &&
+    existingMarker.sourceCwd === resolvedSource &&
+    existingMarker.headSha === sourceHead &&
+    sourceHead.length > 0;
+
+  if (matchesSource) {
+    log.info("sandbox_workspace_reused", { sourceCwd: resolvedSource, workspaceDir, headSha: sourceHead });
+    return { workspaceDir, cloned: false, revived: false };
+  }
+
+  fs.mkdirSync(sandboxDir, { recursive: true, mode: 0o700 });
+  fs.rmSync(workspaceDir, { recursive: true, force: true });
+  // --no-hardlinks copies Git object storage so container writes cannot modify shared host object inodes.
+  execFn("git", ["clone", "--no-hardlinks", resolvedSource, workspaceDir], {
+    stdio: "ignore",
+    timeout: 120_000,
+  });
+
+  const httpsOrigin = resolveHostOriginHttpsUrl(resolvedSource, execFn);
+  if (httpsOrigin) {
+    try {
+      execFn("git", ["remote", "set-url", "origin", httpsOrigin], {
+        cwd: workspaceDir,
+        stdio: "ignore",
+        timeout: 5000,
+      });
+    } catch (err) {
+      log.warn("sandbox_origin_rewrite_failed", { error: err?.message ?? String(err) });
+    }
+  } else {
+    // Strip local filesystem origin path if host origin could not be safely normalized to HTTPS
+    try {
+      execFn("git", ["remote", "remove", "origin"], {
+        cwd: workspaceDir,
+        stdio: "ignore",
+        timeout: 5000,
+      });
+    } catch { /* ignore */ }
+  }
+
+  writeJsonAtomic(markerPath, {
+    sourceCwd: resolvedSource,
+    headSha: sourceHead,
+    project,
+    cname,
+    clonedAt: new Date().toISOString(),
+  });
+  log.info("sandbox_workspace_cloned", {
+    sourceCwd: resolvedSource,
+    workspaceDir,
+    headSha: sourceHead,
+    httpsOrigin: Boolean(httpsOrigin),
+  });
+  return { workspaceDir, cloned: true, revived: false };
+}
+
 export function buildPodmanRunArgs(opts) {
   const containerName = opts.containerName || buildPeerContainerName(opts.project, opts.cname);
+  if (!isValidPeerContainerName(containerName)) {
+    throw new Error(`Invalid Podman peer container name: "${containerName}"`);
+  }
   const cpus = opts.cpus ?? 4;
   const memory = opts.memory ?? "4g";
   const pidsLimit = opts.pidsLimit ?? DEFAULT_PIDS_LIMIT;
@@ -252,6 +507,11 @@ export function buildPodmanRunArgs(opts) {
   const gid = opts.gid ?? (typeof process.getgid === "function" ? process.getgid() : 1000);
   const env = opts.env ?? process.env;
   const passthroughKeys = opts.passthroughEnvKeys ?? DEFAULT_PASSTHROUGH_ENV_KEYS;
+
+  // Mount ONLY this peer's project registry dir and the sockets dir — NEVER the entire COMS root
+  // (which holds host-owned `peers/` supervisor records, `history.jsonl`, and other projects).
+  const projectComsDir = path.join(opts.comsDir, "projects", opts.project);
+  const socketsComsDir = path.join(opts.comsDir, "sockets");
 
   const args = [
     "run",
@@ -287,7 +547,8 @@ export function buildPodmanRunArgs(opts) {
     "-v", `${opts.entrypointPath}:/opt/entrypoint.sh:ro`,
     "-v", `${opts.gitconfigSeedPath}:/opt/gitconfig.seed:ro`,
     "-v", `${opts.workspacePath}:${opts.workspacePath}:rw`,
-    "-v", `${opts.comsDir}:${opts.comsDir}:rw`,
+    "-v", `${projectComsDir}:${projectComsDir}:rw`,
+    "-v", `${socketsComsDir}:${socketsComsDir}:rw`,
     "-w", opts.workspacePath,
   );
 
@@ -401,6 +662,15 @@ export function isPodmanAvailable(execFn = execFileSync) {
   }
 }
 
+export async function isPodmanAvailableAsync(execFn = execFileAsync) {
+  try {
+    await execFn("podman", ["--version"], { timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function podmanImageExists(imageTag, execFn = execFileSync) {
   try {
     execFn("podman", ["image", "exists", imageTag], { stdio: "ignore", timeout: 5000 });
@@ -408,6 +678,31 @@ export function podmanImageExists(imageTag, execFn = execFileSync) {
   } catch {
     return false;
   }
+}
+
+export async function podmanImageExistsAsync(imageTag, execFn = execFileAsync) {
+  try {
+    await execFn("podman", ["image", "exists", imageTag], { timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parsePeerImageLines(out) {
+  const seen = new Set();
+  const tags = [];
+  for (const line of String(out ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith(`${IMAGE_REPO}:`)) continue;
+    const tagPart = trimmed.slice(IMAGE_REPO.length + 1);
+    if (!tagPart || tagPart === "<none>") continue;
+    if (!seen.has(trimmed)) {
+      seen.add(trimmed);
+      tags.push(trimmed);
+    }
+  }
+  return tags;
 }
 
 export function listCachedPeerImageTags(opts = {}) {
@@ -418,19 +713,21 @@ export function listCachedPeerImageTags(opts = {}) {
       ["images", "--format", "{{.Repository}}:{{.Tag}}", IMAGE_REPO],
       { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] },
     ));
-    const seen = new Set();
-    const tags = [];
-    for (const line of out.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith(`${IMAGE_REPO}:`)) continue;
-      const tagPart = trimmed.slice(IMAGE_REPO.length + 1);
-      if (!tagPart || tagPart === "<none>") continue;
-      if (!seen.has(trimmed)) {
-        seen.add(trimmed);
-        tags.push(trimmed);
-      }
-    }
-    return tags;
+    return parsePeerImageLines(out);
+  } catch {
+    return [];
+  }
+}
+
+export async function listCachedPeerImageTagsAsync(opts = {}) {
+  const execFn = opts.execFile ?? execFileAsync;
+  try {
+    const out = await execFn(
+      "podman",
+      ["images", "--format", "{{.Repository}}:{{.Tag}}", IMAGE_REPO],
+      { encoding: "utf8", timeout: 5000 },
+    );
+    return parsePeerImageLines(typeof out === "string" ? out : out?.stdout);
   } catch {
     return [];
   }
@@ -492,13 +789,68 @@ export function readBuildStatus(opts = {}) {
   return { state: "idle", targetTag: null, logPath };
 }
 
+function spawnBuildWorker(opts, target, lockPath, statusPath, logPath, log) {
+  const spawnFn = opts.spawn ?? spawn;
+  const scriptPath = opts.builderScriptPath ?? fileURLToPath(import.meta.url);
+  const attemptId = randomBytes(8).toString("hex");
+  const startedAt = new Date().toISOString();
+
+  // Write initial `building` status BEFORE spawning the worker so a fast worker finishing
+  // immediately with `ready`/`error` can never be overwritten by the parent.
+  writeJsonAtomic(statusPath, {
+    state: "building",
+    attemptId,
+    targetTag: target.tag,
+    startedAt,
+    logPath,
+  });
+
+  const workerArgs = [
+    scriptPath,
+    "build",
+    "--base-image", target.baseImage,
+    "--pi-version", target.piVersion,
+    "--target-tag", target.tag,
+    "--lock-path", lockPath,
+    "--status-path", statusPath,
+    "--log-path", logPath,
+    "--package-root", opts.packageRoot ?? resolvePackageRoot(),
+    "--attempt-id", attemptId,
+  ];
+
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
+    const child = spawnFn(process.execPath, workerArgs, {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env },
+    });
+    child.unref?.();
+    log.info("podman_background_build_started", { pid: child.pid ?? null, targetTag: target.tag, attemptId, logPath });
+    return { status: "building", targetTag: target.tag, logPath, pid: child.pid ?? null };
+  } catch (err) {
+    const error = err?.message ?? String(err);
+    log.error("podman_background_build_spawn_failed", { targetTag: target.tag, error });
+    try {
+      writeJsonAtomic(statusPath, {
+        state: "error",
+        attemptId,
+        targetTag: target.tag,
+        finishedAt: new Date().toISOString(),
+        error,
+        logPath,
+      });
+    } catch { /* ignore */ }
+    return { status: "error", targetTag: target.tag, logPath, error };
+  }
+}
+
 export function startBackgroundPeerImageBuild(opts = {}) {
   const defaults = resolveDefaultBuildPaths(opts.homeDir);
   const lockPath = opts.lockPath ?? defaults.lockPath;
   const statusPath = opts.statusPath ?? defaults.statusPath;
   const logPath = opts.logPath ?? defaults.logPath;
   const execFn = opts.execFileSync ?? execFileSync;
-  const spawnFn = opts.spawn ?? spawn;
   const pidAliveFn = opts.pidAliveFn ?? isPidAlive;
   const log = opts.logger ?? createPodmanLogger(logPath);
 
@@ -538,41 +890,55 @@ export function startBackgroundPeerImageBuild(opts = {}) {
     };
   }
 
-  const scriptPath = opts.builderScriptPath ?? fileURLToPath(import.meta.url);
-  const workerArgs = [
-    scriptPath,
-    "build",
-    "--base-image", target.baseImage,
-    "--pi-version", target.piVersion,
-    "--target-tag", target.tag,
-    "--lock-path", lockPath,
-    "--status-path", statusPath,
-    "--log-path", logPath,
-    "--package-root", opts.packageRoot ?? resolvePackageRoot(),
-  ];
+  return spawnBuildWorker(opts, target, lockPath, statusPath, logPath, log);
+}
 
+export async function startBackgroundPeerImageBuildAsync(opts = {}) {
+  const defaults = resolveDefaultBuildPaths(opts.homeDir);
+  const lockPath = opts.lockPath ?? defaults.lockPath;
+  const statusPath = opts.statusPath ?? defaults.statusPath;
+  const logPath = opts.logPath ?? defaults.logPath;
+  const execFn = opts.execFile ?? execFileAsync;
+  const pidAliveFn = opts.pidAliveFn ?? isPidAlive;
+  const log = opts.logger ?? createPodmanLogger(logPath);
+
+  if (!(await isPodmanAvailableAsync(execFn))) {
+    const error = "podman not found on PATH — install rootless Podman or use sandbox: \"off\"";
+    log.warn("podman_unavailable", { error });
+    return { status: "error", targetTag: null, logPath, error };
+  }
+
+  let target;
   try {
-    fs.mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 });
-    const child = spawnFn(process.execPath, workerArgs, {
-      detached: true,
-      stdio: "ignore",
-      env: { ...process.env },
-    });
-    child.unref?.();
-    writeJsonAtomic(statusPath, {
-      state: "building",
-      targetTag: target.tag,
-      pid: child.pid ?? null,
-      startedAt: new Date().toISOString(),
-      logPath,
-    });
-    log.info("podman_background_build_started", { pid: child.pid ?? null, targetTag: target.tag, logPath });
-    return { status: "building", targetTag: target.tag, logPath, pid: child.pid ?? null };
+    target = await resolveTargetPeerImageAsync(opts);
   } catch (err) {
     const error = err?.message ?? String(err);
-    log.error("podman_background_build_spawn_failed", { targetTag: target.tag, error });
-    return { status: "error", targetTag: target.tag, logPath, error };
+    log.error("podman_target_resolve_failed", { error });
+    return { status: "error", targetTag: null, logPath, error };
   }
+
+  if (await podmanImageExistsAsync(target.tag, execFn)) {
+    writeJsonAtomic(statusPath, {
+      state: "ready",
+      targetTag: target.tag,
+      finishedAt: new Date().toISOString(),
+      logPath,
+    });
+    return { status: "ready", targetTag: target.tag, logPath };
+  }
+
+  const lock = isBuildLockActive(lockPath, pidAliveFn);
+  if (lock.active) {
+    log.debug("podman_build_already_running", { pid: lock.owner?.pid, targetTag: lock.owner?.targetTag });
+    return {
+      status: "building",
+      targetTag: lock.owner?.targetTag ?? target.tag,
+      logPath: lock.owner?.logPath ?? logPath,
+      pid: lock.owner?.pid ?? null,
+    };
+  }
+
+  return spawnBuildWorker(opts, target, lockPath, statusPath, logPath, log);
 }
 
 export function resolveImageForSpawn(opts = {}) {
@@ -616,7 +982,6 @@ export function resolveImageForSpawn(opts = {}) {
     };
   }
 
-  // Trigger non-blocking file-locked background build for targetTag
   const bg = startBackgroundPeerImageBuild(opts);
   if (bg.status === "ready") {
     return {
@@ -628,8 +993,97 @@ export function resolveImageForSpawn(opts = {}) {
     };
   }
 
-  // Zero-wait fallback: if a prior cached localhost/pi-peer:<old-hash> exists, boot immediately on it!
   const cachedTags = listCachedPeerImageTags({ execFileSync: execFn });
+  if (cachedTags.length > 0) {
+    log.info("podman_spawn_using_cached_fallback", {
+      fallbackTag: cachedTags[0],
+      targetTag: target.tag,
+      logPath,
+    });
+    return {
+      action: "run",
+      imageTag: cachedTags[0],
+      targetTag: target.tag,
+      usingFallback: true,
+      logPath,
+    };
+  }
+
+  if (bg.status === "error") {
+    return {
+      action: "error",
+      imageTag: null,
+      targetTag: target.tag,
+      usingFallback: false,
+      logPath,
+      error: bg.error || "Failed to start background Podman peer image build",
+    };
+  }
+
+  return {
+    action: "building",
+    imageTag: null,
+    targetTag: target.tag,
+    usingFallback: false,
+    logPath,
+    pid: bg.pid ?? null,
+  };
+}
+
+/** Non-blocking async variant for interactive session tool calls (`coms_peer_spawn`). */
+export async function resolveImageForSpawnAsync(opts = {}) {
+  const defaults = resolveDefaultBuildPaths(opts.homeDir);
+  const logPath = opts.logPath ?? defaults.logPath;
+  const execFn = opts.execFile ?? execFileAsync;
+  const log = opts.logger ?? createPodmanLogger(logPath);
+
+  if (!(await isPodmanAvailableAsync(execFn))) {
+    return {
+      action: "error",
+      imageTag: null,
+      targetTag: null,
+      usingFallback: false,
+      logPath,
+      error: "podman not found on PATH — install rootless Podman or pass sandbox: \"off\"",
+    };
+  }
+
+  let target;
+  try {
+    target = await resolveTargetPeerImageAsync(opts);
+  } catch (err) {
+    return {
+      action: "error",
+      imageTag: null,
+      targetTag: null,
+      usingFallback: false,
+      logPath,
+      error: err?.message ?? String(err),
+    };
+  }
+
+  if (await podmanImageExistsAsync(target.tag, execFn)) {
+    return {
+      action: "run",
+      imageTag: target.tag,
+      targetTag: target.tag,
+      usingFallback: false,
+      logPath,
+    };
+  }
+
+  const bg = await startBackgroundPeerImageBuildAsync(opts);
+  if (bg.status === "ready") {
+    return {
+      action: "run",
+      imageTag: target.tag,
+      targetTag: target.tag,
+      usingFallback: false,
+      logPath,
+    };
+  }
+
+  const cachedTags = await listCachedPeerImageTagsAsync({ execFile: execFn });
   if (cachedTags.length > 0) {
     log.info("podman_spawn_using_cached_fallback", {
       fallbackTag: cachedTags[0],
@@ -674,12 +1128,14 @@ export function runPeerImageBuildWorker(opts) {
   const execFn = opts.execFileSync ?? execFileSync;
   const spawnSyncFn = opts.spawnSync ?? spawnSync;
   const log = opts.logger ?? createPodmanLogger(logPath);
+  const attemptId = opts.attemptId || randomBytes(8).toString("hex");
 
   const target = resolveTargetPeerImage(opts);
   const targetTag = opts.targetTag || target.tag;
 
   const lock = acquireBuildLock(lockPath, {
     pid: process.pid,
+    attemptId,
     targetTag,
     startedAt: new Date().toISOString(),
     logPath,
@@ -693,6 +1149,7 @@ export function runPeerImageBuildWorker(opts) {
   const startedAt = new Date().toISOString();
   writeJsonAtomic(statusPath, {
     state: "building",
+    attemptId,
     targetTag,
     pid: process.pid,
     startedAt,
@@ -703,7 +1160,7 @@ export function runPeerImageBuildWorker(opts) {
   let logFd = null;
   try {
     if (podmanImageExists(targetTag, execFn)) {
-      writeJsonAtomic(statusPath, { state: "ready", targetTag, finishedAt: new Date().toISOString(), logPath });
+      writeJsonAtomic(statusPath, { state: "ready", attemptId, targetTag, finishedAt: new Date().toISOString(), logPath });
       return { ok: true, skipped: false, targetTag, logPath };
     }
 
@@ -741,6 +1198,7 @@ export function runPeerImageBuildWorker(opts) {
     pruneStalePeerImages(targetTag, { execFileSync: execFn, logger: log, logPath });
     writeJsonAtomic(statusPath, {
       state: "ready",
+      attemptId,
       targetTag,
       finishedAt: new Date().toISOString(),
       logPath,
@@ -753,6 +1211,7 @@ export function runPeerImageBuildWorker(opts) {
     try {
       writeJsonAtomic(statusPath, {
         state: "error",
+        attemptId,
         targetTag,
         finishedAt: new Date().toISOString(),
         error,
@@ -795,6 +1254,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
       statusPath: flags["status-path"] || undefined,
       logPath: flags["log-path"] || undefined,
       packageRoot: flags["package-root"] || undefined,
+      attemptId: flags["attempt-id"] || undefined,
     });
     process.exit(result.ok ? 0 : 1);
   }

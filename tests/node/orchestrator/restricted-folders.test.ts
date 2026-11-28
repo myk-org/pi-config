@@ -90,6 +90,7 @@ function createEnforcementHarness(cwd: string) {
       commands.set(name, opts);
     },
     registerTool() {},
+    getAllTools: () => [],
     events: {
       on() {},
       off() {},

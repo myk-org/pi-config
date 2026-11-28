@@ -348,9 +348,7 @@ export function registerCron(pi: ExtensionAPI, spawnAsyncAgent: any): {
   }
   function dispatchCronCommand(command: string): void {
     try {
-      if (typeof (pi as any).appendEntry === "function") {
-        (pi as any).appendEntry("cron-user-message", { command });
-      }
+      pi.appendEntry("cron-user-message", { command });
       (pi as any).events?.emit?.("cron:dispatch-command", { command });
     } catch (err: any) {
       log.warn("cron_provenance_record_failed", { error: err?.message || String(err) });

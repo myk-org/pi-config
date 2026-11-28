@@ -57,6 +57,20 @@ export function resolvePidiffHost(env: Record<string, string | undefined> = proc
 }
 
 /**
+ * Resolve bind address for a locally spawned `pidiff-server` (#1512).
+ * Preserves `127.0.0.1` loopback-only binding when Podman peer sandboxing is off,
+ * and binds `0.0.0.0` (with loopback-only browser ACL in `pidiff-server.ts`) only when
+ * `coms_peer_sandbox` is `"podman"` so containerized peers can reach `host.containers.internal`.
+ */
+export function resolvePidiffListenHost(cwd: string): string {
+  try {
+    return getSetting(cwd, "coms_peer_sandbox") === "podman" ? "0.0.0.0" : "127.0.0.1";
+  } catch {
+    return "127.0.0.1";
+  }
+}
+
+/**
  * Format a pidiff `publish-review` payload into a compact follow-up message.
  *
  * Hoists `branch` and `worktreePath` once to the top-level object whenever all
@@ -119,10 +133,15 @@ export function registerPidiff(pi: ExtensionAPI): void {
 
   function doSpawn(port: number, cwd: string): void {
     ensureUiBuilt(import.meta.url, "pidiff-ui", debugLog);
+    const listenHost = resolvePidiffListenHost(cwd);
     spawnDaemon({
       serverScript: "pidiff-server.ts",
       logFile: path.join(process.env.HOME || "/tmp", ".pi", "pidiff-server.log"),
-      env: { PI_PIDIFF_PORT: String(port), PI_PIDIFF_CWD: cwd },
+      env: {
+        PI_PIDIFF_PORT: String(port),
+        PI_PIDIFF_CWD: cwd,
+        ...(listenHost !== "127.0.0.1" ? { PI_PIDIFF_LISTEN_HOST: listenHost } : {}),
+      },
       log: debugLog,
     });
   }

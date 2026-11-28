@@ -335,7 +335,15 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
   // Pidash binds to 0.0.0.0 — accept localhost + private/LAN IPs (RFC 1918 + link-local)
   originPattern: /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|\[::1\])(:\d+)?$/,
 
-  extraApiRoutes: (url, _req, res) => {
+  extraApiRoutes: (url, req, res) => {
+    if (url.pathname === "/api/peers" || url.pathname === "/api/podman-build-status") {
+      if (!isLoopbackAddress(req.socket?.remoteAddress)) {
+        log(`rejected non-loopback ${url.pathname} request from ${req.socket?.remoteAddress || "unknown"}`);
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "localhost access required" }));
+        return true;
+      }
+    }
     if (url.pathname === "/api/peers") {
       try {
         const reg = ComsRegistry.forCwd();
@@ -343,7 +351,9 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
         const rows = reg.readLiveRows().map((row) => {
           const rec = pickSupervisionRecord(records, row);
           const container = row.container ?? (typeof rec?.container === "string" && rec.container.trim() ? rec.container.trim() : null);
-          const hostPid = row.hostPid ?? (Number.isInteger(rec?.childPid) && rec.childPid > 0 ? rec.childPid : null);
+          const hostPid = (container && rec?.container === container && Number.isInteger(rec?.childPid) && rec.childPid > 0)
+            ? rec.childPid
+            : (row.hostPid ?? null);
           return {
             name: row.name,
             project: row.project,
