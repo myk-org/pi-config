@@ -30,7 +30,7 @@ const SKIP_REASON = !E2E_ENABLED
       : false;
 
 describe("Rootless Podman COMS peer zero-mock E2E (#1512)", { skip: SKIP_REASON }, () => {
-  it("boots a real rootless Podman peer, stays alive past 60s, isolates host fs, and tears down cleanly", async () => {
+  it("runs full rootless Podman peer lifecycle past 60s with host fs isolation", async () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-podman-e2e-"));
     const comsDir = path.join(tmpRoot, "coms");
     const repoDir = path.join(tmpRoot, "repo");

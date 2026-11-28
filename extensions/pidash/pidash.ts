@@ -165,6 +165,12 @@ export function resolvePidashHost(env: Record<string, string | undefined> = proc
   return configured || "127.0.0.1";
 }
 
+/** True when `host` refers to the local machine loopback (safe for auto-spawning a local daemon). */
+export function isLocalDaemonHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1" || normalized === "[::1]";
+}
+
 function buildCustomEntryReplayEvent(entry: any): string | null {
   if (!entry || entry.type !== "custom" || entry.customType !== "lsp-startup-summary") {
     return null;
@@ -997,9 +1003,9 @@ export function registerPidash(
     strictCommandUsage: true,
     reconnectPollIntervalMs: opts.reconnectPollIntervalMs,
     shouldConnectCtx: canConnectCtx,
-    // Only interactive TUI sessions on localhost auto-spawn pidash-server; supervised COMS RPC peers
-    // and containerized peers (`PI_PIDASH_HOST=host.containers.internal`) attach without spawning locally.
-    shouldAutoSpawn: (ctx) => ctx?.mode === "tui" && pidashHost === "127.0.0.1",
+    // Only interactive TUI sessions targeting local loopback auto-spawn pidash-server; supervised
+    // COMS RPC peers and containerized peers (`PI_PIDASH_HOST=host.containers.internal`) attach without spawning locally.
+    shouldAutoSpawn: (ctx) => ctx?.mode === "tui" && isLocalDaemonHost(pidashHost),
 
     spawn() {
       spawnDaemon(pidashPort);

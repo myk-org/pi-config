@@ -360,7 +360,7 @@ describe("Host-agnostic Podman run argv builder", () => {
     }
   });
 
-  it("mounts only the peer project registry and sockets dir instead of the full coms root", () => {
+  it("mounts only the peer project registry with sockets dir instead of full coms root", () => {
     const argv = buildPodmanRunArgs(baseRunOpts);
     assert.equal(argv.includes(`${baseRunOpts.comsDir}:${baseRunOpts.comsDir}:rw`), false);
     assert.ok(argv.includes(`${path.join(baseRunOpts.comsDir, "projects", "my-project")}:${path.join(baseRunOpts.comsDir, "projects", "my-project")}:rw`));
@@ -1201,7 +1201,7 @@ exit 0
     assert.equal(afterRecord.containerId, "222222222222");
   });
 
-  it("retries failed podman rm -f and records cleanupError when removal fails permanently", () => {
+  it("retries failed podman rm -f while recording cleanupError when exhausted", () => {
     const tmpHome = makeTempDir("pi-sup-failrm-home-");
     const repoDir = makeTempDir("pi-sup-failrm-repo-");
     const binDir = makeTempDir("pi-sup-failrm-bin-");

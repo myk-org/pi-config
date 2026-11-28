@@ -10,7 +10,7 @@ import { createServer as createViteServer, type ViteDevServer } from "vite";
 import * as pidashReact from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import { act, createElement } from "../../../extensions/pidash/pidash-ui/node_modules/react/index.js";
 import { createRoot, type Root } from "../../../extensions/pidash/pidash-ui/node_modules/react-dom/client.js";
-import { registerPidash, resolvePidashHost } from "../../../extensions/pidash/pidash.ts";
+import { isLocalDaemonHost, registerPidash, resolvePidashHost } from "../../../extensions/pidash/pidash.ts";
 import { resolvePidiffHost, resolvePidiffPortOverride } from "../../../extensions/pidiff/pidiff.ts";
 import { clearSettingsCache, setGlobalSettingsPath } from "../../../extensions/orchestrator/project-settings.ts";
 import { isLoopbackAddress, registerPidashSession, type PiClient } from "../../../scripts/pidash-session-state.ts";
@@ -57,6 +57,16 @@ describe("Native daemon host resolution", () => {
 
   it("honors PI_PIDASH_HOST override", () => {
     assert.equal(resolvePidashHost({ PI_PIDASH_HOST: "host.containers.internal" }), "host.containers.internal");
+  });
+
+  it("treats localhost as a local loopback host for PiDash auto-spawn", () => {
+    assert.equal(isLocalDaemonHost("localhost"), true);
+    assert.equal(isLocalDaemonHost("127.0.0.1"), true);
+    assert.equal(isLocalDaemonHost("::1"), true);
+  });
+
+  it("disables PiDash auto-spawn for host.containers.internal", () => {
+    assert.equal(isLocalDaemonHost("host.containers.internal"), false);
   });
 
   it("defaults resolvePidiffHost to 127.0.0.1", () => {
@@ -136,26 +146,7 @@ describe("Standalone daemon zero-TUI runtime import boundary", () => {
 });
 
 describe("PiDash session container metadata", () => {
-  it("preserves containerName in registerPidashSession", () => {
-    const sessions = new Map<string, PiClient>();
-    const client = registerPidashSession(
-      sessions,
-      { send() {} },
-      {
-        type: "register",
-        sessionId: "sess-ctr",
-        pid: 42,
-        cwd: "/tmp/work",
-        container: true,
-        containerName: "pi-peer-demo-worker",
-      },
-      () => {},
-    );
-    assert.equal(client.session.container, true);
-    assert.equal(client.session.containerName, "pi-peer-demo-worker");
-  });
-
-  it("propagates PI_PIDASH_HOST, PI_PIDASH_PORT, and PI_COMS_CONTAINER_NAME through registerPidash", async () => {
+  async function runRegisterPidashProbe(envOverrides: { host: string; containerName?: string }) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pidash-reg-env-"));
     const prevEnv: Record<string, string | undefined> = {
       PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD,
@@ -223,9 +214,10 @@ describe("PiDash session container metadata", () => {
       clearSettingsCache();
       delete process.env.PI_SUBAGENT_CHILD;
       process.env.PI_COMS_SUPERVISED_PEER = "1";
-      process.env.PI_PIDASH_HOST = "localhost";
+      process.env.PI_PIDASH_HOST = envOverrides.host;
       process.env.PI_PIDASH_PORT = String(addr.port);
-      process.env.PI_COMS_CONTAINER_NAME = "pi-peer-reg-test-12345678";
+      if (envOverrides.containerName) process.env.PI_COMS_CONTAINER_NAME = envOverrides.containerName;
+      else delete process.env.PI_COMS_CONTAINER_NAME;
 
       registerPidash(pi, {
         fetchGitStatus: async () => ({ branch: "main", dirty: false, changes: 0 }),
@@ -242,11 +234,8 @@ describe("PiDash session container metadata", () => {
       for (const h of handlers.get("session_start") ?? []) h({ reason: "startup" }, ctx);
 
       const frame = await registerPromise;
-      assert.ok(healthHostHeader.startsWith("localhost:"), `expected PI_PIDASH_HOST=localhost on health check, got ${healthHostHeader}`);
-      assert.ok(wsHostHeader.startsWith("localhost:"), `expected PI_PIDASH_HOST=localhost on ws upgrade, got ${wsHostHeader}`);
-      assert.equal(frame.container, true);
-      assert.equal(frame.containerName, "pi-peer-reg-test-12345678");
       for (const h of handlers.get("session_shutdown") ?? []) h({}, ctx);
+      return { healthHostHeader, wsHostHeader, frame };
     } finally {
       for (const [k, v] of Object.entries(prevEnv)) {
         if (v === undefined) delete process.env[k];
@@ -259,6 +248,41 @@ describe("PiDash session container metadata", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  }
+
+  it("preserves containerName in registerPidashSession", () => {
+    const sessions = new Map<string, PiClient>();
+    const client = registerPidashSession(
+      sessions,
+      { send() {} },
+      {
+        type: "register",
+        sessionId: "sess-ctr",
+        pid: 42,
+        cwd: "/tmp/work",
+        container: true,
+        containerName: "pi-peer-demo-worker",
+      },
+      () => {},
+    );
+    assert.equal(client.session.container, true);
+    assert.equal(client.session.containerName, "pi-peer-demo-worker");
+  });
+
+  it("forwards PI_PIDASH_HOST on HTTP health probe via registerPidash", async () => {
+    const { healthHostHeader } = await runRegisterPidashProbe({ host: "localhost" });
+    assert.ok(healthHostHeader.startsWith("localhost:"), `expected localhost host header, got ${healthHostHeader}`);
+  });
+
+  it("forwards PI_PIDASH_HOST on WebSocket upgrade via registerPidash", async () => {
+    const { wsHostHeader } = await runRegisterPidashProbe({ host: "localhost" });
+    assert.ok(wsHostHeader.startsWith("localhost:"), `expected localhost ws host header, got ${wsHostHeader}`);
+  });
+
+  it("forwards PI_COMS_CONTAINER_NAME in register payload via registerPidash", async () => {
+    const { frame } = await runRegisterPidashProbe({ host: "127.0.0.1", containerName: "pi-peer-reg-test-12345678" });
+    assert.equal(frame.container, true);
+    assert.equal(frame.containerName, "pi-peer-reg-test-12345678");
   });
 });
 

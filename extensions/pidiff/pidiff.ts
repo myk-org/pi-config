@@ -144,7 +144,10 @@ export function registerPidiff(pi: ExtensionAPI): void {
     statusKey: "8-diff",
     host: pidiffHost,
     log,
-    shouldAutoSpawn: () => pidiffHost === "127.0.0.1",
+    shouldAutoSpawn: () => {
+      const normalized = pidiffHost.trim().toLowerCase();
+      return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1" || normalized === "[::1]";
+    },
 
     canConnect() {
       return Boolean(lockDir || pidiffPortOverride);
