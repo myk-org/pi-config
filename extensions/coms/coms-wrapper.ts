@@ -1411,6 +1411,9 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             const env = withPropagatedPiAgentDirEnv(process.env);
             const configuredComsDir = getRegistry().comsDir;
             if (configuredComsDir) env.PI_COMS_DIR = configuredComsDir;
+            // Propagate spawning session's PiDash sessionId (`${pid}:${cwd}`) so PiDash can
+            // nest same-project supervised peers directly beneath their parent LLM (#1527).
+            env.PI_COMS_PARENT_SESSION_ID = `${process.pid}:${process.cwd()}`;
             const child = spawn(plan.command[0]!, plan.command.slice(1), { detached: true, stdio: "ignore", env });
             child.on("error", (error: unknown) => {
                 params.onSpawnFailure?.();

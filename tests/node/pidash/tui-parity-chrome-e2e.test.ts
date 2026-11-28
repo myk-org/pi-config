@@ -305,6 +305,7 @@ async function createPidashChromeFixture(chromeBin: string): Promise<PidashChrom
       name: "Gemini 4 Neon",
       comsProject: "pi-config",
       comsName: "peer-1481-pidash-parity",
+      supervisedPeer: true,
       startedAt: new Date().toISOString(),
       activity: "idle",
       activitySequence: 1,

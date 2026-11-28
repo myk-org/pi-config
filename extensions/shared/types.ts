@@ -38,6 +38,8 @@ export interface SessionInfo {
   comsProject?: string;
   /** True when the session is a supervised headless COMS RPC peer (localhost-only watch/control). */
   supervisedPeer?: boolean;
+  /** PiDash sessionId of the parent LLM session that spawned this supervised peer (#1527). */
+  parentSessionId?: string;
   /** Number of currently running async subagents spawned by this session (#1509). */
   runningAsyncAgents?: number;
   /** Exact authoritative Trail savings for this parent Pi session. */

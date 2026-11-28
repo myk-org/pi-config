@@ -339,6 +339,28 @@ export function collectPeers(deps: PidashApiDeps, projectParam: string | null, c
 
   const normalizedProject = projectParam && projectParam !== "*" ? projectParam.trim() : null;
 
+  const piClients = deps.getPiClients();
+  const findClientParentSessionId = (
+    row: { project: string; name: string; pid: number | null },
+    container: string | null,
+  ): string | null => {
+    for (const client of piClients.values()) {
+      const s = client?.session;
+      if (!s || !s.active) continue;
+      if (s.comsProject !== row.project || s.comsName !== row.name) continue;
+      const parentId = typeof s.parentSessionId === "string" ? s.parentSessionId.trim() : "";
+      if (!parentId) continue;
+      // Match reliable live process/container identity so a retained disconnected client
+      // or a stale predecessor can never attribute an old parent to a replacement peer.
+      if (container) {
+        if (s.containerName === container) return parentId;
+      } else if (typeof row.pid === "number" && Number.isInteger(row.pid) && row.pid > 0 && s.pid === row.pid) {
+        return parentId;
+      }
+    }
+    return null;
+  };
+
   const peers = allRows
     .filter((row) => isRegistryRowAlive(row, now))
     .filter((row) => !normalizedProject || row.project === normalizedProject)
@@ -351,6 +373,9 @@ export function collectPeers(deps: PidashApiDeps, projectParam: string | null, c
         container && sup?.container === container && Number.isInteger(sup?.childPid) && (sup.childPid as number) > 0
           ? (sup.childPid as number)
           : (row.hostPid ?? null);
+      const parentSessionId =
+        (typeof sup?.parentSessionId === "string" && sup.parentSessionId.trim() ? sup.parentSessionId.trim() : null)
+        ?? findClientParentSessionId(row, container);
 
       return {
         name: row.name,
@@ -365,6 +390,7 @@ export function collectPeers(deps: PidashApiDeps, projectParam: string | null, c
         pid: hostPid ?? row.pid ?? null,
         hostPid,
         container,
+        ...(parentSessionId ? { parentSessionId } : {}),
         alive: true,
         startedAt: row.startedAt ?? (typeof sup?.startedAt === "string" ? sup.startedAt : null),
         heartbeatAt: row.heartbeatAt ?? null,

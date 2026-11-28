@@ -45,6 +45,7 @@ export interface PodmanRunArgsOptions {
   project: string;
   purpose?: string;
   session?: string;
+  parentSessionId?: string;
   pidashHost?: string;
   pidiffHost?: string;
   pidashPort?: number;

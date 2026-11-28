@@ -515,6 +515,7 @@ export function registerPidash(
     PI_PIDASH_HOST: process.env.PI_PIDASH_HOST,
     PI_PIDASH_PORT: process.env.PI_PIDASH_PORT,
     PI_COMS_CONTAINER_NAME: process.env.PI_COMS_CONTAINER_NAME,
+    PI_COMS_PARENT_SESSION_ID: process.env.PI_COMS_PARENT_SESSION_ID,
   };
   const canConnectCtx = (ctx: unknown): boolean => isPidashConnectableCtx(ctx, registrationEnv);
   const fetchGitStatus = opts.fetchGitStatus ?? getGitStatus;
@@ -573,6 +574,15 @@ export function registerPidash(
   pi.events.on("pidash:coms-identity", (data: any) => {
     comsIdentityKnown = true;
     const activeName = typeof data?.name === "string" && data.name.length > 0 ? data.name : undefined;
+    // Supervised COMS peers keep their COMS identity across shutdown/disconnect so stopped
+    // peers stay nested under their parent/project instead of becoming stray top-level folders (#1527).
+    if (!activeName && registrationEnv.PI_COMS_SUPERVISED_PEER === "1") {
+      log.debug("coms_identity_clear_ignored_for_supervised_peer", {
+        name: comsIdentityName ?? null,
+        project: comsIdentityProject ?? null,
+      });
+      return;
+    }
     comsIdentityName = activeName;
     comsIdentityPurpose = activeName && typeof data?.purpose === "string" && data.purpose.length > 0 ? data.purpose : undefined;
     comsIdentityProject = activeName && typeof data?.project === "string" && data.project.length > 0 ? data.project : undefined;
@@ -1100,6 +1110,9 @@ export function registerPidash(
       });
       const supervisedPeer = isSupervisedRpcPeerCtx(ctx, registrationEnv);
       const containerName = (registrationEnv.PI_COMS_CONTAINER_NAME || "").trim() || undefined;
+      const parentSessionId = supervisedPeer
+        ? ((registrationEnv.PI_COMS_PARENT_SESSION_ID || "").trim() || undefined)
+        : undefined;
       const currentSessionFile = ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "";
       lastSessionFile = currentSessionFile;
       const reg = JSON.stringify({
@@ -1134,6 +1147,7 @@ export function registerPidash(
         comsPurpose: comsIdentity.comsPurpose,
         comsProject: comsIdentity.comsProject,
         ...(supervisedPeer ? { supervisedPeer: true } : {}),
+        ...(parentSessionId ? { parentSessionId } : {}),
         trailTokenSavings,
       });
       log.debug(`sending register: ${reg}`);

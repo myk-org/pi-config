@@ -66,6 +66,8 @@ export interface SupervisionRecord {
   session?: string | null;
   piSessionId?: string | null;
   createdBy?: string | null;
+  /** PiDash sessionId of the parent LLM session that spawned this peer (#1527). */
+  parentSessionId?: string | null;
   startedAt?: string;
   stoppedAt?: string;
   exitedAt?: string;
