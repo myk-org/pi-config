@@ -20,7 +20,15 @@ import type { Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { AgentConfig, AgentDiscoveryResult } from "./agents.js";
 import { buildSubagentChildSpec } from "./subagent-child-spec.js";
-import { getPiInvocation, getProjectTmpDir, parseProcStartTime, djb2Hash } from "./utils.js";
+import {
+  djb2Hash,
+  extractVersionedReleaseInfo,
+  getPiInvocation,
+  getProjectTmpDir,
+  parseProcStartTime,
+  readManagedCurrentReleaseDir,
+  resolveActivePiOnPath,
+} from "./utils.js";
 import { addReviewerPending, recordReviewerResult, countFindings, readReviewState, subjectKey } from "./pi-config-review-state.js";
 import { resolveReviewSubject } from "./review-subject.js";
 import {
@@ -259,10 +267,28 @@ export function formatDuration(ms: number): string {
 
 let cachedJitiCliPath: string | undefined;
 
-function resolveJitiCliPath(): { path: string | undefined; probes: string[] } {
+export interface ResolveJitiCliOptions {
+  argv1?: string;
+  envPath?: string;
+  managedInstallRoot?: string;
+}
+
+export function resolveJitiCliPath(
+  opts?: ResolveJitiCliOptions,
+): { path: string | undefined; probes: string[] } {
   if (cachedJitiCliPath !== undefined) {
-    return { path: cachedJitiCliPath, probes: [] };
+    if (fs.existsSync(cachedJitiCliPath)) {
+      return { path: cachedJitiCliPath, probes: [] };
+    }
+    log.warn("jiti_cache_invalidated", { stalePath: cachedJitiCliPath });
+    cachedJitiCliPath = undefined;
   }
+
+  const argv1 = opts && "argv1" in opts ? opts.argv1 : process.argv[1];
+  const envPath = opts && "envPath" in opts ? opts.envPath : process.env.PATH;
+  const managedInstallRoot = opts && "managedInstallRoot" in opts
+    ? opts.managedInstallRoot
+    : process.env.PI_MANAGED_INSTALL_ROOT;
 
   let jitiCliPath: string | undefined;
   const jitiProbes: string[] = [];
@@ -270,8 +296,9 @@ function resolveJitiCliPath(): { path: string | undefined; probes: string[] } {
     let dir = startDir;
     while (dir !== path.dirname(dir)) {
       const candidate = path.join(dir, "node_modules/jiti/lib/jiti-cli.mjs");
-      jitiProbes.push(`${fs.existsSync(candidate) ? "HIT" : "--"} ${candidate}`);
-      if (fs.existsSync(candidate)) return candidate;
+      const hit = fs.existsSync(candidate);
+      jitiProbes.push(`${hit ? "HIT" : "--"} ${candidate}`);
+      if (hit) return candidate;
       dir = path.dirname(dir);
     }
     jitiProbes.push(`(exhausted from ${label}: ${startDir})`);
@@ -280,12 +307,50 @@ function resolveJitiCliPath(): { path: string | undefined; probes: string[] } {
 
   // Strategy 1: resolve from pi's own install location (the running binary).
   try {
-    if (process.argv[1]) {
-      const piRoot = path.dirname(fs.realpathSync(process.argv[1]));
+    if (argv1) {
+      const piRoot = path.dirname(fs.realpathSync(argv1));
       jitiCliPath = findJitiUnder("argv-binary", piRoot);
     }
   } catch (e: any) {
     log.debug(`jiti strategy 1 (running binary) failed: ${e?.message || e}`);
+  }
+
+  // Strategy 1b: prefer the running managed install's current-version release
+  // (or a PATH `pi` verified to belong to the same install) before falling back
+  // to any other `pi` on PATH.
+  if (!jitiCliPath) {
+    try {
+      const argvInstallRoot = argv1 ? extractVersionedReleaseInfo(argv1)?.installRoot : undefined;
+      const installRoot = argvInstallRoot || managedInstallRoot || undefined;
+
+      if (installRoot) {
+        const currentReleaseDir = readManagedCurrentReleaseDir(installRoot);
+        if (currentReleaseDir) {
+          jitiCliPath = findJitiUnder("managed-current-release", currentReleaseDir);
+        }
+        if (!jitiCliPath) {
+          const matchingPi = resolveActivePiOnPath(envPath, { expectedInstallRoot: installRoot });
+          if (matchingPi?.releaseDir) {
+            jitiCliPath = findJitiUnder("path-matching-pi-release", matchingPi.releaseDir);
+          }
+          if (!jitiCliPath && matchingPi?.realPath) {
+            jitiCliPath = findJitiUnder("path-matching-pi-binary", path.dirname(matchingPi.realPath));
+          }
+        }
+      }
+
+      if (!jitiCliPath) {
+        const activePi = resolveActivePiOnPath(envPath);
+        if (activePi?.releaseDir) {
+          jitiCliPath = findJitiUnder("path-pi-release", activePi.releaseDir);
+        }
+        if (!jitiCliPath && activePi?.realPath) {
+          jitiCliPath = findJitiUnder("path-pi-binary", path.dirname(activePi.realPath));
+        }
+      }
+    } catch (e: any) {
+      log.debug(`jiti strategy 1b (active pi on PATH) failed: ${e?.message || e}`);
+    }
   }
 
   // Strategy 2: resolve the pi SDK package from this module's require context.
