@@ -899,4 +899,165 @@ describe("approval-hmac-key protected storage guard (#1495)", () => {
     assert.equal(res.action, "block");
     assert.match(res.reason ?? "", /\.approval-hmac-key/);
   });
+
+  it("blocks eval receiving command-substituted single-quoted dynamic ~/.pi/agent access", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'eval "$(echo \'cat ~/.pi/agent/.*\')"',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks bash -c receiving command-substituted single-quoted dynamic ~/.pi/agent access", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'bash -c "$(echo \'cat ~/.pi/agent/.*\')"',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks awk single-quoted program reading ~/.pi/agent dynamically", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'awk \'BEGIN { system("cat ~/.pi/agent/.*") }\' /dev/null',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks awk stdin heredoc program reading ~/.pi/agent dynamically", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'awk -f - <<\'EOF\'\nBEGIN { system("cat ~/.pi/agent/.*") }\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks piped heredoc program fed into awk -f -", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'cat <<\'EOF\' | awk -f -\nBEGIN { system("cat ~/.pi/agent/.*") }\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("allows gh issue create with <new> placeholder chained before python3 -c", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "gh issue create --body 'see `~/.pi/agent/install/releases/<new>/`' && python3 -c 'print(1)'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("allows python3 -c print(input()) receiving data heredoc resembling state.db write", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'python3 -c \'print(input())\' <<\'EOF\'\nopen(".pi/data/state.db", "w")\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("blocks stdin-executed python3 heredoc writing state.db", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'python3 <<\'EOF\'\nopen(".pi/data/state.db", "w")\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /state\.db/);
+  });
+
+  it("blocks python3 -c exec(input()) receiving state.db write heredoc", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'python3 -c \'exec(input())\' <<\'EOF\'\nopen(".pi/data/state.db", "w")\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /state\.db/);
+  });
+
+  it("blocks xargs bash executing piped dynamic ~/.pi/agent command", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "echo 'cat ~/.pi/agent/.*' | xargs bash",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks env VAR=1 bash -c reading ~/.pi/agent dynamically", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "env VAR=1 bash -c 'cat ~/.pi/agent/.*'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks timeout-wrapped bash -c reading ~/.pi/agent dynamically", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "timeout 5 bash -c 'cat ~/.pi/agent/.*'",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks uv run python3 -c listing .pi/agent directory", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "uv run python3 -c \"import os; os.listdir('.pi/agent')\"",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("allows tab-stripped <<- single-quoted heredoc containing Markdown ~/.pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "cat <<-'EOF'\n\tSee `~/.pi/agent/bin/pi`\n\tEOF",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("allows tab-stripped <<- double-quoted heredoc containing Markdown ~/.pi/agent path", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'cat <<-"EOF"\n\tSee `~/.pi/agent/bin/pi`\n\tEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
 });
