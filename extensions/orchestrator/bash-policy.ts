@@ -6505,7 +6505,9 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
     const unresolvedVarOrPositionalRe = /\$(?:\{[^}]+\}|[A-Za-z_0-9@*!])/;
     const hmacKeyRe = /(?:\.|\b)approval[-_]?hmac[-_]?key\b/i;
     const dynamicPiAgentAccessRe =
-      /(?:~|\$HOME|\$\{HOME\}|\/[^\s"'`;|&)]*)\/\.pi\/agent\/[^\s"'`;|&)]*(?:\$|[*?{`])/i;
+      /(?:~|\$HOME|\$\{HOME\}|\/[^\s"'`;|&)]*)\/\.pi\/agent\/[^\s"'`;|&)]*["']?(?:\$|[*?{`])/i;
+    const inlineRuntimeDynamicPiAgentRe =
+      /(?:\.pi\/agent\/?["'`]\s*\)?\s*(?:[+./,%]|\.\s*format\b)|["'`]\.pi["'`]\s*,\s*["'`]agent["'`]|(?:readdir|listdir|scandir|glob|iglob|walk|iterdir)\w*\s*\([^)]*\.pi\/agent)/i;
     const settingsPathRe =
       /(?:^|[\s"'`=:(/<>|;&,])(?:~\/|\/[^\s"'`;|&)]*\/|\.?\/)?\.pi\/(?:pi-config-settings[^\s"'`;|&)]*|pi-config-[^\s"'`;|&)]*[*?[{][^\s"'`;|&)]*|\*[^\s"'`;|&)]*settings[^\s"'`;|&)]*)/i;
     const stateDbUncondRe =
@@ -6584,23 +6586,563 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
       return true;
     };
 
+    interface ExtractedHeredoc {
+      openerOffset: number;
+      body: string;
+    }
+
+    /**
+     * Strip closed quoted heredoc bodies (`<<'EOF'`, `<<-'EOF'`, `<<"EOF"`, `<<-"EOF"`)
+     * where bash performs zero expansion, while keeping unquoted (`<<EOF`) and unclosed
+     * heredoc bodies verbatim (fail-closed). Records each body's opener offset in `stripped`
+     * so callers only exempt heredocs owned by demonstrably data-only commands.
+     */
+    const extractQuotedHeredocs = (
+      input: string,
+    ): { stripped: string; quotedHeredocs: ExtractedHeredoc[] } => {
+      if (!input.includes("<<")) return { stripped: input, quotedHeredocs: [] };
+      const quotedHeredocs: ExtractedHeredoc[] = [];
+      const pending: { delim: string; expand: boolean; stripTabs: boolean; openerOffset: number }[] = [];
+      type Frame = { kind: "double" } | { kind: "subst"; parenDepth: number };
+      const stack: Frame[] = [];
+      let out = "";
+      let i = 0;
+
+      while (i < input.length) {
+        const top = stack[stack.length - 1];
+        const ch = input[i]!;
+
+        if (top?.kind === "double") {
+          if (ch === "\\" && i + 1 < input.length) {
+            out += input.slice(i, i + 2);
+            i += 2;
+            continue;
+          }
+          if (ch === "$" && input[i + 1] === "(") {
+            stack.push({ kind: "subst", parenDepth: 1 });
+            out += "$(";
+            i += 2;
+            continue;
+          }
+          if (ch === '"') stack.pop();
+          out += ch;
+          i++;
+          continue;
+        }
+
+        if (ch === "\\" && i + 1 < input.length) {
+          out += input.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (ch === "#" && (i === 0 || /[\s;&|(]/.test(input[i - 1]!))) {
+          const nl = input.indexOf("\n", i);
+          if (nl === -1) {
+            out += input.slice(i);
+            break;
+          }
+          out += input.slice(i, nl);
+          i = nl;
+          continue;
+        }
+        if (ch === "'") {
+          const close = input.indexOf("'", i + 1);
+          if (close === -1) {
+            out += input.slice(i);
+            break;
+          }
+          out += input.slice(i, close + 1);
+          i = close + 1;
+          continue;
+        }
+        if (ch === '"') {
+          stack.push({ kind: "double" });
+          out += ch;
+          i++;
+          continue;
+        }
+        if (ch === "$" && input[i + 1] === "(") {
+          stack.push({ kind: "subst", parenDepth: 1 });
+          out += "$(";
+          i += 2;
+          continue;
+        }
+        if (top?.kind === "subst") {
+          if (ch === "(") {
+            top.parenDepth++;
+            out += ch;
+            i++;
+            continue;
+          }
+          if (ch === ")") {
+            top.parenDepth--;
+            if (top.parenDepth === 0) stack.pop();
+            out += ch;
+            i++;
+            continue;
+          }
+        }
+        if (ch === "<" && input[i + 1] === "<" && input[i + 2] !== "<") {
+          const m = matchHeredocOpener(input.slice(i), "executable");
+          if (m) {
+            pending.push({
+              delim: m.delim,
+              expand: m.expand,
+              stripTabs: m.stripTabs,
+              openerOffset: out.length,
+            });
+            out += input.slice(i, i + m.length);
+            i += m.length;
+            continue;
+          }
+        }
+        if (ch === "\n" && pending.length > 0) {
+          const bodies: string[][] = pending.map(() => []);
+          const { next, closed } = skipHeredocBody(input, i + 1, pending, {
+            stripCr: true,
+            onBodyLine: (line, hIdx) => bodies[hIdx]!.push(line),
+          });
+          if (!closed) {
+            // Unclosed heredoc: fail closed by keeping remainder verbatim.
+            out += input.slice(i);
+            break;
+          }
+          out += "\n";
+          for (let hIdx = 0; hIdx < pending.length; hIdx++) {
+            const bodyText = bodies[hIdx]!.join("\n");
+            if (pending[hIdx]!.expand) {
+              out += `${bodyText}\n`;
+            } else {
+              quotedHeredocs.push({ openerOffset: pending[hIdx]!.openerOffset, body: bodyText });
+            }
+          }
+          pending.length = 0;
+          i = next;
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+
+      if (quotedHeredocs.length > 0) {
+        enfLog.debug("extract_quoted_heredocs", "count", quotedHeredocs.length);
+      }
+      return { stripped: out, quotedHeredocs };
+    };
+
+    /**
+     * Replace top-level standalone single-quoted spans (`'...'` and `'\''`-chained literal words)
+     * with `''` so inert Markdown prose (e.g. `'see \`~/.pi/agent/bin/pi\`'`) does not
+     * trip dynamic shell-expansion guards. Never strips inside `"..."` or `$(...)` frames,
+     * glued single quotes (`cat '/home/u/.pi/agent/'*`), or unterminated quotes (fail-closed).
+     */
+    const stripStandaloneSingleQuotes = (input: string): string => {
+      if (!input.includes("'")) return input;
+      type Frame = { kind: "double" } | { kind: "subst"; parenDepth: number };
+      const stack: Frame[] = [];
+      let out = "";
+      let i = 0;
+
+      while (i < input.length) {
+        const top = stack[stack.length - 1];
+        const ch = input[i]!;
+
+        if (top?.kind === "double") {
+          if (ch === "\\" && i + 1 < input.length) {
+            out += input.slice(i, i + 2);
+            i += 2;
+            continue;
+          }
+          if (ch === "$" && input[i + 1] === "(") {
+            stack.push({ kind: "subst", parenDepth: 1 });
+            out += "$(";
+            i += 2;
+            continue;
+          }
+          if (ch === '"') stack.pop();
+          out += ch;
+          i++;
+          continue;
+        }
+
+        if (ch === "\\" && i + 1 < input.length) {
+          out += input.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (ch === "#" && (i === 0 || /[\s;&|(]/.test(input[i - 1]!))) {
+          const nl = input.indexOf("\n", i);
+          if (nl === -1) {
+            out += input.slice(i);
+            break;
+          }
+          out += input.slice(i, nl);
+          i = nl;
+          continue;
+        }
+        if (ch === '"') {
+          stack.push({ kind: "double" });
+          out += ch;
+          i++;
+          continue;
+        }
+        if (ch === "$" && input[i + 1] === "(") {
+          stack.push({ kind: "subst", parenDepth: 1 });
+          out += "$(";
+          i += 2;
+          continue;
+        }
+        if (top?.kind === "subst") {
+          if (ch === "(") {
+            top.parenDepth++;
+            out += ch;
+            i++;
+            continue;
+          }
+          if (ch === ")") {
+            top.parenDepth--;
+            if (top.parenDepth === 0) stack.pop();
+            out += ch;
+            i++;
+            continue;
+          }
+          // Inside $(...): keep single-quoted spans verbatim so command-substitution
+          // payloads fed to `eval`/`bash -c` cannot hide dynamic `.pi/agent/` access.
+          if (ch === "'") {
+            const close = input.indexOf("'", i + 1);
+            if (close === -1) {
+              out += input.slice(i);
+              break;
+            }
+            out += input.slice(i, close + 1);
+            i = close + 1;
+            continue;
+          }
+          out += ch;
+          i++;
+          continue;
+        }
+        if (ch === "'") {
+          const leftOk = i === 0 || /[\s;|&()=<>]/.test(input[i - 1]!);
+          let cursor = i;
+          let closed = false;
+          while (cursor < input.length && input[cursor] === "'") {
+            const close = input.indexOf("'", cursor + 1);
+            if (close === -1) {
+              closed = false;
+              break;
+            }
+            closed = true;
+            cursor = close + 1;
+            if (cursor + 1 < input.length && input[cursor] === "\\" && input[cursor + 1] === "'") {
+              cursor += 2;
+              continue;
+            }
+            break;
+          }
+          if (!closed) {
+            // Unterminated single quote: fail closed.
+            out += input.slice(i);
+            break;
+          }
+          const rightOk = cursor === input.length || /[\s;|&()<>]/.test(input[cursor]!);
+          out += leftOk && rightOk ? "''" : input.slice(i, cursor);
+          i = cursor;
+          continue;
+        }
+        out += ch;
+        i++;
+      }
+      return out;
+    };
+
+    const INERT_PROSE_COMMANDS = new Set([
+      "gh",
+      "glab",
+      "echo",
+      "printf",
+      "cat",
+      "tee",
+      "grep",
+      "egrep",
+      "fgrep",
+      "rg",
+      "ag",
+      "ack",
+    ]);
+    const INERT_GIT_SUBCOMMANDS = new Set(["commit", "tag", "notes", "log", "grep"]);
+
+    /**
+     * True ONLY for demonstrably data-only commands where standalone single-quoted
+     * operands and quoted heredoc bodies are never executed as code. Everything else
+     * (including `awk`, `sed`, `lua`, `php`, `make`, unknown commands) fails closed.
+     */
+    const isInertProseSegment = (tokens: string[], cmdIdx: number, cmdWord: string): boolean => {
+      if (cmdIdx >= tokens.length) return false;
+      if (cmdWord === "gh") {
+        const sub = (tokens[cmdIdx + 1] ?? "").toLowerCase();
+        return sub !== "alias";
+      }
+      if (INERT_PROSE_COMMANDS.has(cmdWord)) return true;
+      if (cmdWord === "git") {
+        for (let i = cmdIdx + 1; i < tokens.length; i++) {
+          const tok = tokens[i]!;
+          if (tok === "-c" || tok.startsWith("-c") || tok === "--config-env" || tok.startsWith("--config-env=")) {
+            return false;
+          }
+          if (tok === "-C" || tok === "--git-dir" || tok === "--work-tree") {
+            i++;
+            continue;
+          }
+          if (tok.startsWith("-")) continue;
+          return INERT_GIT_SUBCOMMANDS.has(tok.toLowerCase());
+        }
+      }
+      return false;
+    };
+
+    const inlineRuntimeSourceFlags = (
+      cmdWord: string,
+      tokens: string[],
+      cmdIdx: number,
+    ): { hasInlineFlag: boolean; hasScriptFile: boolean; readsStdinExplicitly: boolean; inlineCodes: string[] } => {
+      let hasInlineFlag = false;
+      let hasScriptFile = false;
+      let readsStdinExplicitly = false;
+      const inlineCodes: string[] = [];
+      const valueFlags = new Set([
+        "-W", "-X", "-r", "--require", "--import", "--loader", "--conditions",
+        "-I", "-C", "-M", "--env-file", "--preload",
+      ]);
+      for (let i = cmdIdx + 1; i < tokens.length; i++) {
+        const tok = tokens[i]!;
+        if (tok === "--") {
+          const next = tokens[i + 1];
+          if (next === "-") readsStdinExplicitly = true;
+          else if (next) hasScriptFile = true;
+          break;
+        }
+        if (tok === "-") {
+          readsStdinExplicitly = true;
+          break;
+        }
+        if (
+          tok === "-c" ||
+          tok === "-e" ||
+          tok === "-E" ||
+          tok === "-p" ||
+          tok === "--eval" ||
+          tok === "--print" ||
+          (cmdWord === "deno" && tok === "eval")
+        ) {
+          hasInlineFlag = true;
+          if (i + 1 < tokens.length) {
+            inlineCodes.push(unwrapShellArgQuotes(tokens[i + 1]!));
+            i++;
+          }
+          // Python `-c` consumes the rest as sys.argv; node/perl/ruby can repeat `-e`.
+          if (cmdWord.startsWith("python")) break;
+          continue;
+        }
+        if (tok.startsWith("--eval=") || tok.startsWith("--print=")) {
+          hasInlineFlag = true;
+          inlineCodes.push(unwrapShellArgQuotes(tok.slice(tok.indexOf("=") + 1)));
+          continue;
+        }
+        if (cmdWord.startsWith("python") && tok.startsWith("-c") && tok.length > 2) {
+          hasInlineFlag = true;
+          inlineCodes.push(unwrapShellArgQuotes(tok.slice(2)));
+          break;
+        }
+        if (
+          ((cmdWord === "perl" || cmdWord === "ruby") && /^-[a-zA-Z]*[eE]/.test(tok)) ||
+          ((cmdWord === "node" || cmdWord === "nodejs" || cmdWord === "bun" || cmdWord === "tsx") &&
+            /^-[a-zA-Z]*[ep]/.test(tok))
+        ) {
+          hasInlineFlag = true;
+          const m = /^-[a-zA-Z]*[eEp](.+)$/.exec(tok);
+          if (m) {
+            inlineCodes.push(unwrapShellArgQuotes(m[1]!));
+          } else if (i + 1 < tokens.length) {
+            inlineCodes.push(unwrapShellArgQuotes(tokens[i + 1]!));
+            i++;
+          }
+          continue;
+        }
+        if (cmdWord.startsWith("python") && (tok === "-m" || tok.startsWith("-m"))) {
+          hasScriptFile = true;
+          break;
+        }
+        if (tok.startsWith("-")) {
+          if (!tok.includes("=") && valueFlags.has(tok)) i++;
+          continue;
+        }
+        // Skip shell redirection operators (`<<'EOF'`, `<< 'EOF'`, `<file`, `2>/dev/null`) so they
+        // are never mistaken for a script file operand.
+        if (/^(?:\d*[<>]{1,3}|&>>?)$/.test(tok)) {
+          i++;
+          continue;
+        }
+        if (/^(?:\d*[<>]|&>)/.test(tok)) {
+          continue;
+        }
+        if ((cmdWord === "deno" || cmdWord === "bun") && tok === "run" && i === cmdIdx + 1) {
+          continue;
+        }
+        if (!hasInlineFlag) {
+          hasScriptFile = true;
+          break;
+        }
+      }
+      return { hasInlineFlag, hasScriptFile, readsStdinExplicitly, inlineCodes };
+    };
+
+    /**
+     * Strict positive allowlist of provably data-only single-line inline runtime snippets
+     * that CANNOT execute stdin (no computed property access `[...]`, no reflection, no
+     * newlines, no arbitrary calls or callbacks). Everything else fails closed so attached
+     * heredocs and piped input are inspected by `checkInlineCode`.
+     */
+    const SAFE_DATA_ONLY_INLINE_CODE_RE =
+      /^(?:(?:import[ \t]+sys[ \t]*;[ \t]*)?print[ \t]*\([ \t]*(?:input[ \t]*\([ \t]*\)|sys\.stdin\.read[ \t]*\([ \t]*\)|-?\d+(?:\.\d+)?|True|False|None|"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*')[ \t]*\)|console\.(?:log|error|info)[ \t]*\([ \t]*(?:-?\d+(?:\.\d+)?|true|false|null|"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*')[ \t]*\)|-?\d+(?:\.\d+)?|"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*')[ \t]*;?$/;
+
+    const inlineCodeMayExecuteStdin = (inlineCodes: string[]): boolean => {
+      if (inlineCodes.length === 0) return true;
+      for (const rawCode of inlineCodes) {
+        const trimmed = rawCode.trim();
+        if (!trimmed) continue;
+        if (!SAFE_DATA_ONLY_INLINE_CODE_RE.test(trimmed)) return true;
+      }
+      return false;
+    };
+
+    /**
+     * Strict positive allowlist of single-statement nested `-c` shell commands that are
+     * demonstrably independent of positional arguments and `/dev/fd` (only literal
+     * `echo`/`printf`/`true`/`false`/`:`, horizontal whitespace `[ \t]` only — zero
+     * newlines, command separators, `$`, backticks, globs, loops, redirections, or subshells).
+     */
+    const NESTED_SCRIPT_IGNORES_ARGS_RE =
+      /^[ \t]*(?:(?:echo|printf)(?:[ \t]+(?:-[A-Za-z]+|[A-Za-z0-9_.,:%+=/@-]+|'(?:[^'\r\n]*)'|"(?:[^"$`\\\r\n]*)"))*|true|false|:)[ \t]*$/;
+
+    const hasActiveDynamicPiAgentAccess = (text: string): boolean => {
+      const active = stripStandaloneSingleQuotes(text);
+      return dynamicPiAgentAccessRe.test(active) || dynamicPiAgentAccessRe.test(collapseFragments(active));
+    };
+
+    const hasRawDynamicPiAgentAccess = (text: string): boolean =>
+      dynamicPiAgentAccessRe.test(text) || dynamicPiAgentAccessRe.test(collapseFragments(text));
+
+    const resolveEffectiveCmd = (tokens: string[], startIdx: number): { idx: number; word: string } => {
+      let i = startIdx;
+      while (i < tokens.length) {
+        const raw = tokens[i]!;
+        const bare = basename(raw.replace(/^[()]+/, "")).toLowerCase();
+        if (WRAPPER_WORDS.has(bare) || bare === "env" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(raw)) {
+          i++;
+          while (i < tokens.length && tokens[i]!.startsWith("-") && tokens[i] !== "--") {
+            const flag = tokens[i]!;
+            if (!flag.includes("=") && (ENV_VALUE_OPTIONS.has(flag) || WRAPPER_VALUE_OPTIONS.has(flag))) {
+              i += 2;
+            } else {
+              i++;
+            }
+          }
+          if (tokens[i] === "--") i++;
+          if (bare === "timeout" && i < tokens.length && /^\d/.test(tokens[i]!)) i++;
+          continue;
+        }
+        if (bare === "uv" && tokens[i + 1] === "run") {
+          i += 2;
+          while (i < tokens.length && tokens[i]!.startsWith("-") && tokens[i] !== "--") {
+            const flag = tokens[i]!;
+            if (
+              !flag.includes("=") &&
+              (flag === "--with" ||
+                flag === "--group" ||
+                flag === "--python" ||
+                flag === "-p" ||
+                flag === "--directory" ||
+                flag === "--project")
+            ) {
+              i += 2;
+            } else {
+              i++;
+            }
+          }
+          if (tokens[i] === "--") i++;
+          continue;
+        }
+        return { idx: i, word: bare };
+      }
+      return { idx: startIdx, word: basename(tokens[startIdx] ?? "").toLowerCase() };
+    };
+
+    const inlineRuntimeTargetsStateDb = (code: string): boolean => {
+      const defrag = collapseFragments(code);
+      const isWriteScript = scriptWriteRe.test(defrag) || /\bw\b|['"]w['"]|['"]w\+['"]|['"]a['"]/.test(defrag);
+      const mentionsStateDbLocal =
+        stateDbUncondRe.test(defrag) ||
+        /\b(?:restricted_folder_approvals|tool_host_approvals)\b/i.test(defrag);
+      return (
+        (isWriteScript || sqliteEngineRe.test(defrag) || /\bsqlite\b/i.test(defrag)) &&
+        (mentionsStateDbLocal ||
+          (/\.pi\b/i.test(defrag) && /(?:state\.db|restricted_folder_approvals)/i.test(defrag)) ||
+          (/join\s*\([^)]*\.pi/i.test(defrag) && /\bdata\b/i.test(defrag)))
+      );
+    };
+
     const checkProtectedSecurityStorage = (
       rawScript: string,
       parentVars: Map<string, string>,
       depth = 0,
     ): "hmac" | "settings" | "state_db" | null => {
-      if (depth > 3) return null;
       const script = preprocessAnsiCQuotes(rawScript);
       const defragFull = collapseFragments(script);
-      if (hmacKeyRe.test(defragFull) || dynamicPiAgentAccessRe.test(script)) return "hmac";
+      // Literal `.approval-hmac-key` stays unconditionally blocked everywhere (even in quotes/heredocs).
+      if (hmacKeyRe.test(defragFull)) return "hmac";
+      if (depth > 3) {
+        // Fail closed past the recursion ceiling so deeply nested `eval`/`bash -c` cannot
+        // smuggle dynamic protected-agent access or state/settings tampering unexamined.
+        if (hasRawDynamicPiAgentAccess(script)) {
+          enfLog.debug("recursion_limit_dynamic_pi_agent_blocked", "depth", depth);
+          return "hmac";
+        }
+        if (
+          stateDbUncondRe.test(defragFull) ||
+          /\b(?:restricted_folder_approvals|tool_host_approvals)\b/i.test(defragFull)
+        ) {
+          return "state_db";
+        }
+        if (settingsPathRe.test(defragFull) || /\bpi-config-settings\b/i.test(defragFull)) {
+          return "settings";
+        }
+        return null;
+      }
+
+      const { stripped: withoutQuotedHeredocs, quotedHeredocs } = extractQuotedHeredocs(script);
 
       const vars = new Map(parentVars);
       let sawPiFragmentVar = false;
       let sawStateDbFragmentVar = false;
+      let pipeBuffer: string[] = [];
+      const priorFileWriteTexts: string[] = [];
 
-      for (const seg of unquotedSegments(script)) {
+      for (const seg of unquotedSegments(withoutQuotedHeredocs)) {
+        const prefixBeforeSeg = seg.start > 0 ? withoutQuotedHeredocs.slice(0, seg.start) : "";
+        const pipedFromPrev = prefixBeforeSeg.trimEnd().endsWith("|");
+        if (!pipedFromPrev) pipeBuffer = [];
+
+        const segEnd = seg.start + seg.text.length;
+        const segHeredocBodies = quotedHeredocs
+          .filter((h) => h.openerOffset >= seg.start && h.openerOffset < segEnd)
+          .map((h) => h.body);
+
         const rawTokens = tokenize(seg.text);
-        if (rawTokens.length === 0) continue;
+        if (rawTokens.length === 0) {
+          if (segHeredocBodies.some((b) => hasRawDynamicPiAgentAccess(b))) return "hmac";
+          continue;
+        }
 
         // Track `set -- arg1 arg2 ...` positional parameters ($1, $2, $@, $*)
         if (rawTokens[0] === "set") {
@@ -6643,11 +7185,48 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         const defragSeg = collapseFragments(expandedSeg);
         const maskedSeg = maskQuotedRegions(defragSeg);
 
-        if (hmacKeyRe.test(defragSeg) || dynamicPiAgentAccessRe.test(expandedSeg)) return "hmac";
+        if (hmacKeyRe.test(defragSeg)) return "hmac";
 
         const expandedTokens = tokenize(expandedSeg);
         const cmdIdx = expandedTokens.length > 0 ? skipToCommandWord(expandedTokens) : 0;
-        const cmdWord = basename(expandedTokens[cmdIdx] ?? "").toLowerCase();
+        const { idx: effectiveCmdIdx, word: cmdWord } = resolveEffectiveCmd(expandedTokens, cmdIdx);
+        const isInertProse = isInertProseSegment(expandedTokens, effectiveCmdIdx, cmdWord);
+        const segWritesFile =
+          /(?:>>?|>\|)/.test(maskQuotedRegions(seg.text)) || cmdWord === "tee" || cmdWord === "sponge";
+
+        const isInlineRuntime = inlineRuntimeOps.has(cmdWord);
+        const isSourceOrDot = cmdWord === "source" || cmdWord === ".";
+        const isXargsExec =
+          cmdWord === "xargs" &&
+          expandedTokens.slice(effectiveCmdIdx + 1).some((t) => {
+            const b = basename(t).toLowerCase();
+            return SHELL_WORDS.has(b) || inlineRuntimeOps.has(b);
+          });
+        const isNestedShell =
+          cmdWord === "eval" ||
+          SHELL_WORDS.has(cmdWord) ||
+          isSourceOrDot ||
+          isXargsExec ||
+          runsNestedShell(expandedTokens);
+
+        // Dynamic `.pi/agent/` check: ONLY strip standalone single quotes and skip quoted
+        // heredocs for demonstrably data-only commands (`gh`, `echo`, `printf`, `cat`, `git commit`, etc.).
+        if (isInertProse) {
+          if (hasActiveDynamicPiAgentAccess(expandShellVars(stripStandaloneSingleQuotes(seg.text), vars))) {
+            return "hmac";
+          }
+        } else if (!isInlineRuntime && !isNestedShell) {
+          // Non-inert, non-shell, non-inline-runtime command (e.g. `awk`, `sed`, `lua`, `make`):
+          // fail closed on unstripped segment, attached heredocs, and piped sources.
+          if (
+            hasRawDynamicPiAgentAccess(expandedSeg) ||
+            segHeredocBodies.some((b) => hasRawDynamicPiAgentAccess(b)) ||
+            (pipedFromPrev && pipeBuffer.some((src) => hasRawDynamicPiAgentAccess(src)))
+          ) {
+            enfLog.debug("non_inert_dynamic_pi_agent_blocked", "cmd", cmdWord);
+            return "hmac";
+          }
+        }
 
         // 1. State DB & approval tables tamper check (unconditional)
         const mentionsStateDb =
@@ -6691,7 +7270,16 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           return "settings";
         }
 
-        if (expandedTokens.length === 0) continue;
+        // Track actual data emitted into the current pipeline or written to disk via active shell
+        // redirections (never from quoted `<new>` placeholders).
+        if (segWritesFile) {
+          priorFileWriteTexts.push(seg.text, ...segHeredocBodies, ...(pipedFromPrev ? pipeBuffer : []));
+        }
+
+        if (expandedTokens.length === 0) {
+          pipeBuffer.push(seg.text, ...segHeredocBodies);
+          continue;
+        }
 
         // Direct file-mutating commands targeting state.db (note: settings `cp`/interpreter
         // co-occurrence is intentionally kept out of the narrow text guard per PR #950;
@@ -6702,33 +7290,69 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           }
         }
 
-        // Inline scripts (`python3 -c`, `node -e`, etc.) constructing `.pi/data/state.db` / `restricted_folder_approvals`
-        if (inlineRuntimeOps.has(cmdWord)) {
-          const isWriteScript = scriptWriteRe.test(defragSeg) || /\bw\b|['"]w['"]|['"]w\+['"]|['"]a['"]/.test(defragSeg);
-          if (
-            (isWriteScript || sqliteEngineRe.test(defragSeg) || /\bsqlite\b/i.test(defragSeg)) &&
-            (mentionsStateDb ||
-              (/\.pi\b/i.test(defragSeg) &&
-                /(?:state\.db|restricted_folder_approvals)/i.test(defragSeg)) ||
-              (/join\s*\([^)]*\.pi/i.test(defragSeg) && /\bdata\b/i.test(defragSeg)))
-          ) {
-            return "state_db";
+        // Inline scripts (`python3 -c`, `node -e`, etc.) constructing `.pi/agent/` or `.pi/data/state.db`
+        if (isInlineRuntime) {
+          const checkInlineCode = (code: string): "hmac" | "state_db" | null => {
+            if (hasRawDynamicPiAgentAccess(code) || inlineRuntimeDynamicPiAgentRe.test(code)) {
+              enfLog.debug("inline_runtime_dynamic_pi_agent_blocked", "cmd", cmdWord);
+              return "hmac";
+            }
+            if (inlineRuntimeTargetsStateDb(code)) return "state_db";
+            return null;
+          };
+          const segHit = checkInlineCode(expandedSeg);
+          if (segHit) return segHit;
+
+          const { hasInlineFlag, hasScriptFile, readsStdinExplicitly, inlineCodes } = inlineRuntimeSourceFlags(
+            cmdWord,
+            expandedTokens,
+            effectiveCmdIdx,
+          );
+          const execsStdinAsCode =
+            readsStdinExplicitly ||
+            (!hasInlineFlag && !hasScriptFile) ||
+            (hasInlineFlag && inlineCodeMayExecuteStdin(inlineCodes));
+
+          if (execsStdinAsCode) {
+            for (const body of segHeredocBodies) {
+              const bodyHit = checkInlineCode(body);
+              if (bodyHit) return bodyHit;
+            }
+            if (pipedFromPrev) {
+              for (const src of pipeBuffer) {
+                const pipeHit = checkInlineCode(src);
+                if (pipeHit) return pipeHit;
+              }
+            }
+          }
+          if (!hasInlineFlag && priorFileWriteTexts.length > 0) {
+            for (const written of priorFileWriteTexts) {
+              const fileHit = checkInlineCode(written);
+              if (fileHit) return fileHit;
+            }
           }
         }
 
-        // Recurse into nested shells (`bash -c`, `sh -c`, `eval`)
-        if (cmdWord === "eval" || runsNestedShell(expandedTokens)) {
+        // Recurse into nested shells (`bash -c`, `sh -c`, `eval`, `source`/`.`, `xargs <shell>`, or stdin/file-fed shells)
+        if (isNestedShell) {
+          // Command substitution (`$(...)` / backticks) splices directly into the nested shell
+          // command string (e.g. `eval "$(echo 'cat ~/.pi/agent/.*')"`): fail closed immediately.
+          if (/\$\(|`/.test(expandedSeg) && hasRawDynamicPiAgentAccess(expandedSeg)) {
+            enfLog.debug("nested_shell_subst_dynamic_pi_agent_blocked", "cmd", cmdWord);
+            return "hmac";
+          }
+
           const nested: string[] = [];
           if (cmdWord === "eval") {
             const evalArgs: string[] = [];
-            for (let i = cmdIdx + 1; i < expandedTokens.length; i++) {
+            for (let i = effectiveCmdIdx + 1; i < expandedTokens.length; i++) {
               const t = expandedTokens[i]!;
               if (evalArgs.length === 0 && t === "--") continue;
               evalArgs.push(stripOuterQuotesSimple(t));
             }
             if (evalArgs.length > 0) nested.push(evalArgs.join(" "));
-          } else {
-            for (let i = cmdIdx + 1; i < expandedTokens.length; i++) {
+          } else if (!isSourceOrDot && !isXargsExec) {
+            for (let i = effectiveCmdIdx + 1; i < expandedTokens.length; i++) {
               const tok = expandedTokens[i]!;
               if (tok === "--") break;
               if (/^-[a-zA-Z]*c$/.test(tok) && i + 1 < expandedTokens.length) {
@@ -6748,7 +7372,72 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
             const innerHit = checkProtectedSecurityStorage(inner, vars, depth + 1);
             if (innerHit) return innerHit;
           }
+          // Process substitution (`<(...)`): always inspect what the subshell itself runs, and
+          // also inspect its emitted text as executable input when the nested shell executes it
+          // (no `-c`, `eval`, stdin redirect `< <(...)`, or `-c` referencing positional args / `/dev/fd`).
+          if (/<\(/.test(expandedSeg)) {
+            const balancedSeg = withoutQuotedHeredocs[segEnd] === ")" ? `${expandedSeg})` : expandedSeg;
+            const procSubs = extractSubshells(balancedSeg);
+            if (procSubs.length === 0 && hasRawDynamicPiAgentAccess(expandedSeg)) {
+              enfLog.debug("nested_shell_unbalanced_proc_subst_blocked", "cmd", cmdWord);
+              return "hmac";
+            }
+            for (const sub of procSubs) {
+              const subHit = checkProtectedSecurityStorage(sub, vars, depth + 1);
+              if (subHit) return subHit;
+            }
+            const nestedConsumesProcSubst =
+              nested.length === 0 ||
+              cmdWord === "eval" ||
+              /(?:^|[\s;|&()])<(?!\()/.test(maskedSeg) ||
+              nested.some((inner) => !NESTED_SCRIPT_IGNORES_ARGS_RE.test(inner));
+            if (nestedConsumesProcSubst && hasRawDynamicPiAgentAccess(expandedSeg)) {
+              enfLog.debug("nested_shell_proc_subst_dynamic_pi_agent_blocked", "cmd", cmdWord);
+              return "hmac";
+            }
+          }
+          // Inspect attached heredocs, piped input, and prior file writes even when `-c` / `eval`
+          // extracted a nested command (e.g. `cat <<'EOF' | bash -c 'bash'` or `bash -c 'python3'`).
+          for (const body of segHeredocBodies) {
+            if (hasRawDynamicPiAgentAccess(body) || inlineRuntimeDynamicPiAgentRe.test(body)) {
+              enfLog.debug("heredoc_nested_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
+              return "hmac";
+            }
+            const bodyHit = checkProtectedSecurityStorage(body, vars, depth + 1);
+            if (bodyHit) return bodyHit;
+          }
+          if (pipedFromPrev) {
+            for (const src of pipeBuffer) {
+              if (hasRawDynamicPiAgentAccess(src) || inlineRuntimeDynamicPiAgentRe.test(src)) {
+                enfLog.debug("piped_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
+                return "hmac";
+              }
+              const pipeHit = checkProtectedSecurityStorage(src, vars, depth + 1);
+              if (pipeHit) return pipeHit;
+            }
+          }
+          if (priorFileWriteTexts.length > 0) {
+            for (const written of priorFileWriteTexts) {
+              if (hasRawDynamicPiAgentAccess(written) || inlineRuntimeDynamicPiAgentRe.test(written)) {
+                enfLog.debug("file_fed_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
+                return "hmac";
+              }
+              const fileHit = checkProtectedSecurityStorage(written, vars, depth + 1);
+              if (fileHit) return fileHit;
+            }
+          }
+          if (
+            nested.length === 0 &&
+            (isSourceOrDot || isXargsExec || /(?:^|[\s;|&()])(?:<<<?|<)/.test(maskedSeg)) &&
+            (hasRawDynamicPiAgentAccess(expandedSeg) ||
+              (isXargsExec && inlineRuntimeDynamicPiAgentRe.test(expandedSeg)))
+          ) {
+            enfLog.debug("indirect_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
+            return "hmac";
+          }
         }
+
+        pipeBuffer.push(seg.text, ...segHeredocBodies);
       }
       return null;
     };
