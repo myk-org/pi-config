@@ -6,6 +6,8 @@
  */
 
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { createLogger } from "../extensions/shared/logger.ts";
 
 const log = createLogger("pidiff");
@@ -239,4 +241,48 @@ export function parseWorktreeList(raw: string): WorktreeInfo[] {
   }
   pushIfValid();
   return worktrees;
+}
+
+function normalizeCheckoutPath(cwd: string): string {
+  const resolved = path.resolve(cwd);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function resolveGitCommonDir(gitBin: string, cwd: string): string | null {
+  try {
+    const out = execFileSync(gitBin, ["rev-parse", "--git-common-dir"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!out) return null;
+    return normalizeCheckoutPath(path.resolve(cwd, out));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return true when `candidateCwd` is the same checkout as `projectCwd` or a
+ * linked worktree (or subdirectory) belonging to the same git repository.
+ */
+export function isSameGitRepoCheckout(
+  projectCwd: string,
+  candidateCwd: string,
+  gitBin = "git",
+): boolean {
+  if (!projectCwd) return true;
+  if (!candidateCwd) return false;
+  if (normalizeCheckoutPath(projectCwd) === normalizeCheckoutPath(candidateCwd)) return true;
+  const projectCommon = resolveGitCommonDir(gitBin, projectCwd);
+  if (!projectCommon) return false;
+  const candidateCommon = resolveGitCommonDir(gitBin, candidateCwd);
+  const same = candidateCommon !== null && projectCommon === candidateCommon;
+  log.debug("isSameGitRepoCheckout", { projectCwd, candidateCwd, same });
+  return same;
 }

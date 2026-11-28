@@ -26,10 +26,11 @@ import { markHumanRelayedPrompt, resolveBridgeSessionKey } from "../shared/sessi
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { shouldSkipOneshotRegister } from "../shared/oneshot.js";
 import { getSetting } from "../orchestrator/project-settings.js";
-import { getProjectLegacyRunDir, getProjectRunDir } from "../orchestrator/utils.js";
+import { getProjectLegacyRunDir, getProjectRunDir, resolveRepoRoot } from "../orchestrator/utils.js";
 import {
   acquireSpawnLocks,
   evaluateSpawnLock,
+  findLiveLockfile,
   findRunningPidiffPort,
   readLockfile,
   releaseSpawnLocks,
@@ -95,9 +96,40 @@ export function formatReviewMessage(parsed: { comments: any[]; summary?: string 
   return `## pidiff: Code Review Comments\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\`\n\nPlease address these review comments.`;
 }
 
-export function registerPidiff(pi: ExtensionAPI): void {
+/**
+ * True when `ctx` is eligible to connect to the project's pidiff daemon:
+ * - Interactive TUI sessions (`ctx.mode === "tui"`)
+ * - Supervised headless COMS RPC peers (`ctx.mode === "rpc"` with `PI_COMS_SUPERVISED_PEER === "1"`)
+ *
+ * Excludes subagent children (`PI_SUBAGENT_CHILD=1`), unsupervised RPC sessions,
+ * `print`/`json` modes, and missing/stale contexts.
+ */
+export function isPidiffConnectableCtx(
+  ctx: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env.PI_SUBAGENT_CHILD === "1") return false;
+  if (!isLiveExtensionCtx(ctx)) return false;
+  const mode = (ctx as { mode?: unknown }).mode;
+  if (mode === "tui") return true;
+  return mode === "rpc" && env.PI_COMS_SUPERVISED_PEER === "1";
+}
+
+export interface PidiffRegisterOptions {
+  reconnectPollIntervalMs?: number;
+}
+
+export function registerPidiff(pi: ExtensionAPI, opts: PidiffRegisterOptions = {}): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
   if (shouldSkipOneshotRegister(log)) return;
+
+  const registrationEnv: NodeJS.ProcessEnv = {
+    PI_SUBAGENT_CHILD: process.env.PI_SUBAGENT_CHILD,
+    PI_COMS_SUPERVISED_PEER: process.env.PI_COMS_SUPERVISED_PEER,
+    PI_PIDIFF_HOST: process.env.PI_PIDIFF_HOST,
+    PI_PIDIFF_PORT: process.env.PI_PIDIFF_PORT,
+  };
+  const canConnectCtx = (ctx: unknown): boolean => isPidiffConnectableCtx(ctx, registrationEnv);
 
   const projectCwd = process.cwd();
   const pidiffDisabled = !getSetting(projectCwd, "pidiff_enable");
@@ -106,8 +138,9 @@ export function registerPidiff(pi: ExtensionAPI): void {
     return;
   }
 
-  let lockDir = ""; // Set on session_start from ctx.cwd — write target (.pi/run)
+  let lockDir = ""; // Set on session_start — write target (.pi/run) or shared repo lock dir for supervised peers
   let legacyLockDir = ""; // Pre-#1020 read-only fallback (.pi/tmp)
+  let extraLockDirs: string[] = []; // Worktree-local fallback dirs for supervised peers
   let activePort = 0;
 
   function setStatus(ctx: any): void {
@@ -134,8 +167,8 @@ export function registerPidiff(pi: ExtensionAPI): void {
     });
   }
 
-  const pidiffHost = resolvePidiffHost(process.env);
-  const pidiffPortOverride = resolvePidiffPortOverride(process.env);
+  const pidiffHost = resolvePidiffHost(registrationEnv);
+  const pidiffPortOverride = resolvePidiffPortOverride(registrationEnv);
   const probePidiffHealth = (port: number) => checkHealth(port, pidiffHost);
 
   const client = createDaemonClient(pi, {
@@ -144,7 +177,12 @@ export function registerPidiff(pi: ExtensionAPI): void {
     statusKey: "8-diff",
     host: pidiffHost,
     log,
-    shouldAutoSpawn: () => {
+    reconnectPollIntervalMs: opts.reconnectPollIntervalMs,
+    shouldConnectCtx: canConnectCtx,
+    // Only interactive TUI sessions on loopback auto-spawn pidiff-server;
+    // supervised COMS RPC peers attach when a daemon is already running.
+    shouldAutoSpawn: (ctx) => {
+      if (ctx?.mode !== "tui") return false;
       const normalized = pidiffHost.trim().toLowerCase();
       return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1" || normalized === "[::1]";
     },
@@ -153,13 +191,19 @@ export function registerPidiff(pi: ExtensionAPI): void {
       return Boolean(lockDir || pidiffPortOverride);
     },
 
-    findRunningPort() {
+    async findRunningPort() {
       const preferred = activePort || pidiffPortOverride || readLockfile(lockDir, legacyLockDir)?.port || 0;
-      return findRunningPidiffPort(lockDir, legacyLockDir, preferred, probePidiffHealth);
+      if (preferred && await probePidiffHealth(preferred)) return preferred;
+      const skipPorts = preferred ? new Set([preferred]) : undefined;
+      return findLiveLockfile([lockDir, legacyLockDir, ...extraLockDirs], skipPorts, probePidiffHealth);
     },
 
     getStatusPort() {
-      return activePort || pidiffPortOverride || readLockfile(lockDir, legacyLockDir)?.port || null;
+      return activePort
+        || pidiffPortOverride
+        || readLockfile(lockDir, legacyLockDir)?.port
+        || (extraLockDirs.length ? readLockfile(extraLockDirs[0], extraLockDirs[1])?.port : null)
+        || null;
     },
 
     async acquireSpawnLock(ctx) {
@@ -262,10 +306,26 @@ export function registerPidiff(pi: ExtensionAPI): void {
   // Session lifecycle
   pi.on("session_start", async (_event, ctx) => {
     client.setLastCtx(ctx);
-    lockDir = getProjectRunDir(ctx.cwd);
-    legacyLockDir = getProjectLegacyRunDir(ctx.cwd);
-    if (!isGitRepo(ctx.cwd)) return;
-    if (!client.connected && isLiveExtensionCtx(ctx) && ctx.mode === "tui") void client.connect(ctx);
+    if (!isGitRepo(ctx.cwd)) {
+      lockDir = "";
+      legacyLockDir = "";
+      extraLockDirs = [];
+      return;
+    }
+    if (ctx.mode === "rpc" && registrationEnv.PI_COMS_SUPERVISED_PEER === "1") {
+      const repoRoot = resolveRepoRoot(ctx.cwd);
+      lockDir = path.join(repoRoot, ".pi", "run");
+      legacyLockDir = path.join(repoRoot, ".pi", "tmp");
+      extraLockDirs = path.resolve(ctx.cwd) !== path.resolve(repoRoot)
+        ? [path.join(ctx.cwd, ".pi", "run"), path.join(ctx.cwd, ".pi", "tmp")]
+        : [];
+      log.debug("supervised_rpc_lockdirs_resolved", { cwd: ctx.cwd, repoRoot, lockDir });
+    } else {
+      lockDir = getProjectRunDir(ctx.cwd);
+      legacyLockDir = getProjectLegacyRunDir(ctx.cwd);
+      extraLockDirs = [];
+    }
+    if (!client.connected && canConnectCtx(ctx)) void client.connect(ctx);
   });
 
   pi.on("agent_end", (_event, ctx) => {

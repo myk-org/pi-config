@@ -43,6 +43,17 @@ interface ProjectSession {
   modified?: string;
 }
 
+/** Build the pidiff deep-link URL targeting the active session's worktree and branch. */
+export function buildPidiffUrl(
+  session: Pick<SessionInfo, "diffPort" | "sessionId" | "cwd" | "branch">,
+): string {
+  const parts: string[] = [];
+  if (session.sessionId) parts.push(`session=${encodeURIComponent(session.sessionId)}`);
+  if (session.cwd) parts.push(`worktree=${encodeURIComponent(session.cwd)}`);
+  if (session.branch) parts.push(`branch=${encodeURIComponent(session.branch)}`);
+  return `http://localhost:${session.diffPort}/${parts.length ? `?${parts.join("&")}` : ""}`;
+}
+
 export function InfoBar({ session, model, tokens, send, onMessage, activePanel, onOpenPanel, onCompact }: Props) {
   const inactive = !session.active;
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -620,7 +631,7 @@ export function InfoBar({ session, model, tokens, send, onMessage, activePanel, 
         {/* Diff viewer — mount only when diffPort is active. */}
         {session.diffPort && (
           <a
-            href={`http://localhost:${session.diffPort}`}
+            href={buildPidiffUrl(session)}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-0.5 text-primary hover:underline shrink-0 border-l border-border pl-2.5"

@@ -10,6 +10,7 @@ import {
   buildRequestDiffsMessage,
   createDiffSessionController,
   getRefreshButtonState,
+  parseDeepLinkParams,
   useDiffSessionController,
   type DiffSessionController,
   type StorageLike,
@@ -891,5 +892,173 @@ describe("useDiffSessionController — React reconnect integration", () => {
       if (prevStorageDesc) Object.defineProperty(globalThis, "localStorage", prevStorageDesc);
       else delete (globalThis as { localStorage?: Storage }).localStorage;
     }
+  });
+});
+
+describe("createDiffSessionController — URL deep-link selection (#1501)", () => {
+  it("returns null from parseDeepLinkParams when query is empty", () => {
+    assert.equal(parseDeepLinkParams(""), null);
+    assert.equal(parseDeepLinkParams("?"), null);
+    assert.equal(parseDeepLinkParams("?other=1"), null);
+  });
+
+  it("parses session, worktree, branch query parameters", () => {
+    assert.deepEqual(
+      parseDeepLinkParams("?session=42%3A%2Frepo%2Fwt-a&worktree=%2Frepo%2Fwt-a&branch=feat%2Fa"),
+      { session: "42:/repo/wt-a", worktree: "/repo/wt-a", branch: "feat/a" },
+    );
+  });
+
+  it("selects exact sessionId from URL before localStorage", () => {
+    const sMain = makeSession({ sessionId: "main-1", cwd: "/repo/main", branch: "main" });
+    const sPeer = makeSession({ sessionId: "peer-1", cwd: "/repo/wt-a", branch: "feat/a" });
+    const sent: object[] = [];
+    const storage = createMemoryStorage({ "pidiff-session": JSON.stringify(sMain) });
+    const ctrl = createDiffSessionController({
+      send: (m) => { sent.push(m); return true; },
+      storage,
+      locationSearch: "?session=peer-1&worktree=%2Frepo%2Fwt-a&branch=feat%2Fa",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [sMain, sPeer] });
+
+    assert.equal(ctrl.getState().activeSession?.sessionId, "peer-1");
+    assert.equal(ctrl.getState().activeWorktree?.path, "/repo/wt-a");
+    assert.equal(ctrl.getState().mode, "branch");
+    assert.deepEqual(sent, [
+      { type: "watch", sessionId: "peer-1" },
+      { type: "watch-worktree", worktreePath: "/repo/wt-a" },
+    ]);
+    ctrl.dispose();
+  });
+
+  it("selects session owning matching linked worktree when sessionId is absent", () => {
+    const sMain = makeSession({ sessionId: "main-1", cwd: "/repo/main", branch: "main" });
+    const sent: object[] = [];
+    const ctrl = createDiffSessionController({
+      send: (m) => { sent.push(m); return true; },
+      locationSearch: "?session=missing-peer&worktree=%2Frepo%2Fwt-a&branch=feat%2Fa",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [sMain] });
+
+    assert.equal(ctrl.getState().activeSession?.sessionId, "main-1");
+    assert.equal(ctrl.getState().activeWorktree?.path, "/repo/wt-a");
+    assert.equal(ctrl.getState().activeWorktree?.branch, "feat/a");
+    assert.equal(ctrl.getState().mode, "branch");
+    assert.deepEqual(sent, [
+      { type: "watch", sessionId: "main-1" },
+      { type: "watch-worktree", worktreePath: "/repo/wt-a" },
+    ]);
+    ctrl.dispose();
+  });
+
+  it("selects session matching branch parameter when sessionId is absent", () => {
+    const sMain = makeSession({ sessionId: "main-1", cwd: "/repo/main", branch: "main" });
+    const sent: object[] = [];
+    const ctrl = createDiffSessionController({
+      send: (m) => { sent.push(m); return true; },
+      locationSearch: "?branch=feat%2Fa",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [sMain] });
+
+    assert.equal(ctrl.getState().activeSession?.sessionId, "main-1");
+    assert.equal(ctrl.getState().activeWorktree?.path, "/repo/wt-a");
+    assert.equal(ctrl.getState().activeWorktree?.branch, "feat/a");
+    assert.equal(ctrl.getState().mode, "branch");
+    ctrl.dispose();
+  });
+
+  it("ignores stale diff_update from inactive path after deep-link bind", () => {
+    const sMain = makeSession({ sessionId: "main-1", cwd: "/repo/main", branch: "main" });
+    const sPeer = makeSession({ sessionId: "peer-1", cwd: "/repo/wt-a", branch: "feat/a" });
+    const ctrl = createDiffSessionController({
+      send: () => true,
+      locationSearch: "?session=peer-1&worktree=%2Frepo%2Fwt-a&branch=feat%2Fa",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [sMain, sPeer] });
+    ctrl.handleMessage({
+      type: "diff_update",
+      mode: "branch",
+      branch: "main",
+      cwd: "/repo/main",
+      committed: [{ name: "wrong.ts", oldContents: "", newContents: "x", status: "added" }],
+      staged: [],
+      unstaged: [],
+    });
+
+    assert.equal(ctrl.getState().loading, true);
+    assert.deepEqual(ctrl.getState().diffData.files, []);
+
+    ctrl.handleMessage({
+      type: "diff_update",
+      mode: "branch",
+      branch: "feat/a",
+      cwd: "/repo/wt-a",
+      committed: [{ name: "peer.ts", oldContents: "", newContents: "y", status: "added" }],
+      staged: [],
+      unstaged: [],
+    });
+
+    assert.equal(ctrl.getState().loading, false);
+    assert.equal(ctrl.getState().diffData.branch, "feat/a");
+    assert.equal(ctrl.getState().diffData.files.length, 1);
+    assert.equal(ctrl.getState().diffData.files[0].name, "peer.ts");
+    ctrl.dispose();
+  });
+
+  it("falls back to localStorage when URL has no deep-link params", () => {
+    const s1 = makeSession({ sessionId: "s1", cwd: "/repo/main", branch: "main" });
+    const s2 = makeSession({ sessionId: "s2", cwd: "/repo/wt-a", branch: "feat/a" });
+    const storage = createMemoryStorage({ "pidiff-session": JSON.stringify(s2) });
+    const ctrl = createDiffSessionController({
+      send: () => true,
+      storage,
+      locationSearch: "",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [s1, s2] });
+
+    assert.equal(ctrl.getState().activeSession?.sessionId, "s2");
+    assert.equal(ctrl.getState().activeWorktree, null);
+    ctrl.dispose();
+  });
+
+  it("falls back to localStorage when deep-link matches no session", () => {
+    const s1 = makeSession({ sessionId: "s1", cwd: "/repo/main", branch: "main" });
+    const s2 = makeSession({ sessionId: "s2", cwd: "/repo/wt-a", branch: "feat/a" });
+    const storage = createMemoryStorage({ "pidiff-session": JSON.stringify(s2) });
+    const ctrl = createDiffSessionController({
+      send: () => true,
+      storage,
+      locationSearch: "?session=nonexistent&worktree=%2Fother%2Frepo&branch=other",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [s1, s2] });
+
+    assert.equal(ctrl.getState().activeSession?.sessionId, "s2");
+    ctrl.dispose();
+  });
+
+  it("applies pending deep-link when matching session arrives via session_added", () => {
+    const sPeer = makeSession({ sessionId: "peer-1", cwd: "/repo/wt-a", branch: "feat/a" });
+    const sent: object[] = [];
+    const ctrl = createDiffSessionController({
+      send: (m) => { sent.push(m); return true; },
+      locationSearch: "?session=peer-1&worktree=%2Frepo%2Fwt-a&branch=feat%2Fa",
+    });
+
+    ctrl.handleMessage({ type: "sessions-list", sessions: [] });
+    ctrl.handleMessage({ type: "session_added", session: sPeer });
+
+    assert.equal(ctrl.getState().activeSession?.sessionId, "peer-1");
+    assert.equal(ctrl.getState().activeWorktree?.path, "/repo/wt-a");
+    assert.deepEqual(sent, [
+      { type: "watch", sessionId: "peer-1" },
+      { type: "watch-worktree", worktreePath: "/repo/wt-a" },
+    ]);
+    ctrl.dispose();
   });
 });

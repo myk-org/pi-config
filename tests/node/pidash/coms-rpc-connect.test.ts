@@ -632,8 +632,8 @@ describe("pidash supervised rpc reconnect paths (#1470)", () => {
     }
   });
 
-  it("skips pidiff connection for supervised rpc peer", async () => {
-    const dir = makeTempDir("pidiff-supervised-rpc-");
+  it("skips pidiff connection for unsupervised rpc peer", async () => {
+    const dir = makeTempDir("pidiff-unsupervised-rpc-");
     const server = createServer((_req, res) => { res.end(JSON.stringify({ status: "ok" })); });
     const sockets = new WebSocketServer({ server, path: "/ws/pi" });
     const prevChild = process.env.PI_SUBAGENT_CHILD;
@@ -650,7 +650,7 @@ describe("pidash supervised rpc reconnect paths (#1470)", () => {
       writeFileSync(join(dir, "settings.json"), JSON.stringify({ pidiff_enable: true }));
       setGlobalSettingsPath(join(dir, "settings.json"));
       delete process.env.PI_SUBAGENT_CHILD;
-      process.env.PI_COMS_SUPERVISED_PEER = "1";
+      delete process.env.PI_COMS_SUPERVISED_PEER;
 
       registerPidiff(pi);
       sockets.on("connection", () => { connections++; });

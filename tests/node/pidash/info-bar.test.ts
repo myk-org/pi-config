@@ -11,13 +11,14 @@ import { elements, installReactDomShim, type FakeElement } from "./react-dom-shi
 
 let vite: ViteDevServer;
 let InfoBar: any;
+let buildPidiffUrl: any;
 before(async () => {
   vite = await createServer({
     root: path.resolve("extensions/pidash/pidash-ui"),
     server: { middlewareMode: true },
     appType: "custom",
   });
-  ({ InfoBar } = await vite.ssrLoadModule("/src/components/InfoBar.tsx"));
+  ({ InfoBar, buildPidiffUrl } = await vite.ssrLoadModule("/src/components/InfoBar.tsx"));
 });
 after(() => vite.close());
 
@@ -345,5 +346,60 @@ describe("InfoBar cron status trigger", () => {
     assert.match(String(spans[0].getAttribute("class") || ""), /text-blue-400/);
     assert.match(String(spans[1].getAttribute("class") || ""), /text-muted-foreground\/50/);
     assert.match(String(spans[2].getAttribute("class") || ""), /text-amber-400/);
+  });
+});
+
+describe("InfoBar pidiff deep-link URL (#1501)", () => {
+  it("encodes session, worktree, branch query parameters", () => {
+    const url = buildPidiffUrl({
+      diffPort: 19290,
+      sessionId: "42:/repo/.worktrees/issue-1501",
+      cwd: "/repo/.worktrees/issue-1501",
+      branch: "feat/issue-1501-pidiff-link",
+    });
+    assert.equal(
+      url,
+      "http://localhost:19290/?session=42%3A%2Frepo%2F.worktrees%2Fissue-1501&worktree=%2Frepo%2F.worktrees%2Fissue-1501&branch=feat%2Fissue-1501-pidiff-link",
+    );
+  });
+
+  it("omits branch parameter when branch is empty", () => {
+    const url = buildPidiffUrl({
+      diffPort: 19290,
+      sessionId: "42:/repo",
+      cwd: "/repo",
+      branch: "",
+    });
+    assert.equal(url, "http://localhost:19290/?session=42%3A%2Frepo&worktree=%2Frepo");
+  });
+
+  it("renders diff anchor href with session, worktree, branch query params", async () => {
+    const view = await renderInfoBar(session({
+      sessionId: "99:/repo/.worktrees/peer-1",
+      cwd: "/repo/.worktrees/peer-1",
+      branch: "feat/peer-1",
+      diffPort: 19333,
+    }));
+    const anchor = elements(view.container, "a").find((item) => item.textContent.trim().startsWith("diff"));
+    assert.ok(anchor, "diff anchor should render when diffPort is active");
+    assert.equal(
+      anchor!.getAttribute("href"),
+      "http://localhost:19333/?session=99%3A%2Frepo%2F.worktrees%2Fpeer-1&worktree=%2Frepo%2F.worktrees%2Fpeer-1&branch=feat%2Fpeer-1",
+    );
+  });
+
+  it("renders diff anchor without branch query param when branch is absent", async () => {
+    const view = await renderInfoBar(session({
+      sessionId: "99:/repo",
+      cwd: "/repo",
+      branch: "",
+      diffPort: 19333,
+    }));
+    const anchor = elements(view.container, "a").find((item) => item.textContent.trim().startsWith("diff"));
+    assert.ok(anchor, "diff anchor should render when diffPort is active");
+    assert.equal(
+      anchor!.getAttribute("href"),
+      "http://localhost:19333/?session=99%3A%2Frepo&worktree=%2Frepo",
+    );
   });
 });

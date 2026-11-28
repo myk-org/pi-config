@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import { createDaemonServer, resolveUiDir } from "./daemon-shared.ts";
 import {
   batchReadGitObjects,
+  isSameGitRepoCheckout,
   parseDiffEntries,
   parseWorktreeList,
   type FileContentsData,
@@ -279,17 +280,17 @@ function buildDiffPayloadWithBranch(
     const working = status.dirty ? getWorkingTreeFiles(cwd) : { staged: [], unstaged: [] };
     log(`buildDiffPayload: branch mode, cwd=${cwd} defaultBranch=${defaultBranch} base=${base.slice(0, 8) || "(empty)"} branch=${branch} committed=${committed.length} staged=${working.staged.length} unstaged=${working.unstaged.length}`);
     return {
-      payload: { type: "diff_update", mode: "branch", committed, staged: working.staged, unstaged: working.unstaged, branch },
+      payload: { type: "diff_update", mode: "branch", committed, staged: working.staged, unstaged: working.unstaged, branch, cwd },
       defaultBranch,
     };
   }
 
   if (mode === "commits" && refs) {
     const committed = getChangedFiles(cwd, refs.from, refs.to);
-    return { payload: { type: "diff_update", mode: "commits", committed, staged: [], unstaged: [], branch, fromRef: refs.from, toRef: refs.to } };
+    return { payload: { type: "diff_update", mode: "commits", committed, staged: [], unstaged: [], branch, cwd, fromRef: refs.from, toRef: refs.to } };
   }
 
-  return { payload: { type: "diff_update", mode, committed: [], staged: [], unstaged: [], branch } };
+  return { payload: { type: "diff_update", mode, committed: [], staged: [], unstaged: [], branch, cwd } };
 }
 
 function buildDiffPayload(cwd: string, mode: DiffMode, refs?: { from: string; to: string }): object {
@@ -333,8 +334,8 @@ const { piClients, browserClients, browserWatchMap, broadcastToBrowsers, sendToM
       const sessionId = parsed.sessionId || `${parsed.pid}:${parsed.cwd}`;
       const cwd = parsed.cwd || "";
       if (!cwd) { log(`register rejected: empty cwd from ${sessionId}`); return; }
-      // In per-project mode, validate that the registering session's cwd matches
-      if (PROJECT_CWD && cwd !== PROJECT_CWD) {
+      // In per-project mode, allow the project checkout and linked worktrees of the same repo
+      if (PROJECT_CWD && !isSameGitRepoCheckout(PROJECT_CWD, cwd, GIT_BIN)) {
         log(`register rejected: cwd ${cwd} does not match PROJECT_CWD ${PROJECT_CWD}`);
         return;
       }

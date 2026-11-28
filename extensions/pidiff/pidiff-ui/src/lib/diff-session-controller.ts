@@ -56,11 +56,23 @@ export interface DiffSessionState {
   refreshButton: RefreshButtonState;
 }
 
+export interface DeepLinkParams {
+  session?: string;
+  worktree?: string;
+  branch?: string;
+}
+
+export interface DeepLinkResolution {
+  session: PiSession;
+  worktree: Worktree | null;
+}
+
 export interface DiffSessionControllerOptions {
   send: (msg: object) => boolean;
   storage?: StorageLike;
   initialStale?: boolean;
   timeoutMs?: number;
+  locationSearch?: string;
 }
 
 export interface DiffSessionController {
@@ -114,6 +126,74 @@ export function getRefreshButtonState(
 ): RefreshButtonState {
   const disabled = refreshing || !connected;
   return { disabled, spinning: refreshing && connected, unmountBody: false };
+}
+
+function normalizePath(p: string): string {
+  const trimmed = p.trim();
+  if (!trimmed) return "";
+  return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
+}
+
+/** Parse optional `?session=...&worktree=...&branch=...` deep-link query params. */
+export function parseDeepLinkParams(search?: string): DeepLinkParams | null {
+  if (!search) return null;
+  try {
+    const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+    const session = params.get("session")?.trim() || undefined;
+    const worktree = params.get("worktree")?.trim() || undefined;
+    const branch = params.get("branch")?.trim() || undefined;
+    if (!session && !worktree && !branch) return null;
+    return { session, worktree, branch };
+  } catch (err) {
+    log.warn("failed to parse deep-link query params", { error: String(err) });
+    return null;
+  }
+}
+
+/**
+ * Resolve a deep-link request against available pidiff sessions.
+ * Priority: exact `sessionId` → session `cwd` matching `worktree` → session containing
+ * a linked worktree matching `worktree` → session `branch` matching `branch` →
+ * session containing a worktree matching `branch`.
+ */
+export function resolveDeepLinkTarget(
+  sessions: readonly PiSession[],
+  deepLink: DeepLinkParams | null,
+): DeepLinkResolution | null {
+  if (!deepLink || sessions.length === 0) return null;
+  const normWorktree = deepLink.worktree ? normalizePath(deepLink.worktree) : "";
+  const branch = deepLink.branch || "";
+
+  let session: PiSession | undefined;
+  if (deepLink.session) {
+    session = sessions.find((s) => s.sessionId === deepLink.session);
+  }
+  if (!session && normWorktree) {
+    session = sessions.find((s) => normalizePath(s.cwd) === normWorktree);
+  }
+  if (!session && normWorktree) {
+    session = sessions.find((s) =>
+      s.worktrees?.some((w) => normalizePath(w.path) === normWorktree),
+    );
+  }
+  if (!session && branch) {
+    session = sessions.find((s) => s.branch === branch);
+  }
+  if (!session && branch) {
+    session = sessions.find((s) => s.worktrees?.some((w) => w.branch === branch));
+  }
+  if (!session) return null;
+
+  let worktree: Worktree | null = null;
+  if (session.worktrees?.length) {
+    if (normWorktree) {
+      worktree = session.worktrees.find((w) => normalizePath(w.path) === normWorktree) ?? null;
+    }
+    if (!worktree && branch) {
+      worktree = session.worktrees.find((w) => w.branch === branch) ?? null;
+    }
+  }
+  return { session, worktree };
 }
 
 function readStoredSession(storage: StorageLike | undefined): PiSession | null {
@@ -191,6 +271,7 @@ export function createDiffSessionController(
 ): DiffSessionController {
   const { send, storage, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = options;
   const initialStale = Boolean(options.initialStale);
+  let pendingDeepLink = parseDeepLinkParams(options.locationSearch);
 
   const listeners = new Set<() => void>();
   let sessionBound = false;
@@ -198,7 +279,7 @@ export function createDiffSessionController(
   let loadingTimer: ReturnType<typeof setTimeout> | null = null;
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const initialSession = readStoredSession(storage);
+  const initialSession = pendingDeepLink ? null : readStoredSession(storage);
   const initialComments = readStoredComments(storage);
 
   let state: DiffSessionState = {
@@ -352,6 +433,23 @@ export function createDiffSessionController(
     }
   }
 
+  function applyDeepLinkResolution(
+    resolved: DeepLinkResolution,
+    sessions?: PiSession[],
+  ): void {
+    pendingDeepLink = null;
+    log.info("deep-link selected session", {
+      sessionId: resolved.session.sessionId,
+      worktreePath: resolved.worktree?.path || "",
+      branch: resolved.worktree?.branch || resolved.session.branch,
+    });
+    bindSession(resolved.session, { resetWorktree: true, sessions });
+    const wt = resolved.worktree;
+    if (wt && (!wt.isMain || normalizePath(wt.path) !== normalizePath(resolved.session.cwd))) {
+      switchWorktree(wt);
+    }
+  }
+
   function handleMessage(ev: any): void {
     if (!ev || typeof ev !== "object") return;
 
@@ -359,6 +457,11 @@ export function createDiffSessionController(
       case "diff_update": {
         if (ev.mode && ev.mode !== state.mode) {
           log.debug("ignoring diff_update for inactive mode", { incoming: ev.mode, active: state.mode });
+          return;
+        }
+        const activePath = getActivePath();
+        if (typeof ev.cwd === "string" && ev.cwd && activePath && normalizePath(ev.cwd) !== normalizePath(activePath)) {
+          log.debug("ignoring diff_update for inactive path", { incoming: ev.cwd, active: activePath });
           return;
         }
         const allFiles = deduplicateDiffFiles(ev);
@@ -405,6 +508,12 @@ export function createDiffSessionController(
         if (!Array.isArray(ev.sessions)) return;
         const sessions: PiSession[] = ev.sessions;
         if (!sessionBound && sessions.length > 0) {
+          const deepLinked = resolveDeepLinkTarget(sessions, pendingDeepLink);
+          if (deepLinked) {
+            applyDeepLinkResolution(deepLinked, sessions);
+            return;
+          }
+          pendingDeepLink = null;
           const saved = state.activeSession ?? readStoredSession(storage);
           const target = saved
             ? sessions.find((s) => s.sessionId === saved.sessionId) || sessions[0]
@@ -435,6 +544,11 @@ export function createDiffSessionController(
         if (state.sessions.some((s) => s.sessionId === ev.session.sessionId)) return;
         const nextSessions = [...state.sessions, ev.session];
         if (!sessionBound) {
+          const deepLinked = resolveDeepLinkTarget(nextSessions, pendingDeepLink);
+          if (deepLinked) {
+            applyDeepLinkResolution(deepLinked, nextSessions);
+            return;
+          }
           log.info("auto-selected added session", { sessionId: ev.session.sessionId });
           bindSession(ev.session, { resetWorktree: true, sessions: nextSessions });
           return;
@@ -725,6 +839,16 @@ function getBrowserStorage(): StorageLike | undefined {
   }
 }
 
+function getBrowserSearch(): string | undefined {
+  try {
+    return typeof window !== "undefined" && typeof window.location?.search === "string"
+      ? window.location.search
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** React hook binding the in-process DiffSessionController to useWebSocket. */
 export function useDiffSessionController(options?: {
   testWs?: WebSocket | null;
@@ -740,6 +864,7 @@ export function useDiffSessionController(options?: {
         send: (msg) => sendRef.current(msg),
         storage: getBrowserStorage(),
         initialStale: Boolean((globalThis as { __pidiffTestStale?: boolean }).__pidiffTestStale),
+        locationSearch: getBrowserSearch(),
       }),
     [],
   );
