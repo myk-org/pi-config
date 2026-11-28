@@ -1141,4 +1141,62 @@ describe("approval-hmac-key protected storage guard (#1495)", () => {
     assert.equal(res.action, "block");
     assert.match(res.reason ?? "", /state\.db/);
   });
+
+  it("blocks node -e constructor.constructor executing heredoc state.db write", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command:
+        'node -e \'process.stdin.on("data", d => this.constructor.constructor(d.toString())())\' <<\'EOF\'\nprocess.getBuiltinModule("fs").writeFileSync(".pi/data/state.db", "tampered")\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /state\.db/);
+  });
+
+  it("allows node -e logging eval string literal with quoted heredoc containing ~/.pi/agent glob", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'node -e \'console.log("eval")\' <<\'EOF\'\ncat ~/.pi/agent/.*\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("allows bash -c echo hi with unused data-only process substitution argument", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const ui: BashPolicyUi = {
+      select: async (_title, options) => options.find((opt) => opt.startsWith("Yes — run once")),
+      notify: () => {},
+    };
+    const res = await evaluateBashPolicy({
+      command: "bash -c 'echo hi' <(echo 'cat ~/.pi/agent/.*')",
+      cwd: dir,
+      ui,
+    });
+    assert.equal(res.action, "allow");
+  });
+
+  it("blocks bash -c echo hi when unused process substitution executes ~/.pi/agent glob", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "bash -c 'echo hi' <(cat ~/.pi/agent/.*)",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks bash -c launching bash redirected from process substitution", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "bash -c 'bash' < <(echo 'cat ~/.pi/agent/.*')",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
 });

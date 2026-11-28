@@ -6905,10 +6905,11 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
       cmdWord: string,
       tokens: string[],
       cmdIdx: number,
-    ): { hasInlineFlag: boolean; hasScriptFile: boolean; readsStdinExplicitly: boolean } => {
+    ): { hasInlineFlag: boolean; hasScriptFile: boolean; readsStdinExplicitly: boolean; inlineCodes: string[] } => {
       let hasInlineFlag = false;
       let hasScriptFile = false;
       let readsStdinExplicitly = false;
+      const inlineCodes: string[] = [];
       const valueFlags = new Set([
         "-W", "-X", "-r", "--require", "--import", "--loader", "--conditions",
         "-I", "-C", "-M", "--env-file", "--preload",
@@ -6935,18 +6936,38 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           (cmdWord === "deno" && tok === "eval")
         ) {
           hasInlineFlag = true;
+          if (i + 1 < tokens.length) {
+            inlineCodes.push(unwrapShellArgQuotes(tokens[i + 1]!));
+            i++;
+          }
+          // Python `-c` consumes the rest as sys.argv; node/perl/ruby can repeat `-e`.
+          if (cmdWord.startsWith("python")) break;
+          continue;
+        }
+        if (tok.startsWith("--eval=") || tok.startsWith("--print=")) {
+          hasInlineFlag = true;
+          inlineCodes.push(unwrapShellArgQuotes(tok.slice(tok.indexOf("=") + 1)));
+          continue;
+        }
+        if (cmdWord.startsWith("python") && tok.startsWith("-c") && tok.length > 2) {
+          hasInlineFlag = true;
+          inlineCodes.push(unwrapShellArgQuotes(tok.slice(2)));
           break;
         }
         if (
-          tok.startsWith("--eval=") ||
-          tok.startsWith("--print=") ||
-          (cmdWord.startsWith("python") && tok.startsWith("-c") && tok.length > 2) ||
           ((cmdWord === "perl" || cmdWord === "ruby") && /^-[a-zA-Z]*[eE]/.test(tok)) ||
           ((cmdWord === "node" || cmdWord === "nodejs" || cmdWord === "bun" || cmdWord === "tsx") &&
             /^-[a-zA-Z]*[ep]/.test(tok))
         ) {
           hasInlineFlag = true;
-          break;
+          const m = /^-[a-zA-Z]*[eEp](.+)$/.exec(tok);
+          if (m) {
+            inlineCodes.push(unwrapShellArgQuotes(m[1]!));
+          } else if (i + 1 < tokens.length) {
+            inlineCodes.push(unwrapShellArgQuotes(tokens[i + 1]!));
+            i++;
+          }
+          continue;
         }
         if (cmdWord.startsWith("python") && (tok === "-m" || tok.startsWith("-m"))) {
           hasScriptFile = true;
@@ -6968,10 +6989,36 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
         if ((cmdWord === "deno" || cmdWord === "bun") && tok === "run" && i === cmdIdx + 1) {
           continue;
         }
-        hasScriptFile = true;
-        break;
+        if (!hasInlineFlag) {
+          hasScriptFile = true;
+          break;
+        }
       }
-      return { hasInlineFlag, hasScriptFile, readsStdinExplicitly };
+      return { hasInlineFlag, hasScriptFile, readsStdinExplicitly, inlineCodes };
+    };
+
+    const PURE_STDIN_PRINT_INLINE_RE =
+      /^(?:import\s+sys\s*;\s*)?print\s*\(\s*(?:input\s*\(\s*\)|sys\.stdin\.read\s*\(\s*\))\s*\)\s*;?$/;
+    const INLINE_MAY_READ_OR_EXEC_STDIN_RE =
+      /\b(?:stdin|input|raw_input|fileinput|readline|gets|STDIN|ARGF|process|sys|fs|open|fdopen|readFileSync|readSync|read|exec|eval|compile|Function|constructor|subprocess|spawn|execSync|execFile|child_process|vm|globals|locals|getattr|vars|__builtins__|builtins|__import__|importlib|Reflect|globalThis|require|system|popen|dofile|loadstring|load|instance_eval|module_eval|class_eval|public_send|send)\b|<>/;
+
+    /**
+     * Decide whether an inline runtime `-c`/`-e` program can consume and execute stdin.
+     * Uses an allowlist for provably data-only scripts (programs that never touch stdin/reflection
+     * outside string literals, or pure `print(input())` / `print(sys.stdin.read())`) and fails
+     * closed for everything else (including `this.constructor.constructor`, `globals()`, etc.).
+     */
+    const inlineCodeMayExecuteStdin = (inlineCodes: string[]): boolean => {
+      if (inlineCodes.length === 0) return true;
+      for (const rawCode of inlineCodes) {
+        const trimmed = rawCode.trim();
+        if (!trimmed) continue;
+        if (PURE_STDIN_PRINT_INLINE_RE.test(trimmed)) continue;
+        if (/\/dev\/(?:stdin|fd\/0)\b/.test(trimmed)) return true;
+        const masked = maskQuotedRegions(trimmed);
+        if (INLINE_MAY_READ_OR_EXEC_STDIN_RE.test(masked)) return true;
+      }
+      return false;
     };
 
     const hasActiveDynamicPiAgentAccess = (text: string): boolean => {
@@ -7252,18 +7299,15 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           const segHit = checkInlineCode(expandedSeg);
           if (segHit) return segHit;
 
-          const { hasInlineFlag, hasScriptFile, readsStdinExplicitly } = inlineRuntimeSourceFlags(
+          const { hasInlineFlag, hasScriptFile, readsStdinExplicitly, inlineCodes } = inlineRuntimeSourceFlags(
             cmdWord,
             expandedTokens,
             effectiveCmdIdx,
           );
-          const dynamicEvalInInlineCode =
-            hasInlineFlag &&
-            /\b(?:exec|eval|compile|Function|subprocess|spawn|execSync|execFile|child_process|vm|globals|locals|getattr|vars|__builtins__|builtins|__import__|importlib|Reflect|globalThis|require|system|popen|dofile|loadstring|load|instance_eval|module_eval|class_eval|public_send|send|chr|fromCharCode)\b/.test(
-              expandedSeg,
-            );
           const execsStdinAsCode =
-            readsStdinExplicitly || (!hasInlineFlag && !hasScriptFile) || dynamicEvalInInlineCode;
+            readsStdinExplicitly ||
+            (!hasInlineFlag && !hasScriptFile) ||
+            (hasInlineFlag && inlineCodeMayExecuteStdin(inlineCodes));
 
           if (execsStdinAsCode) {
             for (const body of segHeredocBodies) {
@@ -7287,10 +7331,9 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
 
         // Recurse into nested shells (`bash -c`, `sh -c`, `eval`, `source`/`.`, `xargs <shell>`, or stdin/file-fed shells)
         if (isNestedShell) {
-          // If the shell invocation itself contains a command or process substitution
-          // (e.g. `eval "$(echo 'cat ~/.pi/agent/.*')"` or `bash <(echo 'cat ~/.pi/agent/.*')`),
-          // fail closed on the unstripped segment before recursion.
-          if (/\$\(|`|<\(/.test(expandedSeg) && hasRawDynamicPiAgentAccess(expandedSeg)) {
+          // Command substitution (`$(...)` / backticks) splices directly into the nested shell
+          // command string (e.g. `eval "$(echo 'cat ~/.pi/agent/.*')"`): fail closed immediately.
+          if (/\$\(|`/.test(expandedSeg) && hasRawDynamicPiAgentAccess(expandedSeg)) {
             enfLog.debug("nested_shell_subst_dynamic_pi_agent_blocked", "cmd", cmdWord);
             return "hmac";
           }
@@ -7324,6 +7367,30 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
           for (const inner of nested) {
             const innerHit = checkProtectedSecurityStorage(inner, vars, depth + 1);
             if (innerHit) return innerHit;
+          }
+          // Process substitution (`<(...)`): always inspect what the subshell itself runs, and
+          // also inspect its emitted text as executable input when the nested shell executes it
+          // (no `-c`, `eval`, stdin redirect `< <(...)`, or `-c` referencing positional args / `/dev/fd`).
+          if (/<\(/.test(expandedSeg)) {
+            const balancedSeg = withoutQuotedHeredocs[segEnd] === ")" ? `${expandedSeg})` : expandedSeg;
+            const procSubs = extractSubshells(balancedSeg);
+            if (procSubs.length === 0 && hasRawDynamicPiAgentAccess(expandedSeg)) {
+              enfLog.debug("nested_shell_unbalanced_proc_subst_blocked", "cmd", cmdWord);
+              return "hmac";
+            }
+            for (const sub of procSubs) {
+              const subHit = checkProtectedSecurityStorage(sub, vars, depth + 1);
+              if (subHit) return subHit;
+            }
+            const nestedConsumesProcSubst =
+              nested.length === 0 ||
+              cmdWord === "eval" ||
+              /(?:^|[\s;|&()])<(?!\()/.test(maskedSeg) ||
+              nested.some((inner) => /\$(?:[0-9@*]|\{[0-9@*][^}]*\})|\/dev\/fd\b|\/proc\/self\/fd\b|\bshift\b/.test(inner));
+            if (nestedConsumesProcSubst && hasRawDynamicPiAgentAccess(expandedSeg)) {
+              enfLog.debug("nested_shell_proc_subst_dynamic_pi_agent_blocked", "cmd", cmdWord);
+              return "hmac";
+            }
           }
           // Inspect attached heredocs, piped input, and prior file writes even when `-c` / `eval`
           // extracted a nested command (e.g. `cat <<'EOF' | bash -c 'bash'` or `bash -c 'python3'`).
