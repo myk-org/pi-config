@@ -98,13 +98,25 @@ async function acquireAutoStartProjectLock(
     project: string,
     timeoutMs: number = AUTO_START_LOCK_TIMEOUT_MS,
 ): Promise<(() => void) | null> {
-    if (!project || project.includes("/") || project.includes("\\") || project.includes("..")) return null;
+    if (
+        !project ||
+        project === "." ||
+        project === ".." ||
+        project.includes("/") ||
+        project.includes("\\") ||
+        project.includes("\0")
+    ) {
+        return null;
+    }
+    const projectsRoot = path.resolve(registry.projectsDir());
+    const projectDir = path.resolve(projectsRoot, project);
+    if (path.dirname(projectDir) !== projectsRoot) return null;
     try {
         registry.ensureProjectDirs(project);
     } catch {
         return null;
     }
-    const lockPath = path.join(registry.projectsDir(), project, ".autostart.lock");
+    const lockPath = path.join(projectDir, ".autostart.lock");
     const deadline = Date.now() + Math.max(0, timeoutMs);
     while (true) {
         const release = acquireTokenFileLock(lockPath, { attempts: 1, uniqueClaim: true });

@@ -448,6 +448,20 @@ describe("coms_auto_start interactive lifecycle (#1503)", { concurrency: false }
 		assert.equal(reg.runtime.getSelf()?.origin, "auto");
 	});
 
+	it("auto-starts from a repository directory whose basename contains double dots", async () => {
+		resetAmbientComsEnv();
+		const { workspace, comsDir } = makeNamedWorkspace("foo..bar");
+		const fake = createFakePi();
+		const reg = registerIsolatedComs(fake.pi, comsDir, "sess-dotdot");
+		const ctx = makeSessionCtx(workspace, "sess-dotdot", { entries: fake.customEntries });
+
+		await fake.handlers.get("session_start")!({ reason: "startup" }, ctx);
+
+		assert.equal(reg.runtime.isActive(), true);
+		assert.equal(reg.runtime.getSelf()?.name, "foo..bar");
+		assert.equal(reg.runtime.getSelf()?.project, expectedCwdProject(workspace));
+	});
+
 	it("suffixes cname with -2 when another live peer holds repo basename", async () => {
 		resetAmbientComsEnv();
 		const { workspace, comsDir } = makeNamedWorkspace("pi-config");
