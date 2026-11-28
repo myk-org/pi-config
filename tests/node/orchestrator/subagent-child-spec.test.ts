@@ -376,6 +376,7 @@ describe("formatElapsedDuration & /status formatting (#1288)", () => {
       registerCommand(name: string, opts: any) {
         if (name === "status") handler = opts.handler;
       },
+      registerTool() {},
     };
     const now = Date.now();
     registerStatus(
@@ -410,6 +411,7 @@ describe("formatElapsedDuration & /status formatting (#1288)", () => {
       registerCommand(name: string, opts: any) {
         if (name === "status") handler = opts.handler;
       },
+      registerTool() {},
     };
     const now = Date.now();
     registerStatus(

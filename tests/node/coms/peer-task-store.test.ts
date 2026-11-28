@@ -64,6 +64,11 @@ function createFakePi(name: string, project = "test-proj") {
 			tools.set(tool.name, tool);
 		},
 		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		getActiveTools() { return []; },
+		getAllTools() { return []; },
+		setActiveTools() {},
 		on(event: string, handler: any) {
 			handlers.set(event, handler);
 		},
@@ -197,6 +202,7 @@ async function bootPeerPitasks(opts: {
 			on(name: string, fn: Function) { handlers.set(name, fn); },
 			registerTool() {},
 			registerCommand() {},
+			registerShortcut() {},
 			events: { on() { return () => {}; }, emit() {} },
 		} as any);
 		cleanups.push(() => handlers.get("session_shutdown")?.());

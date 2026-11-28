@@ -29,6 +29,8 @@ interface FakePi {
 	getFlag: (name: string) => any;
 	registerTool: (tool: any) => void;
 	registerCommand: (name: string, def: any) => void;
+	registerMessageRenderer: () => void;
+	getAllTools: () => any[];
 	getActiveTools: () => string[];
 	setActiveTools: (tools: string[]) => void;
 	appendEntry: (key: string, data: unknown) => void;
@@ -80,6 +82,10 @@ function createFakePi(flagOverrides: Record<string, any> = {}): FakePi {
 		},
 		registerCommand(name: string, def: any) {
 			commands.set(name, def);
+		},
+		registerMessageRenderer() {},
+		getAllTools() {
+			return [...tools.values()];
 		},
 		getActiveTools() {
 			return [...activeTools];

@@ -428,11 +428,12 @@ export function tryGetSystemPromptOptions(ctx: any): { contextFiles?: any[]; ski
 /**
  * Minimum pi version required by this pi-config version.
  *
- * 0.99.0: `builtin:mcp` replaces the external `mcpc` binary (so MCP servers are
- * read from ~/.pi/agent/mcp.json by pi itself), and the built-in MCP/codemode/
- * tool-search extensions become the ones we must not collide with.
+ * 1.7.0: `--agent-dir`, `createAgentSessionServices()` diagnostics,
+ * `models.generateImages()` `{ aspectRatio, size }` + Radius catalog,
+ * idle RPC `ctx.shutdown()`, and native Pi 1.7 `ExtensionAPI` guarantees
+ * (no pre-floor compatibility shims).
  */
-export const MIN_PI_VERSION = "1.6.1";
+export const MIN_PI_VERSION = "1.7.0";
 
 /** Get the installed pi version from its package.json. */
 export function getPiVersion(): string | null {

@@ -1086,7 +1086,6 @@ export function renderComsInboundMessage(
 }
 
 export function registerComsMessageRenderers(pi: ExtensionAPI): void {
-	if (typeof pi.registerMessageRenderer !== "function") return;
 	pi.registerMessageRenderer<ComsPeerEventDetails>(COMS_PEER_JOINED_CUSTOM_TYPE, renderComsPeerJoinedMessage);
 	pi.registerMessageRenderer<ComsPeerEventDetails>(COMS_PEER_LEFT_CUSTOM_TYPE, renderComsPeerLeftMessage);
 	pi.registerMessageRenderer<ComsResponseDetails>(COMS_RESPONSE_CUSTOM_TYPE, renderComsResponseMessage);

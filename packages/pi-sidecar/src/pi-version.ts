@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const piVersionLog = createLogger("pi-version");
 
 /** Minimum @earendil-works/pi-coding-agent version the sidecar supports (same floor as pi-config orchestrator). */
-export const MIN_PI_VERSION = "1.6.1";
+export const MIN_PI_VERSION = "1.7.0";
 
 /**
  * Locate `<packageName>/package.json` using Node built-ins only (no SDK imports)
@@ -142,7 +142,10 @@ export function assertPiVersionFloor(): void {
   }
   if (compareVersions(installed, MIN_PI_VERSION) < 0) {
     logger.error(`[sidecar] PI_VERSION_CHECK_FAILED: installed=${installed}, min_version=${MIN_PI_VERSION}`);
-    throw new Error(`@earendil-works/pi-coding-agent ${installed} is below the required floor ${MIN_PI_VERSION}. Upgrade the dependency.`);
+    throw new Error(
+      `@earendil-works/pi-coding-agent ${installed} is below the required floor ${MIN_PI_VERSION}. ` +
+      `Run \`pi update\` (or upgrade \`@earendil-works/pi-coding-agent\`) and restart.`,
+    );
   }
   logger.info(`[sidecar] PI_VERSION_CHECK_OK: installed=${installed}, min_version=${MIN_PI_VERSION}`);
 

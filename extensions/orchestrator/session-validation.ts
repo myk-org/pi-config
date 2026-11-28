@@ -344,8 +344,30 @@ async function checkUpgradeChangelog(ctx: any): Promise<void> {
   }
 }
 
-export function registerSessionValidation(pi: ExtensionAPI): void {
+export interface SessionValidationOptions {
+  checkPiVersion?: typeof checkMinPiVersion;
+}
+
+/** Build a clear, actionable upgrade error when installed Pi is below MIN_PI_VERSION. */
+export function formatMinPiVersionError(versionCheck: { installed: string | null; required: string }): string {
+  if (versionCheck.installed === null) {
+    return (
+      `pi-config requires Pi >= ${versionCheck.required}, but the installed Pi version could not be determined. ` +
+      `Run \`pi update\` (or \`npm install -g @earendil-works/pi-coding-agent\`) and restart Pi.`
+    );
+  }
+  return (
+    `pi-config requires Pi >= ${versionCheck.required}, but Pi ${versionCheck.installed} is installed. ` +
+    `Run \`pi update\` (or \`npm install -g @earendil-works/pi-coding-agent\`) and restart Pi.`
+  );
+}
+
+export function registerSessionValidation(
+  pi: ExtensionAPI,
+  options: SessionValidationOptions = {},
+): void {
   registerRepairCommand(pi);
+  const checkPiVersion = options.checkPiVersion ?? checkMinPiVersion;
 
   pi.on("session_start", async (_event, ctx) => {
     // Always check uv availability — even in headless mode.
@@ -357,27 +379,23 @@ export function registerSessionValidation(pi: ExtensionAPI): void {
       log.warn("uv availability check failed", { operation: "session_start", error: error instanceof Error ? error.message : String(error) });
     }
 
-    if (!ctx.hasUI) return;
-
-    // Check minimum pi version
-    const versionCheck = checkMinPiVersion();
+    // Enforce minimum Pi version in both interactive and headless modes (no pre-floor compat mode).
+    const versionCheck = checkPiVersion();
     if (!versionCheck.ok) {
-      if (versionCheck.installed === null) {
-        ctx.ui.notify(
-          `⚠️ pi version could not be determined; pi-config requires >= ${versionCheck.required}. ` +
-            `Some features (--session-id for async agents, session_info_changed events) ` +
-            `may not work. Update pi: npm install -g @earendil-works/pi-coding-agent`,
-          "warning",
-        );
-      } else {
-        ctx.ui.notify(
-          `⚠️ pi ${versionCheck.installed} is below minimum required version ${versionCheck.required}. ` +
-            `Some features (--session-id for async agents, session_info_changed events) will not work. ` +
-            `Update pi: npm install -g @earendil-works/pi-coding-agent`,
-          "warning",
-        );
+      const errorMessage = formatMinPiVersionError(versionCheck);
+      log.error("pi_version_below_floor", {
+        installed: versionCheck.installed,
+        required: versionCheck.required,
+        hasUI: ctx.hasUI,
+      });
+      if (ctx.hasUI) {
+        ctx.ui.notify(errorMessage, "error");
+        return;
       }
+      throw new Error(errorMessage);
     }
+
+    if (!ctx.hasUI) return;
 
     await checkSessionTools(ctx);
 

@@ -352,6 +352,8 @@ function asyncHarness(opts: { hasUI?: boolean; confirm?: (title: string, message
       (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
     },
     registerCommand() {},
+    registerTool() {},
+    registerMessageRenderer() {},
     sendMessage(message: any) { messages.push(message); },
     events: new EventEmitter(),
   };

@@ -1145,7 +1145,7 @@ files change. `npm run typecheck:tests` checks the test tree alone.
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.6.1**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.7.0**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)

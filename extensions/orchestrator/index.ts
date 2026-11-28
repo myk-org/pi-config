@@ -24,7 +24,7 @@ import { registerStreamLoopGuard } from "./stream-loop-guard.js";
 import { registerToolArgGuard } from "./tool-arg-guard.js";
 import { registerProjectSettings } from "./project-settings.js";
 import { registerRules } from "./rules.js";
-import { registerSessionValidation } from "./session-validation.js";
+import { formatMinPiVersionError, registerSessionValidation } from "./session-validation.js";
 import { registerTmpCleanup } from "./tmp-cleanup.js";
 import { registerStatusLine } from "./status-line.js";
 import { registerSubagentTool } from "./subagent-tool.js";
@@ -61,7 +61,7 @@ import { registerAdvisor } from "./advisor.js";
 import { registerLsp } from "./lsp.js";
 import { registerSnapshots } from "./snapshots.js";
 import { registerQaOverlay } from "./qa-overlay.js";
-import { ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
+import { checkMinPiVersion, ensureGitSshTimeout, isRunningInContainer, terminalNotify } from "./utils.js";
 import { createLogger } from "../shared/logger.js";
 import { emitIfLive, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
@@ -82,6 +82,19 @@ ensureGitSshTimeout();
 const log = createLogger("orchestrator");
 
 export default function (pi: ExtensionAPI) {
+  // Fail fast before registering any Pi 1.7.0+ APIs when a concrete Pi < MIN_PI_VERSION
+  // is detected, so older installs get a clear upgrade error instead of missing-API crashes
+  // or a degraded pre-floor compatibility mode.
+  const loadVersionCheck = checkMinPiVersion();
+  if (loadVersionCheck.installed !== null && !loadVersionCheck.ok) {
+    const errorMessage = formatMinPiVersionError(loadVersionCheck);
+    log.error("pi_version_below_floor_on_load", {
+      installed: loadVersionCheck.installed,
+      required: loadVersionCheck.required,
+    });
+    throw new Error(errorMessage);
+  }
+
   // Set global session ID FIRST so all fileLog callers get per-session files.
   pi.on("session_start", (_event, ctx) => {
     const reason = (_event as any)?.reason ?? "unknown";

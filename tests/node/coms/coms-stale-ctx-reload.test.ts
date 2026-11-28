@@ -57,6 +57,10 @@ function createFakePi(flags: Record<string, any>): FakePi {
 			tools.set(tool.name, tool);
 		},
 		registerCommand() {},
+		registerMessageRenderer() {},
+		getActiveTools() { return []; },
+		getAllTools() { return []; },
+		setActiveTools() {},
 		on(name: string, fn: Function) {
 			handlers.set(name, fn);
 		},

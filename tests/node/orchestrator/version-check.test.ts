@@ -17,6 +17,11 @@ import {
   checkMinPiVersion,
   getPiVersion,
 } from "../../../extensions/orchestrator/utils.ts";
+import {
+  formatMinPiVersionError,
+  registerSessionValidation,
+} from "../../../extensions/orchestrator/session-validation.ts";
+import orchestratorExtension from "../../../extensions/orchestrator/index.ts";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 
 
@@ -55,8 +60,8 @@ afterEach(() => {
 });
 
 describe("minimum Pi version", () => {
-  it("requires Pi 1.6.1", () => {
-    assert.equal(MIN_PI_VERSION, "1.6.1");
+  it("requires Pi 1.7.0", () => {
+    assert.equal(MIN_PI_VERSION, "1.7.0");
   });
 });
 
@@ -118,22 +123,22 @@ describe("checkMinPiVersion", () => {
   });
 
   it("rejects older and prerelease versions of the floor while accepting exact and higher stable versions", () => {
-    useFakePi("1.6.0");
+    useFakePi("1.6.1");
     const older = checkMinPiVersion();
-    assert.equal(older.installed, "1.6.0");
-    assert.equal(older.required, "1.6.1");
+    assert.equal(older.installed, "1.6.1");
+    assert.equal(older.required, "1.7.0");
     assert.equal(older.ok, false);
 
-    useFakePi("1.6.1-beta.1");
+    useFakePi("1.7.0-beta.1");
     const pre = checkMinPiVersion();
-    assert.equal(pre.installed, "1.6.1-beta.1");
-    assert.equal(pre.required, "1.6.1");
+    assert.equal(pre.installed, "1.7.0-beta.1");
+    assert.equal(pre.required, "1.7.0");
     assert.equal(pre.ok, false);
 
-    useFakePi("1.6.1");
+    useFakePi("1.7.0");
     assert.equal(checkMinPiVersion().ok, true);
 
-    useFakePi("1.6.2");
+    useFakePi("1.7.1");
     assert.equal(checkMinPiVersion().ok, true);
   });
 
@@ -143,5 +148,84 @@ describe("checkMinPiVersion", () => {
     assert.equal(r.required, "999.0.0");
     assert.equal(r.installed, "0.0.1");
     assert.equal(r.ok, false);
+  });
+});
+
+describe("formatMinPiVersionError", () => {
+  it("includes installed version, required floor, pi update, and restart guidance", () => {
+    const msg = formatMinPiVersionError({ installed: "1.6.1", required: "1.7.0" });
+    assert.match(msg, /Pi >= 1\.7\.0/);
+    assert.match(msg, /Pi 1\.6\.1/);
+    assert.match(msg, /pi update/);
+    assert.match(msg, /restart/i);
+  });
+
+  it("reports undetermined installed version with actionable upgrade guidance", () => {
+    const msg = formatMinPiVersionError({ installed: null, required: "1.7.0" });
+    assert.match(msg, /Pi >= 1\.7\.0/);
+    assert.match(msg, /could not be determined/);
+    assert.match(msg, /pi update/);
+    assert.match(msg, /restart/i);
+  });
+});
+
+describe("registerSessionValidation minimum Pi version enforcement", () => {
+  function setupValidation(checkPiVersion: () => { ok: boolean; installed: string | null; required: string }) {
+    let sessionStartHandler: ((event: unknown, ctx: any) => Promise<void>) | null = null;
+    const mockPi = {
+      registerCommand: () => {},
+      on: (event: string, handler: (event: unknown, ctx: any) => Promise<void>) => {
+        if (event === "session_start") sessionStartHandler = handler;
+      },
+    };
+    registerSessionValidation(mockPi as any, { checkPiVersion });
+    assert.ok(sessionStartHandler, "session_start handler must be registered");
+    return sessionStartHandler as (event: unknown, ctx: any) => Promise<void>;
+  }
+
+  it("notifies with error severity in interactive mode when Pi is below MIN_PI_VERSION", async () => {
+    const handler = setupValidation(() => ({ ok: false, installed: "1.6.1", required: "1.7.0" }));
+    const notices: Array<{ message: string; type: string }> = [];
+    await handler({}, {
+      hasUI: true,
+      cwd: process.cwd(),
+      ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+    });
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].type, "error");
+    assert.match(notices[0].message, /Pi >= 1\.7\.0/);
+    assert.match(notices[0].message, /Pi 1\.6\.1/);
+    assert.match(notices[0].message, /pi update/);
+  });
+
+  it("throws an actionable error in headless mode when Pi is below MIN_PI_VERSION", async () => {
+    const handler = setupValidation(() => ({ ok: false, installed: "1.6.1", required: "1.7.0" }));
+    await assert.rejects(
+      () => handler({}, { hasUI: false, cwd: process.cwd(), ui: { notify: () => {} } }),
+      /Pi >= 1\.7\.0.*Pi 1\.6\.1.*pi update/,
+    );
+  });
+
+  it("does not emit a version error when Pi meets MIN_PI_VERSION", async () => {
+    const handler = setupValidation(() => ({ ok: true, installed: "1.7.0", required: "1.7.0" }));
+    const notices: Array<{ message: string; type: string }> = [];
+    await handler({}, {
+      hasUI: false,
+      cwd: process.cwd(),
+      ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+    });
+    assert.equal(notices.length, 0);
+  });
+});
+
+describe("orchestrator extension load-time minimum Pi version guard", () => {
+  it("throws a clear upgrade error before registering any Pi 1.7.0+ APIs when Pi is below MIN_PI_VERSION", () => {
+    useFakePi("1.6.1");
+    // Deliberately pass an empty mock API — if the guard did not fail fast,
+    // registration would crash with a TypeError on missing Pi 1.7.0 APIs.
+    assert.throws(
+      () => orchestratorExtension({} as any),
+      /pi-config requires Pi >= 1\.7\.0, but Pi 1\.6\.1 is installed.*pi update/,
+    );
   });
 });

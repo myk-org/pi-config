@@ -140,6 +140,7 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
         on(name: string, fn: Function) { pitasksHandlers.set(name, fn); },
         registerTool() {},
         registerCommand() {},
+        registerShortcut() {},
         events: { on() { return () => {}; }, emit() {} },
       } as any);
       cleanups.push(() => pitasksHandlers.get("session_shutdown")?.());
@@ -155,6 +156,11 @@ describe("coms-p2p peer task boundaries (#1090)", { concurrency: false }, () => 
         getFlag: (f: string) => (f === "cname" ? `peer-${tag}` : undefined),
         registerTool() {},
         registerCommand() {},
+        registerShortcut() {},
+        registerMessageRenderer() {},
+        getActiveTools() { return []; },
+        getAllTools() { return []; },
+        setActiveTools() {},
         on() {},
         sendMessage() {},
         events: { on() {}, emit() {} },

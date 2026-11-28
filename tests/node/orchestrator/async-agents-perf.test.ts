@@ -40,6 +40,8 @@ function createHarness() {
 		registerCommand(name: string, def: unknown) {
 			commands.set(name, def);
 		},
+		registerTool() {},
+		registerMessageRenderer() {},
 		sendMessage() {},
 		events: new EventEmitter(),
 	};

@@ -151,12 +151,10 @@ function discoverySummaryComponent(summary: string, theme: { fg: (color: "muted"
 }
 
 export default function (pi: ExtensionAPI) {
-  if (typeof pi.registerEntryRenderer === "function") {
-    pi.registerEntryRenderer<OpenAiCompatibleDiscoverySummary>(
-      "openai-compatible-discovery-summary",
-      (entry, _options, theme) => discoverySummaryComponent(entry.data?.summary ?? "", theme),
-    );
-  }
+  pi.registerEntryRenderer<OpenAiCompatibleDiscoverySummary>(
+    "openai-compatible-discovery-summary",
+    (entry, _options, theme) => discoverySummaryComponent(entry.data?.summary ?? "", theme),
+  );
 
   const registeredSources = new Set<string>();
   let lifecycleGeneration = 0;

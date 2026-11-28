@@ -476,7 +476,7 @@ export function registerRules(
   });
 
   // Pre-compaction standing memory context (#1422): fail-soft, skips subagents.
-  // Verified against Pi 1.6.1 `AgentSession.compact()` / `_runAutoCompaction()`:
+  // Verified against Pi 1.7.0 `AgentSession.compact()` / `_runAutoCompaction()`:
   // the same `preparation` object (and its `messagesToSummarize`/`turnPrefixMessages`
   // array) emitted here is passed directly to `compact(preparation, ...)` ->
   // `convertToLlm` -> `serializeConversation`, preserving Pi's built-in compaction
@@ -996,9 +996,8 @@ export function registerRules(
       return;
     }
 
-    // Fallback: an earlier handler forced the whole prompt, or this pi
-    // version does not expose systemPromptOptions — compose on top of the
-    // current prompt text the legacy way so our context is not lost.
+    // Fallback: an earlier handler forced the whole prompt — compose on top of
+    // the current prompt text so our context is not lost.
     const dynamicSuffix = dynamicContent ? `\n\n${dynamicContent}\n` : "";
     return { systemPrompt: event.systemPrompt + baseRules + memories + dynamicSuffix };
   });
