@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-import { createLogger } from "../shared/logger.js";
+import { createLogger, type Logger } from "../shared/logger.js";
 import type {
   WorktreeDetailPayload,
   WorktreeItem,
@@ -222,6 +222,7 @@ function parseMcpServerList(raw: string, allowSingleObject: boolean): unknown[] 
 export async function mcpList(
   cwd: string,
   runner: (args: string[], cwd: string) => Promise<string> = runMcp,
+  logger: Pick<Logger, "warn"> = log,
 ): Promise<{ servers?: unknown[]; raw?: string; error?: string }> {
   try {
     const out = await runner(["list", "--json"], cwd);
@@ -238,10 +239,16 @@ export async function mcpList(
           : "";
     const servers = parseMcpServerList(errStdout, false);
     if (servers !== null && servers.length > 0) {
-      log.debug("mcp_list_nonzero_parsed", { count: servers.length, code: e?.code ?? null });
+      const errStderr =
+        typeof e?.stderr === "string"
+          ? e.stderr.trim()
+          : Buffer.isBuffer(e?.stderr)
+            ? e.stderr.toString("utf-8").trim()
+            : "";
+      logger.warn("mcp_list_nonzero_parsed", { count: servers.length, code: e?.code ?? null, stderr: errStderr });
       return { servers };
     }
-    log.warn("mcp_list_failed", { error: e?.message });
+    logger.warn("mcp_list_failed", { error: e?.message });
     return { error: String(e?.stderr || e?.message || e) };
   }
 }

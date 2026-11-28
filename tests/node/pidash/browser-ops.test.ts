@@ -258,11 +258,12 @@ describe("mcpList (#1481)", () => {
       throw Object.assign(new Error("Command failed: pi mcp list --json"), {
         code: 1,
         stdout: JSON.stringify(payload),
-        stderr: "",
+        stderr: "1 server failed\n",
       });
     };
+    const warns: unknown[][] = [];
 
-    const res = await mcpList("/tmp", runner);
+    const res = await mcpList("/tmp", runner, { warn: (...args: unknown[]) => warns.push(args) });
 
     assert.equal(res.error, undefined);
     assert.equal(res.servers?.length, 2);
@@ -272,6 +273,7 @@ describe("mcpList (#1481)", () => {
     assert.equal(broken.state, "error");
     assert.equal(broken.error, longErr);
     assert.ok(broken.error!.length > 250);
+    assert.deepEqual(warns, [["mcp_list_nonzero_parsed", { count: 2, code: 1, stderr: "1 server failed" }]]);
   });
 
   it("parses top-level JSON array from Buffer err.stdout on non-zero exit", async () => {
