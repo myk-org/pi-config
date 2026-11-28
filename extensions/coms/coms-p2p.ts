@@ -18,6 +18,7 @@
 import type { AgentToolResult, ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { assertMinPiVersionOnLoad } from "../shared/pi-version.js";
 import { applyExtensionDefaults } from "./themeMap.js";
 import {
 	buildBundledContent, buildComsPeersPayload, ulid, hexFg, isValidHex, fallbackColor, comsParseYamlFrontmatter as parseFrontmatter, nowIso, abbreviateModel, findSystemPromptPath, readFrontmatterFromArgv, readTaskSummary, buildInboundContent, renderQueuePart, formatQueueStr, formatComsResponseText, formatComsResponseType, formatComsResponseBody, formatComsInboundType, sanitizeComsName, createComsInboundTasks, resolvePeerTaskStorePath, shouldEvictOnLeaving, shouldAnnouncePeerLeft, isSessionStillRegistered, FALLBACK_PALETTE, type TasksSummary, insertInboundByPriority, shouldAcceptSteer, summarizeBroadcast, formatBusyStr, selectSenderBundle, deadPeerCardIds, isPeerTaskCreator, type BroadcastTargetResult, resolvePromptOrigin, receivedPromptOrigin, type PromptOrigin, loadPitasks, summarizeTaskList, getComsOriginTask, getComsOriginTasks,
@@ -1086,7 +1087,6 @@ export function renderComsInboundMessage(
 }
 
 export function registerComsMessageRenderers(pi: ExtensionAPI): void {
-	if (typeof pi.registerMessageRenderer !== "function") return;
 	pi.registerMessageRenderer<ComsPeerEventDetails>(COMS_PEER_JOINED_CUSTOM_TYPE, renderComsPeerJoinedMessage);
 	pi.registerMessageRenderer<ComsPeerEventDetails>(COMS_PEER_LEFT_CUSTOM_TYPE, renderComsPeerLeftMessage);
 	pi.registerMessageRenderer<ComsResponseDetails>(COMS_RESPONSE_CUSTOM_TYPE, renderComsResponseMessage);
@@ -5852,6 +5852,7 @@ Do not respond to this message.`;
 }
 
 export default function (pi: ExtensionAPI): ComsPeerRuntime | undefined {
+	assertMinPiVersionOnLoad("coms-p2p");
 	if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
 	return createComsPeerRuntime(pi, { deferred: false });
 }

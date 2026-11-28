@@ -137,6 +137,10 @@ async function startPeer(opts: {
 		getFlag: (name: string) => flags.get(name),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: () => {},
+		registerMessageRenderer: () => {},
+		getActiveTools: () => [],
+		getAllTools: () => [],
+		setActiveTools: () => {},
 		on: (event: string, handler: Function) => handlers.set(event, handler),
 		sendMessage: (msg: any, sendOpts?: any) => {
 			messages.push(msg);

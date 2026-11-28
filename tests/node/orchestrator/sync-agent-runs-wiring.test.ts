@@ -55,6 +55,8 @@ function harness() {
       (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
     },
     registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) { commands.set(name, command); },
+    registerTool() {},
+    registerMessageRenderer() {},
     sendMessage() {},
     events,
   };

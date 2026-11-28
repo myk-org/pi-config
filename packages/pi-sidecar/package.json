@@ -39,16 +39,16 @@
     "postinstall": "node scripts/enforce-protobufjs-floor.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": ">=1.6.1",
-    "@earendil-works/pi-coding-agent": ">=1.6.1",
+    "@earendil-works/pi-ai": ">=1.7.0",
+    "@earendil-works/pi-coding-agent": ">=1.7.0",
     "@myk-org/pi-vertex-claude": ">=4.3.4 <5",
     "jiti": "^2.7.0",
     "protobufjs": "7.6.5",
     "strip-json-comments": "^5.0.3"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=1.6.1",
-    "@earendil-works/pi-coding-agent": ">=1.6.1"
+    "@earendil-works/pi-ai": ">=1.7.0",
+    "@earendil-works/pi-coding-agent": ">=1.7.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

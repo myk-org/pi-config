@@ -66,7 +66,7 @@ describe("subagent child model environment", { concurrency: false }, () => {
     it(`async child: ${label}`, () => withChild(async (cwd, script, output, agent, parentModelId) => {
       global.setInterval = (() => ({ unref() {} })) as any;
       const handlers = new Map<string, Array<(event: unknown, ctx: any) => void>>();
-      const pi = { on: (name: string, handler: any) => { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); }, registerCommand() {}, sendMessage() {}, events: new EventEmitter() };
+      const pi = { on: (name: string, handler: any) => { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); }, registerCommand() {}, registerTool() {}, registerMessageRenderer() {}, sendMessage() {}, events: new EventEmitter() };
       let api!: ReturnType<typeof registerAsyncAgents>;
       withSubagentChildEnv(undefined, () => {
         api = registerAsyncAgents(pi as any, () => {}, {

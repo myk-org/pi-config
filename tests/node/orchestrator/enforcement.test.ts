@@ -88,7 +88,7 @@ describe("comment signature hook model switches", () => {
     process.env.PI_COMMENT_SIGNATURE = "Assisted-by: PI (parent-model)";
     process.env.PI_SUBAGENT_CHILD = "1";
     hooks = new Map();
-    registerEnforcement({ on: (name: string, handler: Function) => { hooks.set(name, handler); }, registerTool: () => {}, registerCommand: () => {} } as any);
+    registerEnforcement({ on: (name: string, handler: Function) => { hooks.set(name, handler); }, registerTool: () => {}, registerCommand: () => {}, getAllTools: () => [] } as any);
   });
 
   after(() => {
@@ -156,6 +156,7 @@ describe("subagent tool_result error propagation into file_modified matching", (
       },
       registerTool: () => {},
       registerCommand: () => {},
+      getAllTools: () => [],
     } as any);
   });
 
@@ -3289,6 +3290,7 @@ describe("commit-trailer check behind git global options (#1131)", () => {
       on: (name: string, handler: Function) => hooks.set(name, handler),
       registerTool: () => {},
       registerCommand: () => {},
+      getAllTools: () => [],
     } as any);
     // Only git-expert may commit (the plain guard refuses it for every other
     // agent), so the trailer check is what these tests reach.
@@ -3674,6 +3676,7 @@ describe("handleCommitTrailer refusal hints (#1145)", () => {
       on: (name: string, handler: Function) => { hooks.set(name, handler); },
       registerTool: () => {},
       registerCommand: () => {},
+      getAllTools: () => [],
     } as any);
   });
 
@@ -4400,6 +4403,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
       on: (name: string, handler: Function) => hooks.set(name, handler),
       registerTool: () => {},
       registerCommand: () => {},
+      getAllTools: () => [],
     } as any);
   });
 
@@ -5122,6 +5126,7 @@ describe("dangerous command allowlist — gate level (issue #949 / PR #950)", ()
       on: (name: string, handler: Function) => reloaded.set(name, handler),
       registerTool: () => {},
       registerCommand: () => {},
+      getAllTools: () => [],
     } as any);
     promptCalls.length = 0;
     const after = await reloaded.get("tool_call")!(
@@ -5493,6 +5498,7 @@ describe("git identity guard (#995)", () => {
         on: (name: string, handler: Function) => hooks.set(name, handler),
         registerTool: () => {},
         registerCommand: () => {},
+        getAllTools: () => [],
       } as any);
     });
     beforeEach(() => {
@@ -5605,6 +5611,7 @@ describe("git protection fast-path (#1194)", () => {
       on: (name: string, fn: any) => hooks.set(name, fn),
       registerTool: () => {},
       registerCommand: () => {},
+      getAllTools: () => [],
       events: { emit: () => {}, on: () => {} },
     };
     registerEnforcement(fakePi);

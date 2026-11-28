@@ -184,6 +184,7 @@ function createWorktreeHarness(opts: WorktreeHarnessOptions = {}) {
       tool = definition;
     },
     registerCommand() {},
+    registerMessageRenderer() {},
     on(event: string, handler: (event: unknown, ctx: any) => void) {
       (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
     },

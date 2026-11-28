@@ -29,6 +29,8 @@ function harness() {
       if (list) list.push(handler); else handlers.set(event, [handler]);
     },
     registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) { commands.set(name, command); },
+    registerTool() {},
+    registerMessageRenderer() {},
     sendMessage(message: any) { messages.push(message); },
     events,
   };

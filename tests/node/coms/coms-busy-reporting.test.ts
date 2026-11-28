@@ -91,6 +91,8 @@ async function startPeer(opts: {
 		registerTool(tool: any) { tools.set(tool.name, tool); },
 		registerCommand() {},
 		registerShortcut() {},
+		registerMessageRenderer() {},
+		getAllTools() { return [...tools.values()]; },
 		on(name: string, fn: Function) { handlers.set(name, fn); },
 		sendMessage(msg: any) { messages.push(msg); },
 		appendEntry() {},

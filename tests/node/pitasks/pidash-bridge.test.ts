@@ -3,6 +3,9 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import pitasks, { createTask, taskStore } from "../../../extensions/pitasks/index.ts";
 import { autoCompleteTask, autoMarkInProgress } from "../../../extensions/orchestrator/task-lifecycle.ts";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 type Handler = (data: unknown) => void;
 

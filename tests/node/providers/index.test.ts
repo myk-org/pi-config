@@ -24,6 +24,9 @@ import {
 } from "../../../extensions/providers/last-thinking-level.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { fakeModel } from "../helpers/fake-model.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 
 type Handler = (event: any, ctx: any) => any;
