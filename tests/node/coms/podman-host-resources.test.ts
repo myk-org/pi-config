@@ -450,6 +450,71 @@ describe("Project .pi/{skills,agents,prompts} staging", () => {
     assert.equal(fs.readFileSync(path.join(second.workspaceDir, ".pi", "skills", "peer-created", "SKILL.md"), "utf8"), "peer-only");
   });
 
+  it("preserves peer-created directory when host adds a file at the same path", () => {
+    const repo = makeTempDir("pi-proj-dir-col-");
+    initTempGitRepo(repo);
+    fs.mkdirSync(path.join(repo, ".pi", "skills"), { recursive: true });
+
+    const sandboxDir = makeTempDir("pi-sb-dir-col-");
+    const { logger, events } = makeSilentLogger();
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+
+    // Peer creates a directory `.pi/skills/foo` with its own content
+    fs.mkdirSync(path.join(first.workspaceDir, ".pi", "skills", "foo"), { recursive: true });
+    fs.writeFileSync(path.join(first.workspaceDir, ".pi", "skills", "foo", "notes.md"), "peer-dir-content");
+    // Host later adds a regular file at `.pi/skills/foo`
+    fs.writeFileSync(path.join(repo, ".pi", "skills", "foo"), "host-file-collision");
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+    assert.equal(fs.statSync(path.join(second.workspaceDir, ".pi", "skills", "foo")).isDirectory(), true);
+    assert.equal(
+      fs.readFileSync(path.join(second.workspaceDir, ".pi", "skills", "foo", "notes.md"), "utf8"),
+      "peer-dir-content",
+    );
+    assert.ok(events.some((e) => e.level === "warn" && e.event === "sandbox_project_pi_peer_collision_preserved"));
+  });
+
+  it("preserves peer deletion of a staged project skill across workspace reuse", () => {
+    const repo = makeTempDir("pi-proj-peer-del-");
+    initTempGitRepo(repo);
+    fs.mkdirSync(path.join(repo, ".pi", "skills", "s1"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".pi", "skills", "s1", "SKILL.md"), "host-v1");
+
+    const sandboxDir = makeTempDir("pi-sb-peer-del-");
+    const { logger, events } = makeSilentLogger();
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+    assert.equal(fs.existsSync(path.join(first.workspaceDir, ".pi", "skills", "s1", "SKILL.md")), true);
+
+    // Peer intentionally deletes the staged skill in its workspace
+    fs.rmSync(path.join(first.workspaceDir, ".pi", "skills", "s1"), { recursive: true, force: true });
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+    assert.equal(fs.existsSync(path.join(second.workspaceDir, ".pi", "skills", "s1", "SKILL.md")), false);
+    assert.ok(events.some((e) => e.level === "warn" && e.event === "sandbox_project_pi_peer_deletion_preserved"));
+  });
+
+  it("backs up workspace on HEAD advance when peer deleted a staged project skill", () => {
+    const repo = makeTempDir("pi-proj-del-bak-");
+    initTempGitRepo(repo, "file.txt", "v1\n");
+    fs.mkdirSync(path.join(repo, ".pi", "skills", "s1"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".pi", "skills", "s1", "SKILL.md"), "host-v1");
+
+    const sandboxDir = makeTempDir("pi-sb-del-bak-");
+    const { logger } = makeSilentLogger();
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+
+    // Peer deletes the staged skill (even leaving `.pi/` completely gone)
+    fs.rmSync(path.join(first.workspaceDir, ".pi"), { recursive: true, force: true });
+
+    fs.writeFileSync(path.join(repo, "file.txt"), "v2\n");
+    execFileSync("git", ["add", "file.txt"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "v2"], { cwd: repo, stdio: "ignore" });
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+    assert.equal(second.cloned, true);
+    assert.ok(second.backupPath && second.backupPath.endsWith(".bak"));
+  });
+
   it("backs up workspace on HEAD advance when peer edited files under staged .pi/skills", () => {
     const repo = makeTempDir("pi-proj-peer-bak-");
     initTempGitRepo(repo, "file.txt", "v1\n");

@@ -749,6 +749,30 @@ function collectRelativeRegularFiles(rootDir, relBase = "") {
   return out;
 }
 
+function hasPathCollisionForNewFile(workspaceDir, relPosix) {
+  const parts = relPosix.split("/");
+  // Check every intervening path component (must be a real directory if it exists).
+  let current = workspaceDir;
+  for (let i = 0; i < parts.length - 1; i++) {
+    current = path.join(current, parts[i]);
+    try {
+      const st = fs.lstatSync(current);
+      if (!st.isDirectory() || st.isSymbolicLink()) return true;
+    } catch (err) {
+      if (err?.code === "ENOENT") break;
+      return true;
+    }
+  }
+  // Check the target path itself (must not already exist as directory, symlink, file, or special node).
+  const targetAbs = path.join(workspaceDir, ...parts);
+  try {
+    fs.lstatSync(targetAbs);
+    return true;
+  } catch (err) {
+    return err?.code !== "ENOENT";
+  }
+}
+
 function pruneEmptyDirsUpTo(startDir, stopDir) {
   let current = path.resolve(startDir);
   const resolvedStop = path.resolve(stopDir);
@@ -924,15 +948,23 @@ export function syncProjectPiResources(opts) {
         wroteOrKeptStaged = true;
       }
 
-      // 2. Copy new untracked files from host snapshot into workspace.
+      // 2. Copy new untracked files from host snapshot into workspace, preserving peer deletions
+      //    and never overwriting any peer-owned file, symlink, or directory at the target path.
       for (const [relPosix, nextEntry] of nextSnapshotFiles.entries()) {
         if (isPathTrackedOrNestedTracked(relPosix, trackedWorkspacePaths)) continue;
         if (currentWorkspaceFiles.has(relPosix)) continue;
+        if (previousStagedFiles[relPosix] !== undefined) {
+          // Previously staged file is absent from workspace: preserve peer deletion and keep the
+          // manifest entry so subsequent reuses and HEAD-advance dirty checks recognize the deletion.
+          log.warn("sandbox_project_pi_peer_deletion_preserved", { path: relPosix });
+          nextStagedFiles[relPosix] = previousStagedFiles[relPosix];
+          continue;
+        }
+        if (hasPathCollisionForNewFile(workspaceDir, relPosix)) {
+          log.warn("sandbox_project_pi_peer_collision_preserved", { path: relPosix });
+          continue;
+        }
         const targetAbs = path.join(workspaceDir, ...relPosix.split("/"));
-        // Also guard against a tracked symlink or symlink currently occupying targetAbs.
-        try {
-          if (fs.lstatSync(targetAbs).isSymbolicLink()) continue;
-        } catch { /* does not exist */ }
         copyFilePreservingExec(nextEntry.absPath, targetAbs, { mode: nextEntry.mode });
         nextStagedFiles[relPosix] = nextEntry.sha256;
         wroteOrKeptStaged = true;
@@ -966,9 +998,24 @@ export function syncProjectPiResources(opts) {
 }
 
 function isDirtyBeyondStagedProjectPi(dirtyOutput, workspaceDir, stagedDirs, stagedFiles) {
-  if (!dirtyOutput) return false;
   const stagedSet = new Set(Array.isArray(stagedDirs) ? stagedDirs : []);
   const stagedFileMap = stagedFiles && typeof stagedFiles === "object" ? stagedFiles : null;
+  const stagedKeys = stagedFileMap ? Object.keys(stagedFileMap) : [];
+
+  // Every previously staged manifest entry must still exist on disk with its exact staged hash.
+  // Checking this before `!dirtyOutput` catches peer deletions even when the entire `.pi/` dir was removed.
+  for (const rel of stagedKeys) {
+    const abs = path.join(workspaceDir, ...rel.split("/"));
+    try {
+      const st = fs.lstatSync(abs);
+      if (!st.isFile() || st.isSymbolicLink()) return true;
+      if (sha256File(abs) !== stagedFileMap[rel]) return true;
+    } catch {
+      return true;
+    }
+  }
+
+  if (!dirtyOutput) return false;
 
   const verifyDirMatchesStagedManifest = (dirAbs, relPrefix) => {
     if (!stagedFileMap) return false;
@@ -984,6 +1031,7 @@ function isDirtyBeyondStagedProjectPi(dirtyOutput, workspaceDir, stagedDirs, sta
         const rel = `${prefix}/${entry.name}`;
         if (entry.isSymbolicLink()) return false;
         if (entry.isDirectory()) {
+          if (!stagedKeys.some((k) => k.startsWith(`${rel}/`))) return false;
           if (!walk(abs, rel)) return false;
         } else if (entry.isFile()) {
           const expected = stagedFileMap[rel];
