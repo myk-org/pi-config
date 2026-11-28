@@ -17,6 +17,7 @@
  * State: ~/.pi/coms/peers/<cname>@<project>.json
  */
 import { execFileSync, spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -101,6 +102,10 @@ const STOP_TIMEOUT_MS = (() => {
 })();
 
 const socketsDir = path.join(comsBase, "sockets");
+/** Per-launch instance identity written to the child's registry entry (`instance_id`) so an old supervisor never stops or erases a replacement peer. */
+const instanceId = crypto.randomUUID();
+/** Per-launch capability secret held ONLY in supervisor memory and the child's env (`PI_COMS_SHUTDOWN_TOKEN`) — never persisted to disk. */
+const shutdownToken = crypto.randomBytes(32).toString("hex");
 
 /** Bounded grace window for Pi 1.7.0 in-process RPC `ctx.shutdown()` before escalating to SIGTERM / podman stop (#1488). */
 function computeGraceTimeoutMs(totalMs) {
@@ -118,8 +123,8 @@ function isEndpointUnderSocketsDir(endpoint) {
   return resolvedEndpoint.startsWith(`${resolvedBase}${path.sep}`);
 }
 
-/** Look up the live COMS registry entry owned by THIS supervisor's exact child PID or container name. */
-function findOwnRegistryEntry({ pid = null, containerName = null } = {}) {
+/** Look up the live COMS registry entry owned by THIS supervisor's exact `instanceId` (never by reusable PID or container name). */
+function findOwnRegistryEntry() {
   const agentsDir = path.join(comsBase, "projects", project, "agents");
   let files;
   try {
@@ -133,11 +138,7 @@ function findOwnRegistryEntry({ pid = null, containerName = null } = {}) {
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
       if (!parsed || typeof parsed !== "object" || parsed.name !== cname) continue;
-      if (containerName) {
-        if (parsed.container === containerName) return { filePath, entry: parsed };
-      } else if (Number.isInteger(pid) && pid > 0) {
-        if (parsed.pid === pid) return { filePath, entry: parsed };
-      }
+      if (parsed.instance_id === instanceId) return { filePath, entry: parsed };
     } catch {
       /* ignore corrupt or racing entry */
     }
@@ -145,9 +146,9 @@ function findOwnRegistryEntry({ pid = null, containerName = null } = {}) {
   return null;
 }
 
-/** Remove any leftover COMS registry/socket files for THIS supervisor's exited child (e.g. after SIGKILL). */
-function cleanupOwnRegistryEntry(match) {
-  const found = findOwnRegistryEntry(match);
+/** Remove any leftover COMS registry/socket files for THIS supervisor's exact `instanceId` (e.g. after SIGKILL). */
+function cleanupOwnRegistryEntry() {
+  const found = findOwnRegistryEntry();
   if (!found) return;
   try {
     fs.unlinkSync(found.filePath);
@@ -208,6 +209,8 @@ function scrubPeerEnv() {
   // Mark only the spawned child process as a supervised headless COMS peer so interactive-only
   // tools like ask_user stay disabled on the peer without touching the spawner's environment.
   env.PI_COMS_SUPERVISED_PEER = "1";
+  env.PI_COMS_INSTANCE_ID = instanceId;
+  env.PI_COMS_SHUTDOWN_TOKEN = shutdownToken;
   return env;
 }
 
@@ -484,7 +487,7 @@ function startPodmanPeer() {
     log.info("podman_peer_exited", { containerName, cid: containerId.slice(0, 12), code, signal, forced, shutdownMode, containerRemoved });
     const { owned, preservedSessionId } = preserveSessionAndCheckOwner();
     if (!owned) process.exit(0);
-    cleanupOwnRegistryEntry({ containerName });
+    cleanupOwnRegistryEntry();
     const sessionField = preservedSessionId.piSessionId
       ? preservedSessionId
       : (capturedSessionId ? { piSessionId: capturedSessionId } : {});
@@ -544,7 +547,7 @@ function startPodmanPeer() {
       process.exit(0);
     }
 
-    const ownEntry = findOwnRegistryEntry({ containerName });
+    const ownEntry = findOwnRegistryEntry();
     if (typeof ownEntry?.entry?.pi_session_id === "string" && ownEntry.entry.pi_session_id.trim()) {
       capturedSessionId = ownEntry.entry.pi_session_id.trim();
     }
@@ -556,6 +559,7 @@ function startPodmanPeer() {
         timeoutMs: ackTimeoutMs,
         senderSession: `supervisor:${process.pid}`,
         reason: `supervisor_${signal}`,
+        shutdownToken,
       }).then((res) => {
         if (exited) return;
         if (res.ok) {
@@ -694,7 +698,7 @@ function startNativePeer() {
     const stopStartedAt = Date.now();
     log.info("native_peer_stopping", { cname, signal });
 
-    const ownEntry = findOwnRegistryEntry({ pid: child.pid });
+    const ownEntry = findOwnRegistryEntry();
     if (typeof ownEntry?.entry?.pi_session_id === "string" && ownEntry.entry.pi_session_id.trim()) {
       capturedSessionId = ownEntry.entry.pi_session_id.trim();
     }
@@ -706,6 +710,7 @@ function startNativePeer() {
         timeoutMs: ackTimeoutMs,
         senderSession: `supervisor:${process.pid}`,
         reason: `supervisor_${signal}`,
+        shutdownToken,
       }).then((res) => {
         if (childExited) return;
         if (res.ok) {
@@ -744,10 +749,10 @@ function startNativePeer() {
     childExited = true;
     if (graceTimer) clearTimeout(graceTimer);
     if (stopTimer) clearTimeout(stopTimer);
-    cleanupOwnRegistryEntry({ pid: child.pid });
     log.info("native_peer_exited", { cname, code, signal, shutdownMode });
     const { owned, preservedSessionId } = preserveSessionAndCheckOwner();
     if (!owned) process.exit(0);
+    cleanupOwnRegistryEntry();
     const sessionField = preservedSessionId.piSessionId
       ? preservedSessionId
       : (capturedSessionId ? { piSessionId: capturedSessionId } : {});

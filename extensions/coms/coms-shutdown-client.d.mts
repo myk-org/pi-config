@@ -10,6 +10,8 @@ export interface RequestPeerShutdownOptions {
   msgId?: string;
   senderSession?: string;
   reason?: string;
+  /** Per-instance capability token matching the target peer's `PI_COMS_SHUTDOWN_TOKEN`. */
+  shutdownToken?: string;
 }
 
 export type PeerShutdownResult =

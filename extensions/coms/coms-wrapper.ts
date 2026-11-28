@@ -57,7 +57,6 @@ import {
 import { openComsPeersOverlay } from "./coms-peers-ui.js";
 import { createTailHistoryReader } from "./coms-history.js";
 import { requestDescribe } from "./coms-describe.js";
-import { requestPeerShutdown } from "./coms-shutdown-client.mjs";
 
 const log = createLogger("coms");
 
@@ -75,17 +74,10 @@ function mapToFlagOverrides(values: Map<string, any>): ComsPeerFlagOverrides {
     return out;
 }
 
-const DIRECT_PEER_GRACE_TIMEOUT_MS = 3_000;
-
 export interface ExecutePeerKillDeps {
     killPid?: (pid: number, signal: NodeJS.Signals) => void;
     removeContainer?: (containerName: string) => void;
     isSupervisorProcess?: (pid: number) => boolean;
-    /** Peer COMS socket endpoint used for graceful RPC `ctx.shutdown()` when stopping a peer directly without a supervisor (#1488). */
-    endpoint?: string | null;
-    requestShutdown?: typeof requestPeerShutdown;
-    graceTimeoutMs?: number;
-    isPidAlive?: (pid: number) => boolean;
 }
 
 /**
@@ -166,63 +158,10 @@ export function executePeerKillEntry(
         child.unref();
     });
     const checkSupervisor = deps.isSupervisorProcess ?? defaultIsSupervisorProcess;
-    const checkPidAlive = deps.isPidAlive ?? ((pid: number): boolean => {
-        try {
-            process.kill(pid, 0);
-            return true;
-        } catch (err: any) {
-            return err?.code === "EPERM";
-        }
-    });
 
     const validContainer = entry.container && isValidPeerContainerName(entry.container) ? entry.container : null;
     if (entry.container && !validContainer) {
         log.warn("coms_peer_container_name_rejected", { name: entry.name, project: entry.project, container: entry.container });
-    }
-
-    // Direct peer stop without a live supervisor (#1488): request graceful RPC `ctx.shutdown()`
-    // over the peer's COMS socket first, falling back to SIGTERM after a bounded grace timeout.
-    const endpoint = typeof deps.endpoint === "string" && deps.endpoint.trim() ? deps.endpoint.trim() : null;
-    if (entry.reason === "peer" && !validContainer && endpoint && entry.signalPid !== null && entry.signalPid > 0) {
-        const pid = entry.signalPid;
-        const graceMs =
-            typeof deps.graceTimeoutMs === "number" && Number.isFinite(deps.graceTimeoutMs) && deps.graceTimeoutMs > 0
-                ? deps.graceTimeoutMs
-                : DIRECT_PEER_GRACE_TIMEOUT_MS;
-        const ackTimeoutMs = Math.min(1_000, Math.max(100, Math.floor(graceMs / 2)));
-        const doRequestShutdown = deps.requestShutdown ?? requestPeerShutdown;
-        const sendFallbackSigterm = (cause: string) => {
-            if (!checkPidAlive(pid)) return;
-            try {
-                killPid(pid, "SIGTERM");
-                log.info("coms_peer_direct_kill_sigterm_fallback", { name: entry.name, project: entry.project, pid, cause });
-            } catch (error: unknown) {
-                log.warn("coms_peer_kill failed", {
-                    name: entry.name,
-                    pid,
-                    container: null,
-                    error: error instanceof Error ? error.message : String(error),
-                });
-            }
-        };
-        void doRequestShutdown(endpoint, { timeoutMs: ackTimeoutMs, reason: "coms_peer_kill" })
-            .then((res) => {
-                if (!res.ok) {
-                    sendFallbackSigterm(res.reason);
-                    return;
-                }
-                log.info("coms_peer_direct_graceful_shutdown_acked", {
-                    name: entry.name,
-                    project: entry.project,
-                    pid,
-                    busy: res.busy,
-                    graceMs,
-                });
-                const timer = setTimeout(() => sendFallbackSigterm("grace_timeout"), graceMs);
-                timer.unref?.();
-            })
-            .catch(() => sendFallbackSigterm("shutdown_request_error"));
-        return true;
     }
 
     let supervisorSignalled = false;
@@ -1178,7 +1117,7 @@ export function registerComs(pi: ExtensionAPI, options: RegisterComsOptions = {}
             if (entry.signalPid === null && !entry.container) continue;
             const liveRow = rows.find((r) => r.name === entry.name && r.project === entry.project);
             if (liveRow) persistPeerSessionForRevive(liveRow);
-            if (executePeerKillEntry(entry, { endpoint: liveRow?.endpoint })) {
+            if (executePeerKillEntry(entry)) {
                 killed.push(entry.container ? `${entry.name}·${entry.project} (${entry.container})` : `${entry.name}·${entry.project}`);
                 log.info("coms_peer_kill", {
                     name: entry.name,

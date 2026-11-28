@@ -55,6 +55,8 @@ export interface RegistryEntry {
 	container?: string | null;
 	/** #1512: real host PID (`State.Pid`) when known for a containerized peer. */
 	host_pid?: number | null;
+	/** #1488: per-launch supervisor instance UUID (`PI_COMS_INSTANCE_ID`) for safe ownership matching across PID/container reuse. */
+	instance_id?: string | null;
 }
 
 /** Resolve the effective COMS root directory for `cwd` via project settings, falling back to `~/.pi/coms`. */

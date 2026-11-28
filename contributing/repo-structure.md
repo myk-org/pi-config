@@ -119,7 +119,7 @@ pi-config/
 │   │   ├── coms-peers.ts            # Peer inventory filtering, stopped supervised peer listing, activity log aggregation, table/detail formatting, spawn/kill planning
 │   │   ├── coms-peers-ui.ts         # `/coms` interactive overlay (`r` revive, `1`/`2` Roster & Activity Log, `f` scope, `q` queue, multi-select composer/kill, drilldown)
 │   │   ├── coms-describe.ts         # Socket-based peer workload describe RPC client and validator
-│   │   ├── coms-shutdown-client.mjs # Zero-dependency Node ESM client for graceful supervised RPC peer `shutdown` envelopes (shared by `coms-peer-supervisor.mjs` and `coms-wrapper.ts`; typed via `coms-shutdown-client.d.mts`)
+│   │   ├── coms-shutdown-client.mjs # Zero-dependency Node ESM client for authenticated graceful supervised RPC peer `shutdown` envelopes (used by `scripts/coms-peer-supervisor.mjs`; typed via `coms-shutdown-client.d.mts`)
 │   │   ├── coms-drilldown.ts        # Peer workload drilldown row builders
 │   │   ├── coms-workload.ts         # Active-only peer workload counts and formatting
 │   │   ├── coms-history.ts          # Size-rotated JSONL message history append/query helpers

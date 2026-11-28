@@ -1,9 +1,8 @@
 /**
  * coms-shutdown-client.mjs — Pure Node ESM client for graceful COMS RPC peer shutdown (#1488).
  *
- * Shared between `scripts/coms-peer-supervisor.mjs` (plain Node ESM) and
- * `extensions/coms/coms-wrapper.ts` (TypeScript) so both use one wire protocol
- * implementation with zero external dependencies.
+ * Used by `scripts/coms-peer-supervisor.mjs` (plain Node ESM) to send an authenticated
+ * `shutdown` envelope over the peer's COMS Unix socket with zero external dependencies.
  */
 import * as net from "node:net";
 
@@ -32,6 +31,8 @@ export function requestPeerShutdown(endpoint, opts = {}) {
   const senderSession =
     typeof opts.senderSession === "string" && opts.senderSession ? opts.senderSession : "supervisor";
   const reason = typeof opts.reason === "string" && opts.reason ? opts.reason : "supervisor_stop";
+  const shutdownToken =
+    typeof opts.shutdownToken === "string" && opts.shutdownToken ? opts.shutdownToken : undefined;
 
   if (typeof endpoint !== "string" || !endpoint.trim()) {
     return Promise.resolve({ ok: false, reason: "missing-endpoint" });
@@ -71,6 +72,7 @@ export function requestPeerShutdown(endpoint, opts = {}) {
         sender_endpoint: "",
         hops: 0,
         reason,
+        ...(shutdownToken ? { shutdown_token: shutdownToken } : {}),
         timestamp: new Date().toISOString(),
       };
       try {
