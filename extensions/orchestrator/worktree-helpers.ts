@@ -4,7 +4,7 @@
  */
 
 import { execFile, spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { hyperlink } from "@earendil-works/pi-tui";
@@ -514,29 +514,111 @@ export function formatWorktreeStatusSummary(
   return `⊞ Worktrees: ${linked} linked (${where})`;
 }
 
-/** Parse `git worktree prune -v` output (stdout + stderr). */
+/** Top-level entries inside an unregistered `.worktrees/<name>` dir that are safe runtime leftovers (#1504). */
+export const SAFE_WORKTREE_GHOST_ENTRIES: ReadonlySet<string> = new Set([".pi", "graft"]);
+
+export type GhostDirClassification =
+  | { safe: true; entries: string[] }
+  | {
+      safe: false;
+      reason: "symlink" | "not_dir" | "empty" | "unexpected_entries" | "unreadable";
+      entries?: string[];
+      unexpectedEntries?: string[];
+      error?: string;
+    };
+
+export interface GhostPruneResult {
+  ok: boolean;
+  removed: string[];
+  skipped: string[];
+  error?: string;
+}
+
+/**
+ * Classify whether a directory on disk is a safe unregistered worktree ghost shell
+ * containing exclusively allowlisted runtime leftovers (`.pi`, `graft`) and zero user files.
+ */
+export function classifyGhostWorktreeDir(dirPath: string): GhostDirClassification {
+  let st;
+  try {
+    st = lstatSync(dirPath);
+  } catch (e: any) {
+    return { safe: false, reason: "unreadable", error: e?.message || String(e) };
+  }
+  if (st.isSymbolicLink()) return { safe: false, reason: "symlink" };
+  if (!st.isDirectory()) return { safe: false, reason: "not_dir" };
+
+  let entries: string[];
+  try {
+    entries = readdirSync(dirPath);
+  } catch (e: any) {
+    return { safe: false, reason: "unreadable", error: e?.message || String(e) };
+  }
+  if (entries.length === 0) return { safe: false, reason: "empty", entries };
+
+  const unexpectedEntries = entries.filter((name) => !SAFE_WORKTREE_GHOST_ENTRIES.has(name));
+  if (unexpectedEntries.length > 0) {
+    return { safe: false, reason: "unexpected_entries", entries, unexpectedEntries };
+  }
+  return { safe: true, entries };
+}
+
+/** Parse `git worktree prune -v` output (stdout + stderr) and optional `.worktrees/` ghost cleanup summary. */
 export function formatPruneResult(
   stdout: string,
   stderr: string,
   code: number,
-): { ok: boolean; pruned: string[]; message: string } {
+  ghosts?: GhostPruneResult,
+): {
+  ok: boolean;
+  pruned: string[];
+  removedGhosts: string[];
+  skippedGhosts: string[];
+  message: string;
+} {
   if (code !== 0) {
     const detail = (stderr || stdout || "git worktree prune failed").trim();
-    return { ok: false, pruned: [], message: `Worktree prune failed: ${detail}` };
+    return {
+      ok: false,
+      pruned: [],
+      removedGhosts: [],
+      skippedGhosts: [],
+      message: `Worktree prune failed: ${detail}`,
+    };
   }
   const combined = [stdout, stderr].filter(Boolean).join("\n");
   const pruned = combined
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
-  if (pruned.length === 0) {
-    return { ok: true, pruned: [], message: "No stale worktrees to prune." };
+  const removedGhosts = ghosts?.removed ? [...ghosts.removed] : [];
+  const skippedGhosts = ghosts?.skipped ? [...ghosts.skipped] : [];
+  const ok = ghosts ? ghosts.ok : true;
+
+  const sections: string[] = [];
+  if (pruned.length > 0) {
+    sections.push(
+      `Pruned ${pruned.length} stale worktree${pruned.length === 1 ? "" : "s"}:\n${pruned.map((l) => `  • ${l}`).join("\n")}`,
+    );
   }
-  return {
-    ok: true,
-    pruned,
-    message: `Pruned ${pruned.length} stale worktree${pruned.length === 1 ? "" : "s"}:\n${pruned.map((l) => `  • ${l}`).join("\n")}`,
-  };
+  if (removedGhosts.length > 0) {
+    sections.push(
+      `Removed ${removedGhosts.length} ghost worktree dir${removedGhosts.length === 1 ? "" : "s"} under .worktrees/:\n${removedGhosts.map((n) => `  • .worktrees/${n}`).join("\n")}`,
+    );
+  }
+  if (skippedGhosts.length > 0) {
+    sections.push(
+      `Skipped ${skippedGhosts.length} unregistered dir${skippedGhosts.length === 1 ? "" : "s"} under .worktrees/ (left untouched): ${skippedGhosts.join(", ")}`,
+    );
+  }
+  if (ghosts && !ghosts.ok) {
+    sections.push(
+      `Ghost directory sweep skipped (${ghosts.error || "git worktree list failed"}).`,
+    );
+  }
+
+  const message = sections.length > 0 ? sections.join("\n") : "No stale worktrees to prune.";
+  return { ok, pruned, removedGhosts, skippedGhosts, message };
 }
 
 export interface CopyClipboardOptions {

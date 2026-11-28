@@ -234,7 +234,7 @@ Revert working-tree file changes made during the most recent file-mutating turn.
 Zero-arg fullscreen git worktrees overlay.
 
 - **Arguments:** none
-- **Keys in the overlay:** `↑↓`/`jk` navigate, `Space` multi-select, `d`/`x` guarded remove (single or multi-select with confirmation), `p` prune stale metadata, `r` refresh, `Enter` detail (`c` copy path, `d` remove, `p` prune, `r` refresh), `Esc` close
+- **Keys in the overlay:** `↑↓`/`jk` navigate, `Space` multi-select, `d`/`x` guarded remove (single or multi-select with confirmation; cleans up `.pi/`/`graft`-only leftover directories after git unregisters them), `p` prune stale metadata and unregistered `.pi/`/`graft`-only ghost directories under `.worktrees/`, `r` refresh, `Enter` detail (`c` copy path, `d` remove, `p` prune, `r` refresh), `Esc` close
 - **No terminal / browser:** prints the plain-text markdown table of worktrees
 
 ```text
@@ -328,7 +328,7 @@ reliable notifications are not covered; there is no polling fallback or replay o
 |---|---|---|
 | `async_status` | List running and recent async/sync subagent jobs (ID, name, agent, status, elapsed, current tool) or inspect one job's output tail | `id` (optional exact ID or unique prefix), `max_chars` (200–20000, default 4000) |
 | `session_status` | Return the unified `/status` snapshot (async agents, crons, git branch/dirty state, worktrees, context %, loaded resources) | none |
-| `worktree_status` | List git worktrees (branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata | `action` (`list`, `prune`) |
+| `worktree_status` | List git worktrees (branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata and unregistered `.pi/`/`graft`-only ghost directories under `.worktrees/` | `action` (`list`, `prune`) |
 | `daemon_manage` | Check status or start/stop/restart local `pidash` and `pidiff` daemons (handles disabled daemons cleanly) | `name` (`pidash`, `pidiff`), `action` (`status`, `start`, `stop`, `restart`) |
 | `settings_get` | Inspect effective and per-scope (`env`/`project`/`global`/`default`) pi-config settings (`codemode`, `runtime` namespace, read-only) | `key` (optional), `category` (optional), `only_overrides` (optional bool) |
 | `settings_set` | Approval-gated `set`/`reset` of a validated setting in `global` or `project` scope (`model-only`, never in `codemode`, fails closed when headless) | `action` (`set`, `reset`), `key`, `scope` (`global`, `project`), `value` (required for `set`) |

@@ -372,7 +372,7 @@ export function WorktreesPanel({ sessionId, cwd, sendCmd, onMessage, notify }: P
             className="inline-flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-accent/50 hover:bg-accent text-foreground disabled:opacity-50"
             onClick={handlePrune}
             disabled={busyOp !== null}
-            title="Prune stale worktree metadata (git worktree prune -v)"
+            title="Prune stale worktree metadata (git worktree prune -v) and unregistered .pi/ ghost folders under .worktrees/"
           >
             <Scissors className="h-3 w-3" />
             <span>{busyOp === "prune" ? "Pruning…" : "Prune"}</span>

@@ -120,6 +120,8 @@ export interface WorktreeOpResult {
   ok: boolean;
   message: string;
   pruned?: string[];
+  removedGhosts?: string[];
+  skippedGhosts?: string[];
   removed?: string[];
   failed?: Array<{ path: string; relativePath: string; reason: string }>;
   requestId?: string;
