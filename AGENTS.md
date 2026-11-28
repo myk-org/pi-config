@@ -51,6 +51,9 @@ flow, `warn` recoverable issues, `error` failures) — use `createLogger`, never
 ## Boundaries & When Blocked
 
 - **Blocked:** stop after 3 failed test attempts with full output; fix pre-commit issues directly; check `package.json`/`pyproject.toml` before asking about missing deps.
+- **No backwards compatibility below `MIN_PI_VERSION`:** Do not keep compatibility shims, feature-detection fallbacks, or legacy
+  code paths for Pi versions older than `MIN_PI_VERSION`. Enforce `MIN_PI_VERSION` with a clear actionable upgrade error and delete
+  obsolete pre-floor compatibility code whenever `MIN_PI_VERSION` is bumped.
 - **Always:** run `prek run --all-files && tox && npm run typecheck` before committing; use `uv run` for Python (never bare
   `python`/`pip`); update `AGENTS.md`/`README.md` when structure, commands, or features change.
 - **Ask first:** modifying `rules/` (affects all users) or changing enforcement logic.

@@ -12,6 +12,9 @@ import { publishTaskStore, publishWorkloadSources, resetSessionBridge } from "..
 import { TaskStore } from "../../../extensions/pitasks/task-store.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 interface FakePi {
 	tools: Map<string, any>;
@@ -29,6 +32,8 @@ interface FakePi {
 	getFlag: (name: string) => any;
 	registerTool: (tool: any) => void;
 	registerCommand: (name: string, def: any) => void;
+	registerMessageRenderer: () => void;
+	getAllTools: () => any[];
 	getActiveTools: () => string[];
 	setActiveTools: (tools: string[]) => void;
 	appendEntry: (key: string, data: unknown) => void;
@@ -80,6 +85,10 @@ function createFakePi(flagOverrides: Record<string, any> = {}): FakePi {
 		},
 		registerCommand(name: string, def: any) {
 			commands.set(name, def);
+		},
+		registerMessageRenderer() {},
+		getAllTools() {
+			return [...tools.values()];
 		},
 		getActiveTools() {
 			return [...activeTools];

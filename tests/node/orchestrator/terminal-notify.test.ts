@@ -58,7 +58,9 @@ function makeComsTestPi() {
       }
     },
     registerFlag: () => {},
+    registerMessageRenderer: () => {},
     getFlag: () => undefined,
+    getAllTools: () => [...tools.values()],
     getActiveTools: () => [...activeTools],
     setActiveTools: (names: string[]) => {
       activeTools = [...names];

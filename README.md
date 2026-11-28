@@ -60,7 +60,7 @@ Single extension that provides:
 | **Per-turn file snapshots** | Settings-togglable (`turn_snapshots`, default `true`) shadow git-tree snapshots captured before mutating turns (`write`/`edit`/`bash`) via a temporary `GIT_INDEX_FILE` — never touching `.git/index`, commits, or stash; `/undo` reverts a turn's working-tree edits (including removing files created in that turn while preserving gitignored files) and `/redo` reapplies it (bounded per-session stack of 20 turns) |
 | **Human Q&A reader (`/qa`)** | Zero-arg fullscreen overlay (`/qa` or `Alt+Q`, configurable via `qa_overlay_shortcut`) showing only real human Q&A pairs newest-first (filtering out async/cron/COMS/reminder background turns) with `/` live filter, `Enter` scrollable reader, 1-key quoting into the editor (`r` whole answer, `1`–`9` specific Markdown heading/numbered item), and a 1-line dim buried-answer hint above the editor when background turns push an answer off-screen |
 | **Background advisor/watchdog** | Opt-in (`advisor_enabled`, default `false` — zero extra tokens when off) non-blocking read-only background reviewer over recent transcript deltas (`advisor_model` configured as `provider/model-id` in `/pi-config-settings`, cadence via `advisor_interval_turns`); silent when clean, injects a hidden course-correction note only on concrete bugs, spec drift, or stuck retry loops, and fails soft on provider errors/timeouts |
-| **Opt-in LSP diagnostics** | Disabled by default (`lsp_enabled: false`, env `PI_LSP_ENABLED`, global/env-only trust boundary). Lazily runs a shared 1-per-`(worktreeRoot, serverId)` `0600` UNIX-socket LSP broker so the main session, COMS peers, and editing subagents share one warm language server per worktree (with concurrent spawn lock dedup, broken-server circuit breaker, ~150ms diagnostic debounce, bounded `1500ms` timeout, 20-line error/warning cap, and 5-minute idle auto-shutdown). When a built-in server is missing on `PATH`, interactive TUI prompts once (`Install` / `Not now` / `Don't ask again` persisted in SQLite) while headless peers/subagents emit a single non-blocking hint; `scripts/install.py` installs `typescript-language-server`, `basedpyright`, and conditional `gopls` |
+| **Opt-in LSP diagnostics** | Disabled by default (`lsp_enabled: false`, env `PI_LSP_ENABLED`, global/env-only trust boundary). Lists available built-in and global `lsp_servers` binaries in a muted zero-token startup summary (`LSP:` / `LSP (off):`) without spawning servers. When enabled, lazily runs a shared 1-per-`(worktreeRoot, serverId)` `0600` UNIX-socket LSP broker so the main session, COMS peers, and editing subagents share one warm language server per worktree (with concurrent spawn lock dedup, broken-server circuit breaker, ~150ms diagnostic debounce, bounded `1500ms` timeout, 20-line error/warning cap, and 5-minute idle auto-shutdown). When a built-in server is missing on `PATH`, interactive TUI prompts once (`Install` / `Not now` / `Don't ask again` persisted in SQLite) while headless peers/subagents emit a single non-blocking hint; `scripts/install.py` installs `typescript-language-server`, `basedpyright`, and conditional `gopls` |
 | **Upgrade changelog** | Shows release notes on session start after pi-config version upgrade |
 | **Task tracking** | Structured task lists for multi-step workflows — live widget (`expanded` ↔ `collapsed` 1-line header via `alt+t`), `[you]`/`[llm]` assignee tags, live `[⏳ ...]` badges for bound async subagents, zero-arg `/tasks` TUI (`Space` multi-select for `s` start, `d` done, `x` delete, plus `n` add, `e` edit, `f` mine/all), progress tracking, reminder nudges (owned, based on [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) MIT). `PI_TASK_SCOPE` selects `.pi/tasks/tasks-<sessionId>.json` (`session`, default) or `.pi/tasks/tasks.json` (`project`); `PI_TASKS` sets an explicit store file, a bare list id under `~/.pi/tasks/<id>.json`, or `off` for in-memory only |
 | **Neovim integration** | Send changed files and review findings to nvim's quickfix list — only active when running inside nvim |
@@ -719,8 +719,8 @@ Pidash is a web-based dashboard that runs alongside the TUI, accessible from any
 
 **Features:**
 
-- Multi-session dashboard with browser tab title sync (`[!]` prefix when waiting for input) and sidebar grouped by **Needs attention**, **Pinned**, project folders, **Coms**,
-  and collapsible **Archived** (auto-unarchives on send)
+- Multi-session dashboard with browser tab title sync (`[!]` prefix when waiting for input), inline waiting-for-input highlights and collapsed-group attention badges,
+  and a scrollable sidebar grouped by **Pinned**, project folders, **Coms**, and collapsible **Archived** (auto-unarchives on send)
 - Live conversation streaming (user, assistant, tool, thinking)
 - Send messages from browser to pi
 - Model and thinking level switching from browser
@@ -1146,7 +1146,7 @@ files change. `npm run typecheck:tests` checks the test tree alone.
 
 ## Prerequisites
 
-- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.6.1**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
+- [pi](https://github.com/badlogic/pi-mono) (minimum version: **1.7.0**). Pidash uses Pi's `ui_prompt_start` and `ui_prompt_end` events to show prompt wait separately from agent work.
 - `gh` CLI (for GitHub operations)
 - `uv` (for Python execution)
 - `myk-pi-tools` (optional, for `/pr-review` and `/release`)

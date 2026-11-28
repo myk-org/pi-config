@@ -338,86 +338,84 @@ export function registerDreaming(
     return "Auto-dreaming disabled";
   }
 
-  if (typeof pi.registerTool === "function") {
-    pi.registerTool({
-      name: "memory_dream",
-      label: "Memory Dream",
-      exposure: "deferred",
-      namespace: TOOL_NAMESPACES.memory,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-      description:
-        "Inspect background memory dreaming status, trigger consolidation now, or toggle automatic dreaming for this session.",
-      parameters: Type.Object({
-        action: Type.Union(
-          [Type.Literal("status"), Type.Literal("run"), Type.Literal("auto_on"), Type.Literal("auto_off")],
-          {
-            description:
-              "'status' to inspect dreaming state, 'run' to trigger background consolidation now, 'auto_on' / 'auto_off' to enable or disable automatic dreaming.",
-          },
-        ),
-      }),
-      async execute(_callId, params, _signal, _onUpdate, ctx) {
-        const cwd = ctx?.cwd || lastCwd || process.cwd();
-        if (params.action === "status") {
-          const autoEnabled = isAutoDreamEnabled(cwd);
-          const intervalHours = getEffectiveIntervalHours(cwd);
-          const text = [
-            `Auto-dreaming: ${autoEnabled ? "enabled" : "disabled"} (interval: ${intervalHours}h + session end)`,
-            `Dream in flight: ${dreamInFlight ? `yes (${currentDreamId || "starting"})` : "no"}`,
-          ].join("\n");
-          log.debug("memory_dream_tool_status", { enabled: autoEnabled, inFlight: dreamInFlight, intervalHours });
-          return {
-            content: [{ type: "text" as const, text }],
-            details: { action: "status", enabled: autoEnabled, inFlight: dreamInFlight, currentDreamId: currentDreamId || null, intervalHours },
-          };
-        }
-        if (params.action === "run") {
-          if (dreamInFlight) {
-            log.info("memory_dream_tool_already_running", { currentDreamId });
-            return {
-              content: [{ type: "text" as const, text: "Dream already running — wait for it to finish." }],
-              details: { action: "run", ok: false, inFlight: true, id: currentDreamId || null },
-            };
-          }
-          lastCwd = cwd;
-          if (ctx) lastCtx = ctx;
-          const res = runDreamAsync(cwd);
-          if (res.started) {
-            log.info("memory_dream_tool_started", { id: res.id });
-            return {
-              content: [{ type: "text" as const, text: `Started background memory consolidation (job ${res.id}).` }],
-              details: { action: "run", ok: true, id: res.id },
-            };
-          }
-          log.error("memory_dream_tool_start_failed", { error: res.error });
-          return {
-            content: [{ type: "text" as const, text: `Failed to start memory dreaming: ${res.error || "unknown error"}.` }],
-            details: { action: "run", ok: false, error: res.error },
-          };
-        }
-        if (params.action === "auto_on") {
-          const msg = setAutoDream(true, cwd, ctx);
-          log.info("memory_dream_tool_auto", { enabled: true });
-          return {
-            content: [{ type: "text" as const, text: msg }],
-            details: { action: "auto_on", enabled: true },
-          };
-        }
-        if (params.action === "auto_off") {
-          const msg = setAutoDream(false, cwd, ctx);
-          log.info("memory_dream_tool_auto", { enabled: false });
-          return {
-            content: [{ type: "text" as const, text: msg }],
-            details: { action: "auto_off", enabled: false },
-          };
-        }
+  pi.registerTool({
+    name: "memory_dream",
+    label: "Memory Dream",
+    exposure: "deferred",
+    namespace: TOOL_NAMESPACES.memory,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    description:
+      "Inspect background memory dreaming status, trigger consolidation now, or toggle automatic dreaming for this session.",
+    parameters: Type.Object({
+      action: Type.Union(
+        [Type.Literal("status"), Type.Literal("run"), Type.Literal("auto_on"), Type.Literal("auto_off")],
+        {
+          description:
+            "'status' to inspect dreaming state, 'run' to trigger background consolidation now, 'auto_on' / 'auto_off' to enable or disable automatic dreaming.",
+        },
+      ),
+    }),
+    async execute(_callId, params, _signal, _onUpdate, ctx) {
+      const cwd = ctx?.cwd || lastCwd || process.cwd();
+      if (params.action === "status") {
+        const autoEnabled = isAutoDreamEnabled(cwd);
+        const intervalHours = getEffectiveIntervalHours(cwd);
+        const text = [
+          `Auto-dreaming: ${autoEnabled ? "enabled" : "disabled"} (interval: ${intervalHours}h + session end)`,
+          `Dream in flight: ${dreamInFlight ? `yes (${currentDreamId || "starting"})` : "no"}`,
+        ].join("\n");
+        log.debug("memory_dream_tool_status", { enabled: autoEnabled, inFlight: dreamInFlight, intervalHours });
         return {
-          content: [{ type: "text" as const, text: `Unknown action "${String(params.action)}". Use "status", "run", "auto_on", or "auto_off".` }],
-          details: { ok: false },
+          content: [{ type: "text" as const, text }],
+          details: { action: "status", enabled: autoEnabled, inFlight: dreamInFlight, currentDreamId: currentDreamId || null, intervalHours },
         };
-      },
-    });
-  }
+      }
+      if (params.action === "run") {
+        if (dreamInFlight) {
+          log.info("memory_dream_tool_already_running", { currentDreamId });
+          return {
+            content: [{ type: "text" as const, text: "Dream already running — wait for it to finish." }],
+            details: { action: "run", ok: false, inFlight: true, id: currentDreamId || null },
+          };
+        }
+        lastCwd = cwd;
+        if (ctx) lastCtx = ctx;
+        const res = runDreamAsync(cwd);
+        if (res.started) {
+          log.info("memory_dream_tool_started", { id: res.id });
+          return {
+            content: [{ type: "text" as const, text: `Started background memory consolidation (job ${res.id}).` }],
+            details: { action: "run", ok: true, id: res.id },
+          };
+        }
+        log.error("memory_dream_tool_start_failed", { error: res.error });
+        return {
+          content: [{ type: "text" as const, text: `Failed to start memory dreaming: ${res.error || "unknown error"}.` }],
+          details: { action: "run", ok: false, error: res.error },
+        };
+      }
+      if (params.action === "auto_on") {
+        const msg = setAutoDream(true, cwd, ctx);
+        log.info("memory_dream_tool_auto", { enabled: true });
+        return {
+          content: [{ type: "text" as const, text: msg }],
+          details: { action: "auto_on", enabled: true },
+        };
+      }
+      if (params.action === "auto_off") {
+        const msg = setAutoDream(false, cwd, ctx);
+        log.info("memory_dream_tool_auto", { enabled: false });
+        return {
+          content: [{ type: "text" as const, text: msg }],
+          details: { action: "auto_off", enabled: false },
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: `Unknown action "${String(params.action)}". Use "status", "run", "auto_on", or "auto_off".` }],
+        details: { ok: false },
+      };
+    },
+  });
 
   function syncAutoDreamTimer(cwd: string) {
     if (!cwd || lastCtx?.mode === "print" || lastCtx?.mode === "json") return;

@@ -425,85 +425,18 @@ export function tryGetSystemPromptOptions(ctx: any): { contextFiles?: any[]; ski
   }
 }
 
-/**
- * Minimum pi version required by this pi-config version.
- *
- * 0.99.0: `builtin:mcp` replaces the external `mcpc` binary (so MCP servers are
- * read from ~/.pi/agent/mcp.json by pi itself), and the built-in MCP/codemode/
- * tool-search extensions become the ones we must not collide with.
- */
-export const MIN_PI_VERSION = "1.6.1";
-
-/** Get the installed pi version from its package.json. */
-export function getPiVersion(): string | null {
-  // 1) Resolve from the running binary — walk up until we find the package
-  // root (works for any layout: dist/cli.js, dist/bundle/cli.js, src/…).
-  try {
-    const piScript = process.argv[1];
-    if (piScript) {
-      let dir = path.dirname(fs.realpathSync(piScript));
-      while (dir !== path.dirname(dir)) {
-        const pkgPath = path.join(dir, "package.json");
-        if (fs.existsSync(pkgPath)) {
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-          if (pkg.name === "@earendil-works/pi-coding-agent" && pkg.version) return pkg.version;
-        }
-        dir = path.dirname(dir);
-      }
-    }
-  } catch {}
-  // 2) Ask the CLI the user actually runs — authoritative for wrapper/bundle layouts.
-  try {
-    const out = execFileSync("pi", ["--version"], { timeout: 5000, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
-    const m = out.match(/\d+\.\d+\.\d+(?:-[\w.]+)?/);
-    if (m) return m[0];
-  } catch {}
-  return null;
-}
-
-function parseSemver(v: string): { core: number[]; pre: string[] } {
-  const noBuild = v.split("+")[0];
-  const dashIdx = noBuild.indexOf("-");
-  const coreStr = dashIdx >= 0 ? noBuild.slice(0, dashIdx) : noBuild;
-  const preStr = dashIdx >= 0 ? noBuild.slice(dashIdx + 1) : "";
-  return {
-    core: coreStr.split(".").map(Number),
-    pre: preStr ? preStr.split(".") : [],
-  };
-}
-
-/** Compare two semver strings per SemVer 2.0.0 precedence. Returns -1 if a < b, 0 if equal, 1 if a > b. */
-export function compareSemver(a: string, b: string): number {
-  const pa = parseSemver(a);
-  const pb = parseSemver(b);
-  for (let i = 0; i < Math.max(pa.core.length, pb.core.length); i++) {
-    const na = pa.core[i] || 0;
-    const nb = pb.core[i] || 0;
-    if (na !== nb) return na < nb ? -1 : 1;
-  }
-  if (pa.pre.length === 0 && pb.pre.length === 0) return 0;
-  if (pa.pre.length === 0) return 1;
-  if (pb.pre.length === 0) return -1;
-  for (let i = 0; i < Math.min(pa.pre.length, pb.pre.length); i++) {
-    const ia = pa.pre[i];
-    const ib = pb.pre[i];
-    if (ia === ib) continue;
-    const aNum = /^\d+$/.test(ia);
-    const bNum = /^\d+$/.test(ib);
-    if (aNum && bNum) return Number(ia) < Number(ib) ? -1 : 1;
-    if (aNum !== bNum) return aNum ? -1 : 1;
-    return ia < ib ? -1 : 1;
-  }
-  if (pa.pre.length === pb.pre.length) return 0;
-  return pa.pre.length < pb.pre.length ? -1 : 1;
-}
-
-/** Check if installed pi version meets minimum requirement. */
-export function checkMinPiVersion(minVersion: string = MIN_PI_VERSION): { ok: boolean; installed: string | null; required: string } {
-  const installed = getPiVersion();
-  if (!installed) return { ok: false, installed: null, required: minVersion };
-  return { ok: compareSemver(installed, minVersion) >= 0, installed, required: minVersion };
-}
+export {
+  MIN_PI_VERSION,
+  assertMinPiVersionOnLoad,
+  checkMinPiVersion,
+  compareSemver,
+  formatMinPiVersionError,
+  getPiVersion,
+  resetPiVersionCache,
+  setPiVersionResolverForTests,
+  type PiVersionCheckResult,
+  type PiVersionDetectionOptions,
+} from "../shared/pi-version.js";
 
 /** DJB2 hash — deterministic string → number hash for session IDs. */
 export function djb2Hash(input: string): number {

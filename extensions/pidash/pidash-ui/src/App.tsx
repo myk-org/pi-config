@@ -252,14 +252,13 @@ export function App() {
     return undefined;
   }, [selectedSession, hasPendingPrompt]);
 
-  // Flatten sessions matching sidebar visual order: Needs attention → Pinned → project groups → Archived
+  // Flatten sessions matching sidebar visual order: Pinned → project groups → Archived
   const flatSessions = useMemo(
     () => flattenSidebarSessions(partitionSidebarSessions(sessions, {
       pinnedIds: pinnedSessionIds,
       archivedIds: archivedSessionIds,
-      extraAttentionIds,
     })),
-    [sessions, pinnedSessionIds, archivedSessionIds, extraAttentionIds],
+    [sessions, pinnedSessionIds, archivedSessionIds],
   );
 
   useKeyboardNavigation({
@@ -287,7 +286,7 @@ export function App() {
             onClick={() => setSidebarCollapsed(true)}
           />
           <div
-            className="flex-shrink-0 border-r border-border relative max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-20 max-md:w-[85vw] max-md:max-w-[320px] bg-background"
+            className="h-full min-h-0 flex-shrink-0 border-r border-border relative max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-20 max-md:w-[85vw] max-md:max-w-[320px] bg-background"
             style={{ width: typeof window !== 'undefined' && window.innerWidth <= 768 ? undefined : sidebarWidth }}
             ref={sidebarRef}
           >

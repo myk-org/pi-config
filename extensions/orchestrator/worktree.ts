@@ -668,44 +668,42 @@ export function registerWorktree(pi: ExtensionAPI, deps: WorktreeDeps = {}): voi
     },
   });
 
-  if (typeof pi.registerTool === "function") {
-    pi.registerTool({
-      name: "worktree_status",
-      label: "Worktree Status",
-      exposure: "codemode",
-      namespace: TOOL_NAMESPACES.runtime,
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-      description:
-        "Inspect git worktrees (path, branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata.",
-      parameters: Type.Object({
-        action: Type.Union([Type.Literal("list"), Type.Literal("prune")], {
-          description: "'list' to list git worktrees with dirty counts, PRs, and active COMS peers; 'prune' to run git worktree prune -v.",
-        }),
+  pi.registerTool({
+    name: "worktree_status",
+    label: "Worktree Status",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.runtime,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    description:
+      "Inspect git worktrees (path, branch, dirty counts, open PR, active COMS peers) or prune stale worktree metadata.",
+    parameters: Type.Object({
+      action: Type.Union([Type.Literal("list"), Type.Literal("prune")], {
+        description: "'list' to list git worktrees with dirty counts, PRs, and active COMS peers; 'prune' to run git worktree prune -v.",
       }),
-      async execute(_callId, params, _signal, _onUpdate, ctx) {
-        const cwd = ctx?.cwd || process.cwd();
-        if (params.action === "list") {
-          const views = await loadWorktreeViews(cwd, effectiveDeps, true);
-          const text = formatWorktreeTable(views, cwd, { hyperlinks: false });
-          log.debug("worktree_status_tool_list", { cwd, count: views.length });
-          return {
-            content: [{ type: "text" as const, text }],
-            details: { action: "list", count: views.length, worktrees: views },
-          };
-        }
-        if (params.action === "prune") {
-          const res = await runWorktreePrune(cwd, effectiveDeps);
-          log.info("worktree_status_tool_prune", { cwd, ok: res.ok, pruned: res.pruned.length });
-          return {
-            content: [{ type: "text" as const, text: res.message }],
-            details: { action: "prune", ...res },
-          };
-        }
+    }),
+    async execute(_callId, params, _signal, _onUpdate, ctx) {
+      const cwd = ctx?.cwd || process.cwd();
+      if (params.action === "list") {
+        const views = await loadWorktreeViews(cwd, effectiveDeps, true);
+        const text = formatWorktreeTable(views, cwd, { hyperlinks: false });
+        log.debug("worktree_status_tool_list", { cwd, count: views.length });
         return {
-          content: [{ type: "text" as const, text: `Unknown action "${String(params.action)}". Use "list" or "prune".` }],
-          details: { ok: false },
+          content: [{ type: "text" as const, text }],
+          details: { action: "list", count: views.length, worktrees: views },
         };
-      },
-    });
-  }
+      }
+      if (params.action === "prune") {
+        const res = await runWorktreePrune(cwd, effectiveDeps);
+        log.info("worktree_status_tool_prune", { cwd, ok: res.ok, pruned: res.pruned.length });
+        return {
+          content: [{ type: "text" as const, text: res.message }],
+          details: { action: "prune", ...res },
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: `Unknown action "${String(params.action)}". Use "list" or "prune".` }],
+        details: { ok: false },
+      };
+    },
+  });
 }

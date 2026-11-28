@@ -14,6 +14,9 @@ import {
 } from "../../../extensions/shared/openai-compatible-discovery.js";
 import { isPricingKnown, isPricingUnknown } from "../../../extensions/shared/pricing-provenance.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 
 function modelIds(registry: ModelRegistry, provider = "gateway") {

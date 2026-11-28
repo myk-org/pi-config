@@ -332,11 +332,6 @@ export function registerWidgetShortcut(
     log.debug("widget_shortcut_disabled", { settingKey });
     return null;
   }
-  if (typeof (pi as { registerShortcut?: unknown }).registerShortcut !== "function") {
-    store.registeredShortcuts[settingKey] = null;
-    log.debug("widget_shortcut_api_unavailable", { settingKey, key });
-    return null;
-  }
   try {
     pi.registerShortcut(key, { description, handler });
     store.registeredShortcuts[settingKey] = key;

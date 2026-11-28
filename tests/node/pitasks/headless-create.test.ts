@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import pitasks from "../../../extensions/pitasks/index.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 it("headless /tasks falls back to plain-text task list regardless of args", async () => {
  let handler: any;

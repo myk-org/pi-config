@@ -283,10 +283,7 @@ export function registerEnforcement(pi: ExtensionAPI, inContainer?: boolean): vo
     // Declarative tool_permissions & domain-scoped fetch_content approvals (#1450).
     // Runs strictly AFTER all built-in hard security blocks so user rules can never weaken them.
     if (eventToolName) {
-      const toolAnnotations =
-        typeof (pi as any).getAllTools === "function"
-          ? pi.getAllTools().find((t) => t.name === eventToolName)?.annotations
-          : undefined;
+      const toolAnnotations = pi.getAllTools().find((t) => t.name === eventToolName)?.annotations;
       const permDecision = await evaluateToolPermissions({
         toolName: eventToolName,
         input: toolPermInput,

@@ -1053,6 +1053,7 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
         registerCommand(name: string, opts: any) {
           if (name === "worktree") handler = opts.handler;
         },
+        registerTool() {},
         sendMessage(msg: any) {
           sentMessages.push(msg.content);
         },
@@ -1172,6 +1173,7 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
         registerCommand(name: string, opts: any) {
           if (name === "status") statusHandler = opts.handler;
         },
+        registerTool() {},
       };
       registerStatus(mockPi, false, () => [], () => []);
       assert.ok(statusHandler);
@@ -1211,6 +1213,7 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
       registerCommand(name: string, opts: any) {
         if (name === "status") statusHandler = opts.handler;
       },
+      registerTool() {},
     };
     registerStatus(mockPi, false, () => [], () => []);
     assert.ok(statusHandler);
@@ -1233,6 +1236,7 @@ describe("formatting & /worktree subcommands + overlay (#1316)", () => {
         registerCommand(name: string, opts: any) {
           if (name === "status") statusHandler = opts.handler;
         },
+        registerTool() {},
       };
       registerStatus(mockPi, false, () => [], () => []);
       assert.ok(statusHandler);

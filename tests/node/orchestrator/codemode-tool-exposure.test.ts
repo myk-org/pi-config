@@ -33,12 +33,14 @@ import { registerComs } from "../../../extensions/coms/coms-wrapper.js";
 import { syncComsActiveTools } from "../../../extensions/coms/coms-shared.js";
 import { TOOL_NAMESPACES } from "../../../extensions/shared/tool-namespaces.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 function createMockPi(opts: {
   initialTools?: Array<Record<string, any>>;
   initialActive?: string[];
   settings?: Record<string, any>;
-  omitToolApis?: boolean;
 } = {}) {
   const registered = new Map<string, any>();
   for (const t of opts.initialTools ?? []) registered.set(t.name, t);
@@ -55,9 +57,17 @@ function createMockPi(opts: {
     registerFlag: () => {},
     registerEntryRenderer: () => {},
     registerMessageRenderer: () => {},
+    registerMarkdownTransformer: () => {},
     getFlag: () => undefined,
     appendEntry: () => {},
     sendMessage: () => {},
+    getAllTools: () => [...registered.values()],
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (names: string[]) => {
+      setActiveCalls++;
+      activeTools = [...names];
+    },
+    getSettings: () => opts.settings ?? {},
     on: (event: string, fn: (...args: any[]) => any) => {
       const list = handlers.get(event) ?? [];
       list.push(fn);
@@ -67,17 +77,7 @@ function createMockPi(opts: {
       on: () => () => {},
       emit: () => {},
     },
-    ...(opts.settings ? { getSettings: () => opts.settings } : {}),
   };
-
-  if (!opts.omitToolApis) {
-    pi.getAllTools = () => [...registered.values()];
-    pi.getActiveTools = () => [...activeTools];
-    pi.setActiveTools = (names: string[]) => {
-      setActiveCalls++;
-      activeTools = [...names];
-    };
-  }
 
   const emit = async (event: string, ...args: any[]) => {
     for (const fn of handlers.get(event) ?? []) {
@@ -403,15 +403,6 @@ describe("session_start codemode auto-activation (#1451)", () => {
       reason: "not_registered",
     });
     assert.equal(getSetActiveCalls(), 0);
-  });
-
-  it("returns api_unavailable without throwing when tool registry APIs are missing", () => {
-    const { pi } = createMockPi({ omitToolApis: true });
-
-    assert.deepEqual(ensureCodemodeActive(pi, ["node", "pi"]), {
-      activated: false,
-      reason: "api_unavailable",
-    });
   });
 
   it("activates ungated extension tools as fallback when --exclude-tools codemode is set", () => {

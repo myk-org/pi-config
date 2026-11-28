@@ -675,10 +675,4 @@ describe("registerMarkdownTransformer", () => {
     registerMarkdownTransformer(mockPi as any);
     assert.equal(registered, transformMarkdown);
   });
-
-  it("skips registration when API is not available (pre-0.84.0)", () => {
-    const mockPi = {};
-    // Should not throw
-    registerMarkdownTransformer(mockPi as any);
-  });
 });

@@ -6,10 +6,10 @@ Get pi-config installed, configure your project, start the local daemons, and ru
 
 - Node.js (>= 22)
 - Git installed and configured
-- `pi` >= 1.6.1 (install with `npm install -g @earendil-works/pi-coding-agent`)
+- `pi` >= 1.7.0 (install with `npm install -g @earendil-works/pi-coding-agent`)
 - `uv` (Python package manager)
 
-> **Note:** pi-config requires pi **1.6.1 or newer**, because the orchestrator and sidecar call APIs added in that release. On an older version, pi warns on session start.
+> **Note:** pi-config requires pi **1.7.0 or newer**, because the orchestrator and sidecar rely on Pi 1.7.0 APIs natively without pre-floor compatibility shims. On an older version, pi-config surfaces an upgrade error on session start.
 >
 > **Linux with system-packaged Node.js:** If `npm install -g @earendil-works/pi-coding-agent` fails with `EACCES` on a root-owned prefix (`/usr` or `/usr/local`), configure a user-writable npm prefix first (`mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global && export PATH="$HOME/.npm-global/bin:$PATH"`) or install with `sudo npm install -g @earendil-works/pi-coding-agent`.
 
@@ -152,7 +152,7 @@ export PI_SELF_UPDATE_COMMAND="mise use -g npm:{packageName}@{version}"
 ## Troubleshooting
 
 - **"Cannot continue without pi":** Install the coding agent globally (`npm install -g @earendil-works/pi-coding-agent`), confirm `pi` is on your `PATH`, then re-run the installer. On Linux with system-packaged Node.js, set a user prefix (`mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global && export PATH="$HOME/.npm-global/bin:$PATH"`) or use `sudo` if global `npm install` returns `EACCES`.
-- **"pi X is below minimum required version 1.6.1":** Update pi with `npm install -g @earendil-works/pi-coding-agent`, then `/reload` or restart the session.
+- **"pi-config requires Pi >= 1.7.0, but Pi X is installed":** Run `pi update` (or `npm install -g @earendil-works/pi-coding-agent`), then restart Pi.
 - **Daemon fails to start:** Confirm `pidash_enable` / `pidiff_enable` are not set to `false`. Run `/pidash status` or `/pidiff status`. For pidash failures, check `~/.pi/pidash-server.log`.
 - **pidash says TUI-only:** Start daemons from an interactive `pi` session, not a headless/CLI-only mode.
 - **Pre-commit / formatting failures:** Run `prek run --all-files` to apply fixes, then retry the commit.

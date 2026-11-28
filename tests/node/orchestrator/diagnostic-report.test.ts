@@ -726,7 +726,7 @@ describe("collectDiagnosticReport", () => {
     mkdirSync(cwd, { recursive: true });
 
     const execStub = (cmd: string, args: string[]) => {
-      if (cmd === "pi") return "1.6.1\n";
+      if (cmd === "pi") return "1.7.0\n";
       if (cmd === "myk-pi-tools") return "myk-pi-tools, version 6.0.1\n";
       if (cmd === "git" && args[0] === "rev-parse" && args[1] === "--abbrev-ref") return "feat/test\n";
       if (cmd === "git" && args[0] === "rev-parse" && args[1] === "--short") return "abc1234\n";
@@ -746,7 +746,7 @@ describe("collectDiagnosticReport", () => {
     });
 
     assert.equal(report.status, "collected");
-    assert.equal(report.versions.pi, "1.6.1");
+    assert.equal(report.versions.pi, "1.7.0");
     assert.equal(report.versions.mykPiTools, "myk-pi-tools, version 6.0.1");
     assert.ok(report.versions.piOrchestratorConfig);
     assert.equal(report.git.cwd, "~/git/pi-config");

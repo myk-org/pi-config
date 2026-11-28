@@ -43,6 +43,10 @@ function createPi(name: string): FakePi {
 		getFlag: (flag: string) => flag === "cname" ? name : undefined,
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: () => {},
+		registerMessageRenderer: () => {},
+		getActiveTools: () => [],
+		getAllTools: () => [],
+		setActiveTools: () => {},
 		on: (event: string, handler: any) => {
 			handlers.set(event, handler);
 			if (event === "session_start") start = handler;

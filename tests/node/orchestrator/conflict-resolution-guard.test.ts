@@ -87,6 +87,7 @@ describe("conflict-resolution guard", () => {
       on: (name: string, handler: Function) => hooks.set(name, handler),
       registerTool: () => {},
       registerCommand: () => {},
+      getAllTools: () => [],
     } as any);
   });
 
