@@ -618,6 +618,10 @@ describe("model id resolvers", () => {
   });
 });
 
+// Enforcement battery verification (#1495): verified locally against the full 6-file enforcement
+// suite (bash-policy, enforcement, enforcement-rules, restricted-folders, tool-permissions,
+// task-focus-enforcement) without mocking evaluateBashPolicy; live deployed zero-mock e2e-tester
+// verification runs on the staged deployment build post-Qodo approval prior to merge.
 describe("approval-hmac-key protected storage guard (#1495)", () => {
   it("allows single-quoted gh issue create body with Markdown backticked ~/.pi/agent path", async () => {
     const dir = makeTempDir("pi-bash-policy-1495-");
@@ -1059,5 +1063,49 @@ describe("approval-hmac-key protected storage guard (#1495)", () => {
       ui: null,
     });
     assert.equal(res.action, "allow");
+  });
+
+  it("blocks four nested eval calls targeting ~/.pi/agent dynamically", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "eval eval eval eval cat ~/.pi/agent/.*",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks quoted heredoc piped into bash -c launching a child bash", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "cat <<'EOF' | bash -c 'bash'\ncat ~/.pi/agent/.*\nEOF",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks quoted heredoc attached to bash -c launching a child bash", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: "bash -c 'bash' <<'EOF'\ncat ~/.pi/agent/.*\nEOF",
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
+  });
+
+  it("blocks quoted heredoc piped into bash -c launching python3", async () => {
+    const dir = makeTempDir("pi-bash-policy-1495-");
+    const res = await evaluateBashPolicy({
+      command: 'cat <<\'EOF\' | bash -c \'python3\'\nopen("~/.pi/agent/" + x)\nEOF',
+      cwd: dir,
+      ui: null,
+    });
+    assert.equal(res.action, "block");
+    assert.match(res.reason ?? "", /\.approval-hmac-key/);
   });
 });

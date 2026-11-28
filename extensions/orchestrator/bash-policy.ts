@@ -7046,11 +7046,28 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
       parentVars: Map<string, string>,
       depth = 0,
     ): "hmac" | "settings" | "state_db" | null => {
-      if (depth > 3) return null;
       const script = preprocessAnsiCQuotes(rawScript);
       const defragFull = collapseFragments(script);
       // Literal `.approval-hmac-key` stays unconditionally blocked everywhere (even in quotes/heredocs).
       if (hmacKeyRe.test(defragFull)) return "hmac";
+      if (depth > 3) {
+        // Fail closed past the recursion ceiling so deeply nested `eval`/`bash -c` cannot
+        // smuggle dynamic protected-agent access or state/settings tampering unexamined.
+        if (hasRawDynamicPiAgentAccess(script)) {
+          enfLog.debug("recursion_limit_dynamic_pi_agent_blocked", "depth", depth);
+          return "hmac";
+        }
+        if (
+          stateDbUncondRe.test(defragFull) ||
+          /\b(?:restricted_folder_approvals|tool_host_approvals)\b/i.test(defragFull)
+        ) {
+          return "state_db";
+        }
+        if (settingsPathRe.test(defragFull) || /\bpi-config-settings\b/i.test(defragFull)) {
+          return "settings";
+        }
+        return null;
+      }
 
       const { stripped: withoutQuotedHeredocs, quotedHeredocs } = extractQuotedHeredocs(script);
 
@@ -7241,7 +7258,10 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
             effectiveCmdIdx,
           );
           const dynamicEvalInInlineCode =
-            hasInlineFlag && /\b(?:exec|eval|compile|Function)\s*\(/.test(expandedSeg);
+            hasInlineFlag &&
+            /\b(?:exec|eval|compile|Function|subprocess|spawn|execSync|execFile)\s*\(|\bos\.(?:system|popen)\s*\(/.test(
+              expandedSeg,
+            );
           const execsStdinAsCode =
             readsStdinExplicitly || (!hasInlineFlag && !hasScriptFile) || dynamicEvalInInlineCode;
 
@@ -7304,42 +7324,44 @@ export async function evaluateBashPolicy(input: BashPolicyInput): Promise<BashPo
             const innerHit = checkProtectedSecurityStorage(inner, vars, depth + 1);
             if (innerHit) return innerHit;
           }
-          if (nested.length === 0) {
-            for (const body of segHeredocBodies) {
-              const bodyHit = checkProtectedSecurityStorage(body, vars, depth + 1);
-              if (bodyHit) return bodyHit;
-            }
-            if (pipedFromPrev) {
-              for (const src of pipeBuffer) {
-                if (
-                  hasRawDynamicPiAgentAccess(src) ||
-                  (isXargsExec && inlineRuntimeDynamicPiAgentRe.test(src))
-                ) {
-                  enfLog.debug("piped_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
-                  return "hmac";
-                }
-                const pipeHit = checkProtectedSecurityStorage(src, vars, depth + 1);
-                if (pipeHit) return pipeHit;
-              }
-            }
-            if (priorFileWriteTexts.length > 0) {
-              for (const written of priorFileWriteTexts) {
-                if (hasRawDynamicPiAgentAccess(written)) {
-                  enfLog.debug("file_fed_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
-                  return "hmac";
-                }
-                const fileHit = checkProtectedSecurityStorage(written, vars, depth + 1);
-                if (fileHit) return fileHit;
-              }
-            }
-            if (
-              (isSourceOrDot || isXargsExec || /(?:^|[\s;|&()])(?:<<<?|<(?!\())/.test(maskedSeg)) &&
-              (hasRawDynamicPiAgentAccess(expandedSeg) ||
-                (isXargsExec && inlineRuntimeDynamicPiAgentRe.test(expandedSeg)))
-            ) {
-              enfLog.debug("indirect_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
+          // Inspect attached heredocs, piped input, and prior file writes even when `-c` / `eval`
+          // extracted a nested command (e.g. `cat <<'EOF' | bash -c 'bash'` or `bash -c 'python3'`).
+          for (const body of segHeredocBodies) {
+            if (hasRawDynamicPiAgentAccess(body) || inlineRuntimeDynamicPiAgentRe.test(body)) {
+              enfLog.debug("heredoc_nested_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
               return "hmac";
             }
+            const bodyHit = checkProtectedSecurityStorage(body, vars, depth + 1);
+            if (bodyHit) return bodyHit;
+          }
+          if (pipedFromPrev) {
+            for (const src of pipeBuffer) {
+              if (hasRawDynamicPiAgentAccess(src) || inlineRuntimeDynamicPiAgentRe.test(src)) {
+                enfLog.debug("piped_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
+                return "hmac";
+              }
+              const pipeHit = checkProtectedSecurityStorage(src, vars, depth + 1);
+              if (pipeHit) return pipeHit;
+            }
+          }
+          if (priorFileWriteTexts.length > 0) {
+            for (const written of priorFileWriteTexts) {
+              if (hasRawDynamicPiAgentAccess(written) || inlineRuntimeDynamicPiAgentRe.test(written)) {
+                enfLog.debug("file_fed_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
+                return "hmac";
+              }
+              const fileHit = checkProtectedSecurityStorage(written, vars, depth + 1);
+              if (fileHit) return fileHit;
+            }
+          }
+          if (
+            nested.length === 0 &&
+            (isSourceOrDot || isXargsExec || /(?:^|[\s;|&()])(?:<<<?|<(?!\())/.test(maskedSeg)) &&
+            (hasRawDynamicPiAgentAccess(expandedSeg) ||
+              (isXargsExec && inlineRuntimeDynamicPiAgentRe.test(expandedSeg)))
+          ) {
+            enfLog.debug("indirect_shell_dynamic_pi_agent_blocked", "cmd", cmdWord);
+            return "hmac";
           }
         }
 
