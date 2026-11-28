@@ -426,6 +426,8 @@ export interface ActiveAsyncAgentInfo {
   task: string;
   cwd: string;
   sessionId?: string;
+  /** Original Pi session ID that spawned this worker (distinct from process-level PiDash sessionId) (#1509). */
+  piSessionId?: string | null;
   taskId?: string | null;
   startedAt?: number;
   currentTool?: string | null;
@@ -439,9 +441,11 @@ export interface PiClient extends PendingUiRequestStore {
   viewState: SessionViewState;
   replaying: boolean;
   connectionGeneration: number;
-  /** Running async job IDs last reported by Pi's `async-status` frames (#1509). */
+  /** Currently selected Pi session ID inside this Pi process (updated on register / session_switch) (#1509). */
+  currentPiSessionId?: string | null;
+  /** Running or queued async job IDs last reported by Pi's `async-status` frames (#1509). */
   asyncStatusRunningIds?: Set<string>;
-  /** Running non-sync jobs in `async-status` lacking a string `id` (#1509). */
+  /** Running or queued non-sync jobs in `async-status` lacking a string `id` (#1509). */
   asyncStatusAnonymousCount?: number;
 }
 
@@ -688,9 +692,28 @@ export function applyEventToViewState(
  * finishes replaying history on reconnect so subsequent progress and completion
  * events continue updating the same card.
  */
+function normalizePiSessionId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Ownership check preventing retained jobs from an earlier `/resume` session
+ * from marking the newly selected Pi session busy (#1509).
+ */
+function matchesCurrentPiSession(
+  clientPiSessionId: string | null | undefined,
+  jobPiSessionId: string | null | undefined,
+): boolean {
+  const active = normalizePiSessionId(clientPiSessionId);
+  const owner = normalizePiSessionId(jobPiSessionId);
+  if (active && owner) return active === owner;
+  return true;
+}
+
 /**
  * Recompute `client.session.runningAsyncAgents` as the union of Pi's `async-status`
- * running async job IDs and live `/ws/async` registry workers for this session (#1509).
+ * active (running or queued) async job IDs and live `/ws/async` registry workers
+ * belonging to the client's current Pi session (#1509).
  *
  * Neither source can overwrite or erase the other: a worker disconnecting before Pi's
  * next `async-status` frame keeps the Pi-reported count intact, while headless RPC peers
@@ -707,7 +730,12 @@ export function syncSessionRunningAsyncAgents(
     for (const id of client.asyncStatusRunningIds) ids.add(id);
   }
   for (const agent of registryAgents) {
-    if (agent.sessionId === sid && agent.mode !== "sync" && agent.id) {
+    if (
+      agent.sessionId === sid &&
+      agent.mode !== "sync" &&
+      agent.id &&
+      matchesCurrentPiSession(client.currentPiSessionId, agent.piSessionId)
+    ) {
       ids.add(agent.id);
     }
   }
@@ -720,8 +748,9 @@ export function syncSessionRunningAsyncAgents(
 
 /**
  * Process a Pi `async-status` frame for `client`: extract capped live running sync
- * subagents, record Pi's running async job IDs on `client`, and sync the merged
- * `session.runningAsyncAgents` count (broadcasting `session_updated` only on change).
+ * subagents, record Pi's active (running or queued) async job IDs owned by the
+ * current Pi session on `client`, and sync the merged `session.runningAsyncAgents`
+ * count (broadcasting `session_updated` only on change).
  */
 export function applyPiAsyncStatusFrame(
   client: PiClient,
@@ -737,7 +766,8 @@ export function applyPiAsyncStatusFrame(
 
   for (const job of jobs) {
     if (!job) continue;
-    if (job.mode !== "sync" && job.status === "running") {
+    if (job.mode !== "sync" && (job.status === "running" || job.status === "queued")) {
+      if (!matchesCurrentPiSession(client.currentPiSessionId, job.piSessionId)) continue;
       if (typeof job.id === "string" && job.id) statusIds.add(job.id);
       else anonymousCount++;
       continue;
@@ -880,6 +910,7 @@ export function createAsyncAgentRegistry(
         task: typeof parsed.task === "string" ? parsed.task : "",
         cwd: typeof parsed.cwd === "string" ? parsed.cwd : "",
         sessionId,
+        piSessionId: normalizePiSessionId(parsed.piSessionId),
         taskId: typeof parsed.taskId === "string" && parsed.taskId ? parsed.taskId : null,
         startedAt: typeof parsed.startedAt === "number" && Number.isFinite(parsed.startedAt) ? parsed.startedAt : Date.now(),
         currentTool: null,
@@ -1181,6 +1212,7 @@ export function registerPidashSession(
   broadcast: (event: object) => void,
 ): PiClient {
   const session = registeredSession(parsed);
+  const currentPiSessionId = normalizePiSessionId(parsed?.piSessionId);
   const existing = sessions.get(session.sessionId);
   let client: PiClient;
   if (existing) {
@@ -1194,6 +1226,7 @@ export function registerPidashSession(
     const preservedCommands = existing.viewState.availableCommands;
     existing.ws = ws;
     existing.session = session;
+    existing.currentPiSessionId = currentPiSessionId;
     existing.viewState = createSessionViewState(session, preservedCommands);
     existing.pendingUiRequests.clear();
     existing.asyncStatusRunningIds = undefined;
@@ -1205,6 +1238,7 @@ export function registerPidashSession(
     client = {
       ws,
       session,
+      currentPiSessionId,
       viewState: createSessionViewState(session),
       pendingUiRequests: new Map(),
       replaying: true,

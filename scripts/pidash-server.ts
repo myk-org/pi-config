@@ -31,6 +31,7 @@ import {
   resetSessionViewState,
   shouldDeliverSupervisedPeerBroadcast,
   shouldNotifyWorktreeChange,
+  syncSessionRunningAsyncAgents,
   updatePidashSession,
   type PiClient,
 } from "./pidash-session-state.ts";
@@ -162,8 +163,11 @@ function handlePiMessage(ws: any, parsed: any, getPiClient: () => any, setPiClie
     piClient.session.streaming = false;
     piClient.session.working = false;
     piClient.session.runningAsyncAgents = 0;
+    piClient.currentPiSessionId =
+      typeof parsed.piSessionId === "string" && parsed.piSessionId.trim() ? parsed.piSessionId.trim() : null;
     piClient.asyncStatusRunningIds = undefined;
     piClient.asyncStatusAnonymousCount = 0;
+    syncSessionRunningAsyncAgents(piClient, asyncRegistry ? asyncRegistry.agents.values() : []);
     sessionRepoRootMap.delete(piClient.session.sessionId);
     sessionSyncAgentsMap.delete(piClient.session.sessionId);
     resetSessionViewState(piClient); // Clear viewState to prevent cross-session leakage

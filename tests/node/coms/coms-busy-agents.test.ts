@@ -5,6 +5,11 @@
  * /coms overlay, drilldown, and PiDash Coms payloads while preserving raw
  * turn-active `busy` semantics for inbound delivery.
  *
+ * Scope note: the runtime tests below stub `publishWorkloadSources` for deterministic
+ * unit coverage; zero-mock real-peer E2E verification (a deployed COMS peer spawning
+ * a real async subagent, verified in live COMS header, PiDash UI, and `/api/peers`)
+ * is executed as the post-Qodo `e2e-tester` gate tracked in #1509 before merge.
+ *
  * Run with: npx tsx --test --test-concurrency=4 tests/node/coms/coms-busy-agents.test.ts
  */
 import assert from "node:assert/strict";

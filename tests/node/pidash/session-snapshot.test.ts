@@ -22,6 +22,7 @@ import {
   recordPendingUiRequest,
   resetSessionViewState,
   sendSessionSnapshot,
+  syncSessionRunningAsyncAgents,
   type ActiveAsyncAgentInfo,
 } from "../../../scripts/pidash-session-state.ts";
 import {
@@ -632,6 +633,79 @@ describe("SessionViewState server snapshot (#1398)", () => {
 
     assert.equal(registry.complete(sock, { id: "shared-job", success: true }), true);
     assert.equal(client.session.runningAsyncAgents, 1);
+  });
+
+  it("counts a queued non-sync job with no registered worker in applyPiAsyncStatusFrame", () => {
+    const { state, client } = makeClient();
+    const registry = createAsyncAgentRegistry(state.sessions, () => {});
+    applyPiAsyncStatusFrame(
+      client,
+      [{ id: "queued-job", agent: "ts-expert", mode: "async", status: "queued", task: "waiting" }],
+      registry.agents.values(),
+    );
+    assert.equal(client.session.runningAsyncAgents, 1);
+  });
+
+  it("deduplicates a queued non-sync job once its registry worker connects", () => {
+    const { state, client } = makeClient();
+    const registry = createAsyncAgentRegistry(state.sessions, () => {});
+    const sock = {};
+    applyPiAsyncStatusFrame(
+      client,
+      [{ id: "queued-job", agent: "ts-expert", mode: "async", status: "queued", task: "waiting" }],
+      registry.agents.values(),
+    );
+    assert.ok(registry.register(sock, { id: "queued-job", agent: "ts-expert", cwd: "/repo", sessionId: client.session.sessionId }));
+    assert.equal(client.session.runningAsyncAgents, 1);
+  });
+
+  it("excludes prior-session async-status jobs after switching currentPiSessionId", () => {
+    const { state, client } = makeClient();
+    const registry = createAsyncAgentRegistry(state.sessions, () => {});
+    client.currentPiSessionId = "pi-session-b";
+
+    applyPiAsyncStatusFrame(
+      client,
+      [
+        { id: "old-job", agent: "worker", mode: "async", status: "running", task: "old", piSessionId: "pi-session-a" },
+        { id: "new-job", agent: "worker", mode: "async", status: "running", task: "new", piSessionId: "pi-session-b" },
+      ],
+      registry.agents.values(),
+    );
+    assert.equal(client.session.runningAsyncAgents, 1);
+  });
+
+  it("excludes retained prior-session registry workers after a session switch", () => {
+    const { state, client } = makeClient();
+    const registry = createAsyncAgentRegistry(state.sessions, () => {});
+    const sock = {};
+    client.currentPiSessionId = "pi-session-a";
+
+    assert.ok(
+      registry.register(sock, {
+        id: "old-ws-job",
+        agent: "worker",
+        cwd: "/repo",
+        sessionId: client.session.sessionId,
+        piSessionId: "pi-session-a",
+      }),
+    );
+    assert.equal(client.session.runningAsyncAgents, 1);
+
+    // Simulate /resume switching to pi-session-b while old-ws-job remains connected
+    client.currentPiSessionId = "pi-session-b";
+    client.asyncStatusRunningIds = undefined;
+    client.asyncStatusAnonymousCount = 0;
+    syncSessionRunningAsyncAgents(client, registry.agents.values());
+    assert.equal(client.session.runningAsyncAgents, 0);
+
+    // Subsequent async-status carrying the old session's job must not restore busy count
+    applyPiAsyncStatusFrame(
+      client,
+      [{ id: "old-ws-job", agent: "worker", mode: "async", status: "running", task: "old", piSessionId: "pi-session-a" }],
+      registry.agents.values(),
+    );
+    assert.equal(client.session.runningAsyncAgents, 0);
   });
 });
 
