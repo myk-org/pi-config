@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GitBranch, Circle, Pause, PanelLeftClose, ChevronRight, ChevronDown, Folder, Settings, Pencil, Plus, MessagesSquare, Sun, Moon, Pin, PinOff, Archive, ArchiveRestore } from "lucide-react";
 import { Badge } from "@ui/badge";
 import { Button } from "@ui/button";
@@ -125,13 +125,53 @@ export function SessionSidebar({
   );
 
   // Wrap setter to persist to localStorage
-  const setCollapsedProjects = (update: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+  const setCollapsedProjects = useCallback((update: Set<string> | ((prev: Set<string>) => Set<string>)) => {
     setCollapsedProjectsRaw((prev) => {
       const next = typeof update === "function" ? update(prev) : update;
       saveCollapsedProjects(next);
       return next;
     });
-  };
+  }, []);
+
+  // Reveal a newly selected session (e.g. via Ctrl+1..9 or SessionSwitcher) when its
+  // owning directory group or Archived section is collapsed, without fighting manual
+  // collapse while the same session stays selected.
+  const lastRevealedSessionIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeSessionId) {
+      lastRevealedSessionIdRef.current = null;
+      return;
+    }
+    if (lastRevealedSessionIdRef.current === activeSessionId) return;
+
+    if (archived.some((s) => s.sessionId === activeSessionId)) {
+      lastRevealedSessionIdRef.current = activeSessionId;
+      setArchivedSectionOpen((prev) => {
+        if (prev) return prev;
+        log.debug("auto-expanded archived section for selected session", { sessionId: activeSessionId });
+        return true;
+      });
+      return;
+    }
+
+    const owningGroup = sortedGroups.find((g) => g.sessions.some((s) => s.sessionId === activeSessionId));
+    if (owningGroup) {
+      lastRevealedSessionIdRef.current = activeSessionId;
+      const key = dirKey(owningGroup.name);
+      setCollapsedProjects((prev) => {
+        if (!prev.has(key)) return prev;
+        log.debug("auto-expanded directory group for selected session", { sessionId: activeSessionId, group: owningGroup.name });
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+      return;
+    }
+
+    if (pinned.some((s) => s.sessionId === activeSessionId)) {
+      lastRevealedSessionIdRef.current = activeSessionId;
+    }
+  }, [activeSessionId, archived, pinned, sortedGroups, setCollapsedProjects]);
 
   if (collapsed) return null;
 

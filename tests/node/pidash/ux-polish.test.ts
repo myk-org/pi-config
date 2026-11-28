@@ -719,6 +719,122 @@ describe("SessionSidebar UI sections (#1448, #1499)", () => {
     assert.equal(badge.textContent?.trim(), "1");
   });
 
+  it("expands a collapsed directory group when a waiting session inside it becomes selected", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-wait-dir", { name: "Waiting In Folder", cwd: "/work/alpha", activity: "waiting_for_input" }),
+      makeSession("s-other", { name: "Other Chat", cwd: "/work/beta", activity: "idle" }),
+    ];
+
+    const baseProps = {
+      sessions,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set<string>(),
+      archivedSessionIds: new Set<string>(),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    };
+
+    await act(async () => root.render(createElement(SessionSidebar, { ...baseProps, activeSessionId: "s-other" })));
+
+    const groupHeader = elements(container, "div").find(
+      (el) => el.getAttribute("role") === "button" && (el.textContent ?? "").includes("alpha"),
+    );
+    assert.ok(groupHeader);
+    await act(async () => groupHeader.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    assert.equal(groupHeader.getAttribute("aria-expanded"), "false");
+    assert.equal((container.textContent ?? "").includes("Waiting In Folder"), false);
+
+    // Selecting the hidden waiting session (e.g. via Ctrl+1..9 / watchSession) reveals its row
+    await act(async () => root.render(createElement(SessionSidebar, { ...baseProps, activeSessionId: "s-wait-dir" })));
+    assert.equal(groupHeader.getAttribute("aria-expanded"), "true");
+    const revealedRow = elements(container, "div").find((el) => el.getAttribute("data-session-id") === "s-wait-dir");
+    assert.ok(revealedRow);
+    assert.match(revealedRow.textContent ?? "", /Waiting In Folder/);
+  });
+
+  it("expands the collapsed Archived section when a waiting archived session becomes selected", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-wait-arch", { name: "Waiting Archived", cwd: "/work/alpha", activity: "waiting_for_input" }),
+      makeSession("s-other", { name: "Other Chat", cwd: "/work/beta", activity: "idle" }),
+    ];
+
+    const baseProps = {
+      sessions,
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set<string>(),
+      archivedSessionIds: new Set(["s-wait-arch"]),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    };
+
+    await act(async () => root.render(createElement(SessionSidebar, { ...baseProps, activeSessionId: "s-other" })));
+    const archHeader = elements(container, "div").find(
+      (el) => el.getAttribute("role") === "button" && (el.textContent ?? "").includes("Archived"),
+    );
+    assert.ok(archHeader);
+    assert.equal(archHeader.getAttribute("aria-expanded"), "false");
+    assert.equal((container.textContent ?? "").includes("Waiting Archived"), false);
+
+    // Selecting the hidden archived waiting session opens Archived and exposes its row
+    await act(async () => root.render(createElement(SessionSidebar, { ...baseProps, activeSessionId: "s-wait-arch" })));
+    assert.equal(archHeader.getAttribute("aria-expanded"), "true");
+    const revealedRow = elements(container, "div").find((el) => el.getAttribute("data-session-id") === "s-wait-arch");
+    assert.ok(revealedRow);
+    assert.match(revealedRow.textContent ?? "", /Waiting Archived/);
+  });
+
+  it("keeps a manually collapsed directory group closed while the same session stays selected", async () => {
+    installMockStorage();
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const sessions = [
+      makeSession("s-wait-dir", { name: "Waiting In Folder", cwd: "/work/alpha", activity: "waiting_for_input" }),
+    ];
+
+    const props = {
+      sessions,
+      activeSessionId: "s-wait-dir",
+      connected: true,
+      onSelect: () => {},
+      collapsed: false,
+      onToggle: () => {},
+      pinnedSessionIds: new Set<string>(),
+      archivedSessionIds: new Set<string>(),
+      onTogglePin: () => {},
+      onToggleArchive: () => {},
+    };
+
+    await act(async () => root.render(createElement(SessionSidebar, props)));
+    const groupHeader = elements(container, "div").find(
+      (el) => el.getAttribute("role") === "button" && (el.textContent ?? "").includes("alpha"),
+    );
+    assert.ok(groupHeader);
+    await act(async () => groupHeader.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    assert.equal(groupHeader.getAttribute("aria-expanded"), "false");
+
+    // Re-rendering with the same activeSessionId must not fight the user's collapse action
+    await act(async () => root.render(createElement(SessionSidebar, { ...props, sessions: [...sessions] })));
+    assert.equal(groupHeader.getAttribute("aria-expanded"), "false");
+  });
+
   it("keeps the Archived section collapsed by default with its count", async () => {
     installMockStorage();
     const { container } = installReactDomShim();
