@@ -316,6 +316,7 @@ describe("/status cron paused summary", () => {
       registerCommand(name: string, opts: any) {
         if (name === "status") handler = opts.handler;
       },
+      registerTool() {},
     };
     registerStatus(mockPi, false, () => [], () => tasks);
     let notified = "";

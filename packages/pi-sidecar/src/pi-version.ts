@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const piVersionLog = createLogger("pi-version");
 
 /** Minimum @earendil-works/pi-coding-agent version the sidecar supports (same floor as pi-config orchestrator). */
-export const MIN_PI_VERSION = "1.6.1";
+export const MIN_PI_VERSION = "1.7.0";
 
 /**
  * Locate `<packageName>/package.json` using Node built-ins only (no SDK imports)
@@ -119,14 +119,21 @@ function getPathPiVersion(): string | null {
   return null;
 }
 
+export interface AssertPiVersionFloorOptions {
+  /** Override installed SDK version resolution (for unit tests). */
+  getInstalledVersion?: () => string | null;
+  /** Override PATH `pi` binary version resolution (for unit tests). */
+  getPathVersion?: () => string | null;
+}
+
 /**
  * Enforces the minimum installed @earendil-works/pi-coding-agent version.
  * Throws (does not just log) when the resolved SDK version is below MIN_PI_VERSION
  * or cannot be resolved at all — callers should call this early during startup
  * so a stale SDK install fails fast instead of surfacing confusing runtime errors.
  */
-export function assertPiVersionFloor(): void {
-  const installed = getInstalledPiVersion();
+export function assertPiVersionFloor(options: AssertPiVersionFloorOptions = {}): void {
+  const installed = (options.getInstalledVersion ?? getInstalledPiVersion)();
   if (!installed) {
     logger.error(`[sidecar] PI_VERSION_CHECK_FAILED: reason=could_not_resolve_installed_version, min_version=${MIN_PI_VERSION}`);
     throw new Error(`Could not resolve installed @earendil-works/pi-coding-agent version; requires >=${MIN_PI_VERSION}`);
@@ -142,14 +149,19 @@ export function assertPiVersionFloor(): void {
   }
   if (compareVersions(installed, MIN_PI_VERSION) < 0) {
     logger.error(`[sidecar] PI_VERSION_CHECK_FAILED: installed=${installed}, min_version=${MIN_PI_VERSION}`);
-    throw new Error(`@earendil-works/pi-coding-agent ${installed} is below the required floor ${MIN_PI_VERSION}. Upgrade the dependency.`);
+    throw new Error(
+      `@earendil-works/pi-coding-agent ${installed} is below the required floor ${MIN_PI_VERSION}. ` +
+      `Upgrade the dependency (e.g. \`npm install @earendil-works/pi-coding-agent@^${MIN_PI_VERSION}\`), then restart the sidecar.`,
+    );
   }
   logger.info(`[sidecar] PI_VERSION_CHECK_OK: installed=${installed}, min_version=${MIN_PI_VERSION}`);
 
-  const pathVersion = getPathPiVersion();
+  const pathVersion = (options.getPathVersion ?? getPathPiVersion)();
   // Match installed-SDK policy: prerelease/build suffixes are unparsable and
   // must not silently satisfy the floor (PATH `pi` is what subagents spawn).
   if (pathVersion && (!parseVersion(pathVersion) || compareVersions(pathVersion, MIN_PI_VERSION) < 0)) {
-    logger.warn(`[sidecar] PI_PATH_VERSION_BELOW_FLOOR: path_version=${pathVersion}, min_version=${MIN_PI_VERSION}, reason=subagent_subprocess_may_fail`);
+    logger.warn(
+      `[sidecar] PI_PATH_VERSION_BELOW_FLOOR: path_version=${pathVersion}, min_version=${MIN_PI_VERSION}, reason=subagent_subprocess_may_fail, hint="run 'pi update' to upgrade the pi CLI on PATH"`,
+    );
   }
 }

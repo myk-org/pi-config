@@ -157,24 +157,22 @@ export function registerStatus(
     },
   });
 
-  if (typeof pi.registerTool === "function") {
-    pi.registerTool({
-      name: "session_status",
-      label: "Session Status",
-      exposure: "codemode",
-      namespace: TOOL_NAMESPACES.runtime,
-      annotations: READ_ONLY_LOCAL_ANNOTATIONS,
-      description:
-        "Return the unified session status snapshot (async agents, cron tasks, git branch & dirty state, worktree summary, context usage, loaded resources) — equivalent to /status.",
-      parameters: Type.Object({}),
-      async execute(_callId, _params, _signal, _onUpdate, ctx) {
-        log.debug("session_status_tool", { cwd: ctx?.cwd });
-        const snapshot = await buildStatusSnapshot(ctx, deps);
-        return {
-          content: [{ type: "text" as const, text: snapshot }],
-          details: undefined,
-        };
-      },
-    });
-  }
+  pi.registerTool({
+    name: "session_status",
+    label: "Session Status",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.runtime,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
+    description:
+      "Return the unified session status snapshot (async agents, cron tasks, git branch & dirty state, worktree summary, context usage, loaded resources) — equivalent to /status.",
+    parameters: Type.Object({}),
+    async execute(_callId, _params, _signal, _onUpdate, ctx) {
+      log.debug("session_status_tool", { cwd: ctx?.cwd });
+      const snapshot = await buildStatusSnapshot(ctx, deps);
+      return {
+        content: [{ type: "text" as const, text: snapshot }],
+        details: undefined,
+      };
+    },
+  });
 }

@@ -65,6 +65,7 @@
 
 import { createLogger } from "../shared/logger.js";
 import { isPiOneshotInvocation, shouldSkipOneshotRegister } from "../shared/oneshot.js";
+import { assertMinPiVersionOnLoad } from "../shared/pi-version.js";
 import { isLiveExtensionCtx } from "../shared/live-ctx.js";
 import { resolveProcessStartToken } from "../orchestrator/cron-store.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -696,6 +697,7 @@ export function shouldSkipReloadFlag(argv: string[] = process.argv): boolean {
 }
 
 export default function (pi: ExtensionAPI) {
+  assertMinPiVersionOnLoad("reload-flag");
   if (shouldSkipOneshotRegister(log)) {
     log.debug("skipping reload-flag registration (oneshot invocation)");
     return;

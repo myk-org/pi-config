@@ -276,7 +276,6 @@ export function registerDaemonCommand(
 /** Register the `daemon_manage` LLM tool wired to all registered daemon extensions (pidash, pidiff). */
 export function registerDaemonManageTool(pi: ExtensionAPI): void {
   if (process.env.PI_SUBAGENT_CHILD === "1") return;
-  if (typeof pi.registerTool !== "function") return;
 
   const busHandlers = new Map<string, DaemonActionExecutor>();
   try {

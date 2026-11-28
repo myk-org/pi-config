@@ -17,6 +17,9 @@ import {
 } from "../../../extensions/pitasks/reminders.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 const localCreatedBy: Task["createdBy"] = { type: "local", origin: "system", session: "", project: "" };
 

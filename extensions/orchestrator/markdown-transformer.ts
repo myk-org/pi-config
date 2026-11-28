@@ -330,6 +330,5 @@ export function transformMarkdown(
 // ── Registration ──
 
 export function registerMarkdownTransformer(pi: ExtensionAPI): void {
-  if (typeof (pi as any).registerMarkdownTransformer !== "function") return;
   pi.registerMarkdownTransformer(transformMarkdown);
 }

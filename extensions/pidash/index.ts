@@ -8,8 +8,10 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { assertMinPiVersionOnLoad } from "../shared/pi-version.js";
 import { registerPidash } from "./pidash.js";
 
 export default function (pi: ExtensionAPI) {
+    assertMinPiVersionOnLoad("pidash");
     registerPidash(pi);
 }

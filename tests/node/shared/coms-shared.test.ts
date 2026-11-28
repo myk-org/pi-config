@@ -302,7 +302,10 @@ describe("registerComs lifecycle, /coms-queue gating, and reload reactivation", 
 				}
 			},
 			registerFlag: () => {},
+			registerShortcut: () => {},
+			registerMessageRenderer: () => {},
 			getFlag: () => undefined,
+			getAllTools: () => [...tools.values()],
 			getActiveTools: () => [...activeTools],
 			setActiveTools: (names: string[]) => { activeTools = [...names]; },
 			on: (event: string, handler: any) => {
@@ -508,7 +511,10 @@ describe("defaultActive gating for COMS tools (#1158)", () => {
 				}
 			},
 			registerFlag: () => {},
+			registerShortcut: () => {},
+			registerMessageRenderer: () => {},
 			getFlag: () => undefined,
+			getAllTools: () => [...tools.values()],
 			getActiveTools: () => [...activeTools],
 			setActiveTools: (names: string[]) => { activeTools = [...names]; },
 			on: (event: string, handler: any) => {

@@ -674,6 +674,8 @@ describe("async job store recording", { concurrency: false }, () => {
       const pi = {
         on: (name: string, handler: any) => { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); },
         registerCommand() {},
+        registerTool() {},
+        registerMessageRenderer() {},
         sendMessage() {},
         events: new EventEmitter(),
       };

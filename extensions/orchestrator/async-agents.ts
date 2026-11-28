@@ -572,10 +572,8 @@ export function registerAsyncAgents(
   let PROJECT_TMP_DIR = path.join(process.cwd(), ".pi", "tmp"); // Computed only; created on session_start
   let ASYNC_RESULTS_DIR = ""; // Set on session_start to project-scoped dir
 
-  if (typeof pi.registerMessageRenderer === "function") {
-    pi.registerMessageRenderer<AsyncAgentResultDetails>("async-agent-result", renderAsyncAgentResultMessage);
-    log.debug("registered_message_renderer", { customType: "async-agent-result" });
-  }
+  pi.registerMessageRenderer<AsyncAgentResultDetails>("async-agent-result", renderAsyncAgentResultMessage);
+  log.debug("registered_message_renderer", { customType: "async-agent-result" });
 
   function resultOutputPath(job: Pick<AsyncJob, "agent" | "id" | "workerDir">): string {
     const workerOutputPath = path.join(job.workerDir, "output.log");
@@ -2127,110 +2125,108 @@ export function registerAsyncAgents(
     handler: async (_args, ctx) => handleAsyncStatus(ctx),
   });
 
-  if (typeof pi.registerTool === "function") {
-    pi.registerTool({
-      name: "async_status",
-      label: "Async Status",
-      exposure: "codemode",
-      namespace: TOOL_NAMESPACES.runtime,
-      annotations: READ_ONLY_LOCAL_ANNOTATIONS,
-      description:
-        "List running and recent async/sync subagent jobs (ID, name, agent, status, elapsed time, current tool), or pass id to inspect a specific job's metadata and recent output tail (equivalent to /async).",
-      parameters: Type.Object({
-        id: Type.Optional(Type.String({
-          description: "Optional job ID (exact or unique prefix) to inspect a single job's details and output tail.",
-        })),
-        max_chars: Type.Optional(Type.Integer({
-          minimum: 200,
-          maximum: 20000,
-          description: "Max characters of output tail to return when id is provided (default: 4000).",
-        })),
-      }),
-      async execute(_callId, params): Promise<{ content: { type: "text"; text: string }[]; details: Record<string, unknown> }> {
-        const jobs = listAllJobs();
-        const needle = typeof params.id === "string" ? params.id.trim() : "";
+  pi.registerTool({
+    name: "async_status",
+    label: "Async Status",
+    exposure: "codemode",
+    namespace: TOOL_NAMESPACES.runtime,
+    annotations: READ_ONLY_LOCAL_ANNOTATIONS,
+    description:
+      "List running and recent async/sync subagent jobs (ID, name, agent, status, elapsed time, current tool), or pass id to inspect a specific job's metadata and recent output tail (equivalent to /async).",
+    parameters: Type.Object({
+      id: Type.Optional(Type.String({
+        description: "Optional job ID (exact or unique prefix) to inspect a single job's details and output tail.",
+      })),
+      max_chars: Type.Optional(Type.Integer({
+        minimum: 200,
+        maximum: 20000,
+        description: "Max characters of output tail to return when id is provided (default: 4000).",
+      })),
+    }),
+    async execute(_callId, params): Promise<{ content: { type: "text"; text: string }[]; details: Record<string, unknown> }> {
+      const jobs = listAllJobs();
+      const needle = typeof params.id === "string" ? params.id.trim() : "";
 
-        if (needle) {
-          const exact = jobs.find((j) => j.id === needle);
-          const matches = exact ? [exact] : jobs.filter((j) => j.id.startsWith(needle));
-          if (matches.length === 0) {
-            log.debug("async_status_tool_not_found", { id: needle });
-            return {
-              content: [{ type: "text" as const, text: `No async or sync job found matching id "${needle}".` }],
-              details: { found: false, id: needle },
-            };
-          }
-          if (matches.length > 1) {
-            log.debug("async_status_tool_ambiguous", { id: needle, count: matches.length });
-            return {
-              content: [{
-                type: "text" as const,
-                text: `Ambiguous job id prefix "${needle}" matches ${matches.length} jobs: ${matches.map((m) => m.id).join(", ")}.`,
-              }],
-              details: { found: false, ambiguous: true, ids: matches.map((m) => m.id) },
-            };
-          }
-          const job = matches[0];
-          const budget = Math.max(200, Math.min(20000, params.max_chars ?? 4000));
-          let tail = job.workerDir
-            ? readPartialWorkerOutput({ id: job.id, workerDir: job.workerDir }, budget)
-            : "";
-          if (!tail) {
-            const memOutput = (
-              asyncState.jobs.get(job.id)?.output
-              ?? listSyncAgentRunsWithFinished().find((r) => r.id === job.id)?.outputTail
-              ?? ""
-            ).trim();
-            if (memOutput) {
-              tail = memOutput.length > budget
-                ? `${TRUNCATION_MARKER}${memOutput.slice(-budget)}`
-                : memOutput;
-            }
-          }
-          const headerLines = [
-            `ID: ${job.id}`,
-            `Mode: ${job.mode ?? "async"}`,
-            `Name: ${job.name || job.agent}${job.name && job.name !== job.agent ? ` (agent: ${job.agent})` : ""}`,
-            `Status: ${job.status}`,
-            `Elapsed: ${formatJobElapsed(job)}`,
-          ];
-          if (job.model) headerLines.push(`Model: ${job.model}`);
-          if (job.currentTool) headerLines.push(`Current tool: ${job.currentTool}`);
-          headerLines.push(`Task: ${job.task}`);
-          headerLines.push("", "--- Output tail ---", tail || "(no output yet)");
-          log.debug("async_status_tool_detail", { id: job.id, status: job.status, outputChars: tail.length });
+      if (needle) {
+        const exact = jobs.find((j) => j.id === needle);
+        const matches = exact ? [exact] : jobs.filter((j) => j.id.startsWith(needle));
+        if (matches.length === 0) {
+          log.debug("async_status_tool_not_found", { id: needle });
           return {
-            content: [{ type: "text" as const, text: headerLines.join("\n") }],
-            details: { found: true, job, outputChars: tail.length },
+            content: [{ type: "text" as const, text: `No async or sync job found matching id "${needle}".` }],
+            details: { found: false, id: needle },
           };
         }
-
-        if (jobs.length === 0) {
-          log.debug("async_status_tool_list", { total: 0, active: 0 });
+        if (matches.length > 1) {
+          log.debug("async_status_tool_ambiguous", { id: needle, count: matches.length });
           return {
-            content: [{ type: "text" as const, text: "No async or sync subagent jobs recorded in this session." }],
-            details: { active: 0, total: 0, jobs: [] },
+            content: [{
+              type: "text" as const,
+              text: `Ambiguous job id prefix "${needle}" matches ${matches.length} jobs: ${matches.map((m) => m.id).join(", ")}.`,
+            }],
+            details: { found: false, ambiguous: true, ids: matches.map((m) => m.id) },
           };
         }
-
-        const active = jobs.filter((j) => j.status === "running" || j.status === "queued").length;
-        const lines = [`Subagent jobs: ${active} active, ${jobs.length} total`];
-        for (const j of jobs) {
-          const label = j.name && j.name !== j.agent ? `${j.name} (${j.agent})` : j.agent;
-          const elapsed = formatJobElapsed(j);
-          const toolPart = j.currentTool ? ` | tool: ${j.currentTool}` : "";
-          const taskClean = j.task.replace(/\s+/g, " ").trim();
-          const taskPreview = taskClean.length > 80 ? `${taskClean.slice(0, 80)}…` : taskClean;
-          lines.push(`- ${j.id} [${j.mode ?? "async"}] ${label} | ${j.status} | ${elapsed}${toolPart} | ${taskPreview}`);
+        const job = matches[0];
+        const budget = Math.max(200, Math.min(20000, params.max_chars ?? 4000));
+        let tail = job.workerDir
+          ? readPartialWorkerOutput({ id: job.id, workerDir: job.workerDir }, budget)
+          : "";
+        if (!tail) {
+          const memOutput = (
+            asyncState.jobs.get(job.id)?.output
+            ?? listSyncAgentRunsWithFinished().find((r) => r.id === job.id)?.outputTail
+            ?? ""
+          ).trim();
+          if (memOutput) {
+            tail = memOutput.length > budget
+              ? `${TRUNCATION_MARKER}${memOutput.slice(-budget)}`
+              : memOutput;
+          }
         }
-        log.debug("async_status_tool_list", { total: jobs.length, active });
+        const headerLines = [
+          `ID: ${job.id}`,
+          `Mode: ${job.mode ?? "async"}`,
+          `Name: ${job.name || job.agent}${job.name && job.name !== job.agent ? ` (agent: ${job.agent})` : ""}`,
+          `Status: ${job.status}`,
+          `Elapsed: ${formatJobElapsed(job)}`,
+        ];
+        if (job.model) headerLines.push(`Model: ${job.model}`);
+        if (job.currentTool) headerLines.push(`Current tool: ${job.currentTool}`);
+        headerLines.push(`Task: ${job.task}`);
+        headerLines.push("", "--- Output tail ---", tail || "(no output yet)");
+        log.debug("async_status_tool_detail", { id: job.id, status: job.status, outputChars: tail.length });
         return {
-          content: [{ type: "text" as const, text: lines.join("\n") }],
-          details: { active, total: jobs.length, jobs },
+          content: [{ type: "text" as const, text: headerLines.join("\n") }],
+          details: { found: true, job, outputChars: tail.length },
         };
-      },
-    });
-  }
+      }
+
+      if (jobs.length === 0) {
+        log.debug("async_status_tool_list", { total: 0, active: 0 });
+        return {
+          content: [{ type: "text" as const, text: "No async or sync subagent jobs recorded in this session." }],
+          details: { active: 0, total: 0, jobs: [] },
+        };
+      }
+
+      const active = jobs.filter((j) => j.status === "running" || j.status === "queued").length;
+      const lines = [`Subagent jobs: ${active} active, ${jobs.length} total`];
+      for (const j of jobs) {
+        const label = j.name && j.name !== j.agent ? `${j.name} (${j.agent})` : j.agent;
+        const elapsed = formatJobElapsed(j);
+        const toolPart = j.currentTool ? ` | tool: ${j.currentTool}` : "";
+        const taskClean = j.task.replace(/\s+/g, " ").trim();
+        const taskPreview = taskClean.length > 80 ? `${taskClean.slice(0, 80)}…` : taskClean;
+        lines.push(`- ${j.id} [${j.mode ?? "async"}] ${label} | ${j.status} | ${elapsed}${toolPart} | ${taskPreview}`);
+      }
+      log.debug("async_status_tool_list", { total: jobs.length, active });
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+        details: { active, total: jobs.length, jobs },
+      };
+    },
+  });
 
   /** Sync runs live in this process, so a kill is just the spawn's abort handle. Null when
    *  no running sync run has this id — the caller then falls through to the async jobs.

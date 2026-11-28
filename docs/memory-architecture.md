@@ -179,7 +179,7 @@ Only the cache-stable base sections (`orchestrator_rules` and the startup-pinned
 into the leading system block, mutating sections on every turn previously busted prompt caches (`cacheRead=0`).
 Delivering per-turn recalls, ticking async durations, and snapshot mutation notices in a non-displayed custom message
 appended after the user prompt preserves cached prefixes across turns while keeping recent context at the tail of the
-transcript. When an earlier handler has forced the full prompt (or an older Pi version does not expose sections), the
+transcript. When an earlier handler has forced the full prompt, the
 extension falls back to appending to the prompt text.
 
 To prevent accidental truncation overwrites when editing from clipped previews (#1414), `memory_edit` (`update`)

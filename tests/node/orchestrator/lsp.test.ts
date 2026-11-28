@@ -8,9 +8,11 @@ import { fileURLToPath } from "node:url";
 import {
   BUILTIN_INSTALL_RECIPES,
   BUILTIN_LSP_SERVERS,
+  LSP_STARTUP_SUMMARY_ENTRY_TYPE,
   MAX_DIAGNOSTIC_LINES,
   LspManager,
   acquirePendingLspInstallClaim,
+  buildLspStartupSummary,
   claimPendingLspInstallRequest,
   clearPendingLspInstallRequest,
   clearPendingLspInstallRequestIfOwned,
@@ -31,7 +33,9 @@ import {
   resolveTrustedLspEnabled,
   resolveTrustedLspServers,
   runLspServerInstall,
+  shouldEmitLspStartupSummary,
   type LspDiagnostic,
+  type LspStartupSummaryData,
   type RegisterLspOptions,
 } from "../../../extensions/orchestrator/lsp.ts";
 import {
@@ -3322,5 +3326,333 @@ recordPendingLspInstallRequest(
       assert.equal(selectCount, 2);
       assert.deepEqual(listPendingLspInstallRequests(prefsDbPath), []);
     });
+  });
+});
+
+describe("LSP startup summary (#1492)", () => {
+  let suiteRoot: string;
+  let testDir: string;
+  let globalSettingsFile: string;
+  const savedEnv = new Map<string, string | undefined>();
+  const activeManagers: LspManager[] = [];
+
+  function setEnv(key: string, val: string | undefined): void {
+    if (!savedEnv.has(key)) savedEnv.set(key, process.env[key]);
+    if (val === undefined) delete process.env[key];
+    else process.env[key] = val;
+  }
+
+  function makeFakeBins(names: readonly string[]): string {
+    const binDir = join(testDir, "bin");
+    mkdirSync(binDir, { recursive: true });
+    for (const name of names) {
+      const target = join(binDir, name);
+      writeFileSync(target, "#!/bin/sh\nexit 0\n", "utf8");
+      chmodSync(target, 0o755);
+    }
+    return binDir;
+  }
+
+  function createSummaryMockPi() {
+    const handlers = new Map<string, Handler[]>();
+    const renderers = new Map<string, (entry: any, options: any, theme: any) => any>();
+    const appended: Array<{ customType: string; data: LspStartupSummaryData }> = [];
+    const emitted: Array<{ channel: string; payload: any }> = [];
+    const pi: any = {
+      on(name: string, fn: Handler) {
+        const list = handlers.get(name) ?? [];
+        list.push(fn);
+        handlers.set(name, list);
+      },
+      registerEntryRenderer(customType: string, renderer: (entry: any, options: any, theme: any) => any) {
+        renderers.set(customType, renderer);
+      },
+      appendEntry(customType: string, data: LspStartupSummaryData) {
+        appended.push({ customType, data });
+      },
+      events: {
+        emit(channel: string, payload: any) {
+          emitted.push({ channel, payload });
+        },
+      },
+    };
+    async function fire(name: string, event: any, ctx: any) {
+      for (const fn of handlers.get(name) ?? []) {
+        await fn(event, ctx);
+      }
+    }
+    return { pi, fire, renderers, appended, emitted };
+  }
+
+  before(() => {
+    suiteRoot = mkdtempSync(join(tmpdir(), "pi-lsp-startup-"));
+  });
+
+  after(() => {
+    rmSync(suiteRoot, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(suiteRoot, "case-"));
+    globalSettingsFile = join(testDir, "global-settings.json");
+    setGlobalSettingsPath(globalSettingsFile);
+    clearSettingsCache();
+    setEnv("PI_LSP_ENABLED", undefined);
+    setEnv("PI_SUBAGENT_CHILD", undefined);
+    setEnv("PI_COMS_SUPERVISED_PEER", undefined);
+  });
+
+  afterEach(async () => {
+    while (activeManagers.length > 0) {
+      await activeManagers.pop()!.shutdownAll();
+    }
+    for (const [k, v] of savedEnv) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    savedEnv.clear();
+    setGlobalSettingsPath(null);
+    clearSettingsCache();
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("formats enabled summary with installed built-in servers", () => {
+    const binDir = makeFakeBins(["typescript-language-server", "basedpyright-langserver", "gopls"]);
+    const res = buildLspStartupSummary({ enabled: true, overrides: {}, envPath: binDir });
+    assert.equal(res.summary, "LSP: typescript-language-server, basedpyright, gopls");
+    assert.equal(res.enabled, true);
+    assert.deepEqual(res.available, ["typescript-language-server", "basedpyright", "gopls"]);
+    assert.deepEqual(res.missing, []);
+  });
+
+  it("formats disabled summary with LSP (off) prefix", () => {
+    const binDir = makeFakeBins(["gopls"]);
+    const res = buildLspStartupSummary({ enabled: false, overrides: {}, envPath: binDir });
+    assert.equal(res.summary, "LSP (off): gopls");
+    assert.equal(res.enabled, false);
+    assert.deepEqual(res.available, ["gopls"]);
+    assert.deepEqual(res.missing, ["typescript-language-server", "basedpyright"]);
+  });
+
+  it("formats enabled summary with none installed when PATH has no LSP binaries", () => {
+    const res = buildLspStartupSummary({ enabled: true, overrides: {}, envPath: "" });
+    assert.equal(res.summary, "LSP: none installed");
+    assert.deepEqual(res.available, []);
+    assert.deepEqual(res.missing, ["typescript-language-server", "basedpyright", "gopls"]);
+  });
+
+  it("formats disabled summary with none installed when PATH has no LSP binaries", () => {
+    const res = buildLspStartupSummary({ enabled: false, overrides: {}, envPath: "" });
+    assert.equal(res.summary, "LSP (off): none installed");
+    assert.deepEqual(res.available, []);
+  });
+
+  it("includes custom global lsp_servers binaries in available list", () => {
+    const binDir = makeFakeBins(["gopls", "rust-analyzer"]);
+    const res = buildLspStartupSummary({
+      enabled: false,
+      overrides: { rust: { command: "rust-analyzer", args: [], extensions: [".rs"] } },
+      envPath: binDir,
+    });
+    assert.equal(res.summary, "LSP (off): gopls, rust-analyzer");
+    assert.deepEqual(res.available, ["gopls", "rust-analyzer"]);
+  });
+
+  it("records missing custom global lsp_servers binaries in missing list", () => {
+    const res = buildLspStartupSummary({
+      enabled: true,
+      overrides: { rust: { command: "rust-analyzer", args: [], extensions: [".rs"] } },
+      envPath: "",
+    });
+    assert.equal(res.missing.includes("rust-analyzer"), true);
+    assert.equal(res.available.includes("rust-analyzer"), false);
+  });
+
+  it("resolves ruff fallback label when basedpyright is absent", () => {
+    const binDir = makeFakeBins(["ruff"]);
+    const res = buildLspStartupSummary({ enabled: true, overrides: {}, envPath: binDir });
+    assert.equal(res.summary, "LSP: ruff");
+    assert.deepEqual(res.available, ["ruff"]);
+  });
+
+  it("uses override binary when global lsp_servers replaces a built-in server", () => {
+    const binDir = makeFakeBins(["basedpyright-langserver", "pylsp"]);
+    const res = buildLspStartupSummary({
+      enabled: true,
+      overrides: { python: { command: "pylsp", args: [], extensions: [".py"] } },
+      envPath: binDir,
+    });
+    assert.deepEqual(res.available, ["pylsp"]);
+    assert.equal(res.available.includes("basedpyright"), false);
+  });
+
+  it("ignores project-level lsp_enabled settings in startup summary", () => {
+    const projectPiDir = join(testDir, ".pi");
+    mkdirSync(projectPiDir, { recursive: true });
+    writeFileSync(join(projectPiDir, "pi-config-settings.json"), JSON.stringify({ lsp_enabled: true }), "utf8");
+    const binDir = makeFakeBins(["gopls"]);
+    const res = buildLspStartupSummary({ envPath: binDir });
+    assert.equal(res.enabled, false);
+    assert.equal(res.summary, "LSP (off): gopls");
+  });
+
+  it("registers lsp-startup-summary entry renderer with muted theme output", () => {
+    const mock = createSummaryMockPi();
+    const { manager } = registerDirectLsp(mock.pi, { envPath: "", pendingPollIntervalMs: 0 });
+    activeManagers.push(manager);
+
+    const renderer = mock.renderers.get(LSP_STARTUP_SUMMARY_ENTRY_TYPE);
+    assert.equal(typeof renderer, "function");
+    const renderedCalls: Array<{ color: string; text: string }> = [];
+    const comp = renderer!(
+      { data: { summary: "LSP: gopls", enabled: true, available: ["gopls"], missing: [] } },
+      {},
+      {
+        fg(color: string, text: string) {
+          renderedCalls.push({ color, text });
+          return `[${color}]${text}`;
+        },
+      },
+    );
+    assert.deepEqual(comp.render(80), ["[muted]LSP: gopls"]);
+    assert.deepEqual(renderedCalls, [{ color: "muted", text: "LSP: gopls" }]);
+  });
+
+  it("returns undefined from entry renderer when summary text is empty", () => {
+    const mock = createSummaryMockPi();
+    const { manager } = registerDirectLsp(mock.pi, { envPath: "", pendingPollIntervalMs: 0 });
+    activeManagers.push(manager);
+
+    const renderer = mock.renderers.get(LSP_STARTUP_SUMMARY_ENTRY_TYPE);
+    assert.equal(renderer!({ data: { summary: "" } }, {}, { fg: (_c: string, t: string) => t }), undefined);
+  });
+
+  it("emits lsp-startup-summary entry on interactive TUI startup", async () => {
+    writeFileSync(globalSettingsFile, JSON.stringify({ lsp_enabled: true }), "utf8");
+    clearSettingsCache();
+    const binDir = makeFakeBins(["typescript-language-server", "gopls"]);
+    const mock = createSummaryMockPi();
+    const { manager } = registerDirectLsp(mock.pi, { envPath: binDir, pendingPollIntervalMs: 0 });
+    activeManagers.push(manager);
+
+    await mock.fire("session_start", { reason: "startup" }, { mode: "tui", hasUI: true, cwd: testDir });
+
+    assert.equal(mock.appended.length, 1);
+    assert.equal(mock.appended[0].customType, LSP_STARTUP_SUMMARY_ENTRY_TYPE);
+    assert.equal(mock.appended[0].data.summary, "LSP: typescript-language-server, gopls");
+    assert.equal(mock.appended[0].data.enabled, true);
+    assert.deepEqual(mock.appended[0].data.available, ["typescript-language-server", "gopls"]);
+    assert.deepEqual(mock.appended[0].data.missing, ["basedpyright"]);
+  });
+
+  it("emits lsp-startup-summary entry on interactive TUI new session", async () => {
+    const binDir = makeFakeBins(["gopls"]);
+    const mock = createSummaryMockPi();
+    const { manager } = registerDirectLsp(mock.pi, { envPath: binDir, pendingPollIntervalMs: 0 });
+    activeManagers.push(manager);
+
+    await mock.fire("session_start", { reason: "new" }, { mode: "tui", hasUI: true, cwd: testDir });
+
+    assert.equal(mock.appended.length, 1);
+    assert.equal(mock.appended[0].data.summary, "LSP (off): gopls");
+  });
+
+  it("emits pidash:custom-entry event on interactive TUI startup", async () => {
+    const binDir = makeFakeBins(["gopls"]);
+    const mock = createSummaryMockPi();
+    const { manager } = registerDirectLsp(mock.pi, { envPath: binDir, pendingPollIntervalMs: 0 });
+    activeManagers.push(manager);
+
+    await mock.fire(
+      "session_start",
+      { reason: "startup" },
+      { mode: "tui", hasUI: true, cwd: testDir, sessionManager: { getSessionFile: () => "/tmp/s1.jsonl" } },
+    );
+
+    const customEv = mock.emitted.find((e) => e.channel === "pidash:custom-entry");
+    assert.ok(customEv);
+    assert.equal(customEv.payload.customType, LSP_STARTUP_SUMMARY_ENTRY_TYPE);
+    assert.equal(customEv.payload.content, "LSP (off): gopls");
+    assert.equal(customEv.payload.sessionFile, "/tmp/s1.jsonl");
+  });
+
+  it("skips startup summary on reload", async () => {
+    const mock = createSummaryMockPi();
+    const { manager } = registerDirectLsp(mock.pi, { envPath: "", pendingPollIntervalMs: 0 });
+    activeManagers.push(manager);
+
+    await mock.fire("session_start", { reason: "reload" }, { mode: "tui", hasUI: true, cwd: testDir });
+    assert.equal(mock.appended.length, 0);
+  });
+
+  it("skips startup summary on resume", async () => {
+    const mock = createSummaryMockPi();
+    const { manager } = registerDirectLsp(mock.pi, { envPath: "", pendingPollIntervalMs: 0 });
+    activeManagers.push(manager);
+
+    await mock.fire("session_start", { reason: "resume" }, { mode: "tui", hasUI: true, cwd: testDir });
+    assert.equal(mock.appended.length, 0);
+  });
+
+  it("skips startup summary in oneshot print mode", async () => {
+    const mock = createSummaryMockPi();
+    const { manager } = registerDirectLsp(mock.pi, { envPath: "", pendingPollIntervalMs: 0 });
+    activeManagers.push(manager);
+
+    await mock.fire("session_start", { reason: "startup" }, { mode: "print", hasUI: false, cwd: testDir });
+    assert.equal(mock.appended.length, 0);
+  });
+
+  it("skips startup summary when PI_SUBAGENT_CHILD is set", () => {
+    assert.equal(
+      shouldEmitLspStartupSummary({ reason: "startup" }, { mode: "tui", hasUI: true }, true),
+      false,
+    );
+  });
+
+  it("skips startup summary when PI_COMS_SUPERVISED_PEER is set", () => {
+    assert.equal(
+      shouldEmitLspStartupSummary(
+        { reason: "startup" },
+        { mode: "tui", hasUI: true },
+        false,
+        { PI_COMS_SUPERVISED_PEER: "1" },
+      ),
+      false,
+    );
+  });
+
+  it("skips startup summary in RPC mode even with hasUI true", () => {
+    assert.equal(
+      shouldEmitLspStartupSummary({ reason: "startup" }, { mode: "rpc", hasUI: true }, false, {}),
+      false,
+    );
+  });
+
+  it("spawns zero LSP server processes during startup summary", async () => {
+    const binDir = join(testDir, "probe-bin");
+    mkdirSync(binDir, { recursive: true });
+    const spawnMarker = join(testDir, "server-was-spawned");
+    const sentinel = join(binDir, "gopls");
+    writeFileSync(
+      sentinel,
+      `#!${process.execPath}\nconst fs = require("node:fs");\nfs.writeFileSync(${JSON.stringify(spawnMarker)}, "spawned");\n`,
+      "utf8",
+    );
+    chmodSync(sentinel, 0o755);
+
+    writeFileSync(globalSettingsFile, JSON.stringify({ lsp_enabled: true }), "utf8");
+    clearSettingsCache();
+
+    const mock = createSummaryMockPi();
+    const { manager } = registerDirectLsp(mock.pi, { envPath: binDir, pendingPollIntervalMs: 0 });
+    activeManagers.push(manager);
+
+    await mock.fire("session_start", { reason: "startup" }, { mode: "tui", hasUI: true, cwd: testDir });
+
+    assert.equal(mock.appended.length, 1);
+    assert.equal(mock.appended[0].data.summary, "LSP: gopls");
+    assert.equal(existsSync(spawnMarker), false);
+    assert.equal(manager.activeCount, 0);
   });
 });

@@ -82,12 +82,8 @@ export function syncComsActiveTools(
     active: boolean,
 ): void {
     if (!gatedTools || gatedTools.size === 0) return;
-    if (typeof (pi as any).getActiveTools !== "function" || typeof (pi as any).setActiveTools !== "function") {
-        log.debug("coms_active_tools_sync_skipped", { reason: "api_unavailable", active });
-        return;
-    }
     const current = pi.getActiveTools();
-    const allTools = typeof (pi as any).getAllTools === "function" ? (pi as any).getAllTools() : null;
+    const allTools = pi.getAllTools();
     // Codemode is registered with defaultActive: false, so only treat it as reaching
     // codemode/deferred COMS tools when it is actually active in the current loadout.
     const codemodeActive =

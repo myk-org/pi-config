@@ -159,6 +159,26 @@ function isContainer(): boolean {
   } catch { return false; }
 }
 
+function buildCustomEntryReplayEvent(entry: any): string | null {
+  if (!entry || entry.type !== "custom" || entry.customType !== "lsp-startup-summary") {
+    return null;
+  }
+  const summary = typeof entry.data?.summary === "string" ? entry.data.summary.trim() : "";
+  if (!summary) return null;
+  const parsedTs = entry.timestamp ? new Date(entry.timestamp).getTime() : NaN;
+  const ts = Number.isFinite(parsedTs) ? parsedTs : Date.now();
+  return JSON.stringify({
+    type: "message_start",
+    message: {
+      role: "custom",
+      display: true,
+      content: summary,
+      customType: entry.customType,
+    },
+    timestamp: ts,
+  });
+}
+
 /** Replay session history to the WebSocket client for browser display. */
 export function replaySessionHistory(wsClient: any, ctx: any, pushBuffered: (ev: string) => void): void {
   // Wrap the whole history in the replay markers the browser already
@@ -172,6 +192,12 @@ export function replaySessionHistory(wsClient: any, ctx: any, pushBuffered: (ev:
     let historyCount = 0;
     for (const entry of entries) {
       const e = entry as any;
+      const customEv = buildCustomEntryReplayEvent(e);
+      if (customEv) {
+        pushBuffered(customEv);
+        historyCount++;
+        continue;
+      }
       if (e.type !== "message" || !e.message) continue;
       const msg = e.message;
       const ts = e.timestamp ? new Date(e.timestamp).getTime() : Date.now();
@@ -509,6 +535,7 @@ export function registerPidash(
   let lastStatusPollAt = 0;
   let gitStatusScanSeq = 0;
   let sessionEpoch = 0;
+  let lastSessionFile = "";
   const commandHandlerRegistry = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
 
   function publishWorktreeSummary(summary: WorktreeSummary, expectedEpoch?: number): void {
@@ -1050,6 +1077,8 @@ export function registerPidash(
         env: registrationEnv,
       });
       const supervisedPeer = isSupervisedRpcPeerCtx(ctx, registrationEnv);
+      const currentSessionFile = ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "";
+      lastSessionFile = currentSessionFile;
       const reg = JSON.stringify({
         type: "register",
         pid: process.pid,
@@ -1072,7 +1101,7 @@ export function registerPidash(
         activitySequence,
         activityBeforePrompt: activityBeforePrompt || undefined,
         streaming: isStreaming,
-        sessionFile: ctx.sessionManager?.getSessionFile?.() || ctx.sessionFile || "",
+        sessionFile: currentSessionFile,
         thinkingLevel: thinking,
         diffPort,
         name: (pi as any).getSessionName?.() || undefined,
@@ -1356,6 +1385,28 @@ export function registerPidash(
       client.send({ type: "coms_peer_event", customType: d.customType, content: d.content || "" });
     });
 
+    // Forward display-only custom session entries (e.g. lsp-startup-summary) live
+    pi.events.on("pidash:custom-entry", (data: unknown) => {
+      if (client.shuttingDown || !client.connected) return;
+      const d = data as { customType?: unknown; content?: unknown; timestamp?: unknown; sessionFile?: unknown } | null;
+      if (typeof d?.customType !== "string" || !d.customType) return;
+      const content = typeof d.content === "string" ? d.content.trim() : "";
+      if (!content) return;
+      // When an extension emits during a session switch before handleSessionStart sends
+      // session_switch, skip the stale-session send so handleSessionStart replays it cleanly
+      // right after session_switch without duplicating or getting wiped by resetSessionViewState.
+      if (typeof d.sessionFile === "string" && d.sessionFile && lastSessionFile && d.sessionFile !== lastSessionFile) {
+        log.debug("pidash_custom_entry_deferred_for_session_switch", { customType: d.customType });
+        return;
+      }
+      const ts = typeof d.timestamp === "number" && Number.isFinite(d.timestamp) ? d.timestamp : Date.now();
+      client.send({
+        type: "message_start",
+        message: { role: "custom", display: true, content, customType: d.customType },
+        timestamp: ts,
+      });
+    });
+
     // Keep connected browsers in sync when TUI /worktree mutates worktrees (#1427)
     pi.events.on("orchestrator:worktrees-changed", (data: unknown) => {
       if (client.shuttingDown || !client.connected) return;
@@ -1511,6 +1562,8 @@ export function registerPidash(
         tuiIntervalMs: periodicStatusTickMs,
         rpcIntervalMs: rpcStatusIntervalMs,
       });
+      const nextSessionFile = switchCtx.sessionManager?.getSessionFile?.() || switchCtx.sessionFile || "";
+      lastSessionFile = nextSessionFile;
       client.send({
         type: "session_switch",
         sessionId,
@@ -1519,7 +1572,7 @@ export function registerPidash(
         worktreeCount: 0,
         worktreeDirtyCount: 0,
         inLinkedWorktree: false,
-        sessionFile: switchCtx.sessionManager?.getSessionFile?.() || switchCtx.sessionFile || "",
+        sessionFile: nextSessionFile,
         // One producer for every model field, so a switch cannot omit the
         // capability the daemon relies on (Qodo 3e547c6d / 24f50129).
         ...modelInfoPayload(switchCtx.model),
@@ -1527,6 +1580,13 @@ export function registerPidash(
         trailTokenSavings,
       });
       log.debug(`session_switch sent: cwd=${switchCtx.cwd}`);
+      if (event?.reason === "new") {
+        const entries = switchCtx.sessionManager?.getEntries?.() || [];
+        for (const entry of entries) {
+          const customEv = buildCustomEntryReplayEvent(entry);
+          if (customEv) client.send(customEv);
+        }
+      }
       void (async () => {
         try {
           const git = await fetchGitStatus(switchCtx.cwd);

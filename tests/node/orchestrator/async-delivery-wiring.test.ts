@@ -46,6 +46,8 @@ function harness(options: { cwd?: string } = {}) {
   const pi = {
     on(event: string, handler: (event: unknown, ctx: any) => void) { (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler); },
     registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) { commands.set(name, command); },
+    registerTool() {},
+    registerMessageRenderer() {},
     sendMessage(message: any) { if (rejectedSends-- > 0) throw new Error("temporary delivery failure"); messages.push(message); },
     events,
   };

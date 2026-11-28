@@ -20,6 +20,9 @@ import { ComsRegistry } from "../../../extensions/coms/coms-registry.js";
 import { resetSessionBridge } from "../../../extensions/shared/session-bridge.js";
 import { withSubagentChildEnv } from "../helpers/subagent-env.js";
 import { makeTempDir } from "../helpers/temp-dirs.js";
+import { useSupportedPiVersion } from "../helpers/pi-version-env.js";
+
+useSupportedPiVersion();
 
 type Handler = (...args: any[]) => any;
 
@@ -101,6 +104,10 @@ async function startPeer(opts: {
 		getFlag: (name: string) => flags.get(name),
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		registerCommand: () => {},
+		registerMessageRenderer: () => {},
+		getAllTools: () => [...tools.values()],
+		getActiveTools: () => [...tools.keys()],
+		setActiveTools: () => {},
 		on: (event: string, handler: Handler) => {
 			const list = handlers.get(event) ?? [];
 			list.push(handler);

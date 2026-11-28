@@ -10,6 +10,7 @@ import { TaskStore, resolveStorePath, type ResolveStorePathOptions } from "./tas
 import { TaskWidget } from "./task-widget.js";
 import { registerTaskTools } from "./task-tools.js";
 import { createLogger } from "../shared/logger.js";
+import { assertMinPiVersionOnLoad } from "../shared/pi-version.js";
 import { isBrowserDispatch, isLiveExtensionCtx } from "../shared/live-ctx.js";
 import {
 	TOGGLE_ALL_WIDGETS_EVENT,
@@ -313,6 +314,7 @@ function extractToolTaskRefs(args: any): string[] {
 }
 
 export default function (pi: ExtensionAPI) {
+	assertMinPiVersionOnLoad("pitasks");
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	if (shouldSkipOneshotRegister(log)) return;
 	let shuttingDown = false;

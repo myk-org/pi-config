@@ -31,6 +31,7 @@ function createFakePi(opts: { getCommands?: () => any[] } = {}) {
   const pi = {
     registerTool: (tool: any) => { tools.set(tool.name, tool); },
     registerCommand: (name: string, cmd: any) => { commands.set(name, cmd); },
+    registerMessageRenderer: () => {},
     on: (event: string, fn: (...args: any[]) => any) => {
       const list = handlers.get(event) ?? [];
       list.push(fn);
