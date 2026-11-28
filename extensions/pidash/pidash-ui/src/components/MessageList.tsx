@@ -66,6 +66,15 @@ function formatDuration(ms: number): string {
   return rem > 0 ? `${m}m${rem}s` : `${m}m`;
 }
 
+function getSearchableMessageText(msg: ChatMessage): string {
+  const isOrdinaryChatCard =
+    (msg.role === "user" || msg.role === "assistant") &&
+    !msg.className?.startsWith("ask|") &&
+    !msg.className?.startsWith("ask-answered|") &&
+    msg.className !== "lsp-startup-summary";
+  return isOrdinaryChatCard ? trimMessageDisplayText(msg.text) : msg.text;
+}
+
 export function MessageList({ messages, searchQuery, searchType, streaming, scrollKey, onAskResponse, promptHotkeysPaused = false }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -77,7 +86,8 @@ export function MessageList({ messages, searchQuery, searchType, streaming, scro
     const q = searchQuery?.toLowerCase();
     const filtered = messages.filter((msg) => {
       if (searchType && searchType !== "all" && msg.role !== searchType) return false;
-      if (q && !msg.text.toLowerCase().includes(q) && !msg.meta?.partialOutput?.toLowerCase().includes(q)) {
+      const searchableText = getSearchableMessageText(msg);
+      if (q && !searchableText.toLowerCase().includes(q) && !msg.meta?.partialOutput?.toLowerCase().includes(q)) {
         return false;
       }
       return true;

@@ -227,6 +227,7 @@ describe("pidash-transcript-reducer trailing whitespace trimming (#1534)", () =>
 
 let vite: ViteDevServer | undefined;
 let createRoot: (container: Element) => Root;
+let MessageList: any;
 let MessageItem: any;
 let ToolGroup: any;
 
@@ -252,7 +253,7 @@ describe("MessageItem trailing blank line display (#1534)", () => {
       server: { middlewareMode: true, hmr: false },
       appType: "custom",
     });
-    ({ MessageItem, ToolGroup } = await vite.ssrLoadModule("/src/components/MessageList.tsx"));
+    ({ MessageList, MessageItem, ToolGroup } = await vite.ssrLoadModule("/src/components/MessageList.tsx"));
   });
 
   after(() => vite?.close());
@@ -484,5 +485,45 @@ describe("MessageItem trailing blank line display (#1534)", () => {
     assert.equal(api!.messages.length, 1);
     assert.equal(api!.messages[0]?.text, "hello world");
     assert.equal(api!.messages[0]?.className, undefined);
+  });
+
+  it("excludes streaming assistant cards when search matches only trailing whitespace", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const messages: ChatMessage[] = [
+      { id: "s-search", role: "assistant", text: "Done\n\n", className: "streaming" },
+    ];
+    await act(async () => root.render(createElement(MessageList, { messages, searchQuery: "\n" })));
+
+    assert.equal((container.textContent ?? "").includes("Done"), false);
+  });
+
+  it("excludes user cards when search matches only trailing whitespace", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const messages: ChatMessage[] = [
+      { id: "u-search", role: "user", text: "Ping   " },
+    ];
+    await act(async () => root.render(createElement(MessageList, { messages, searchQuery: "   " })));
+
+    assert.equal((container.textContent ?? "").includes("Ping"), false);
+  });
+
+  it("retains tool result cards when search matches trailing newlines", async () => {
+    const { container } = installReactDomShim();
+    const root = createRoot(container);
+    mounted.push(root);
+
+    const messages: ChatMessage[] = [
+      { id: "tc-s", role: "bash" as any, text: "echo ok", className: "tool-call", meta: { callId: "k-s" } },
+      { id: "tr-s", role: "bash" as any, text: "✓ ok\n\n", className: "tool-result", meta: { callId: "k-s" } },
+    ];
+    await act(async () => root.render(createElement(MessageList, { messages, searchQuery: "\n\n" })));
+
+    assert.equal((container.textContent ?? "").includes("✓ ok"), true);
   });
 });
