@@ -268,7 +268,14 @@ function startPodmanPeer() {
 
   let workspacePath;
   try {
-    const ws = prepareSandboxWorkspace({ sandboxDir, sourceCwd: cwd, project, cname, logger: log });
+    const ws = prepareSandboxWorkspace({
+      sandboxDir,
+      sourceCwd: cwd,
+      project,
+      cname,
+      hostAgentDir,
+      logger: log,
+    });
     workspacePath = ws.workspaceDir;
   } catch (err) {
     const msg = err?.message ?? String(err);

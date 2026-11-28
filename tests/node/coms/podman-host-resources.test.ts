@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import {
+  MAX_COPY_DEPTH,
   buildPodmanRunArgs,
   prepareSandboxAgentDir,
   prepareSandboxWorkspace,
@@ -155,6 +157,49 @@ describe("syncHostTreeDereferenced", () => {
     assert.equal(fs.readFileSync(path.join(dstDir, "skill-two", "refs", "ref.txt"), "utf8"), "shared-data");
   });
 
+  it("skips directories exceeding MAX_COPY_DEPTH during dereferenced copy", () => {
+    const srcDir = makeTempDir("pi-src-deep-");
+    let current = srcDir;
+    for (let i = 0; i <= MAX_COPY_DEPTH + 1; i++) {
+      current = path.join(current, `d${i}`);
+      fs.mkdirSync(current);
+    }
+    fs.writeFileSync(path.join(current, "too-deep.txt"), "deep");
+    fs.writeFileSync(path.join(srcDir, "top.txt"), "top");
+    const dstDir = path.join(makeTempDir("pi-dst-deep-"), "snapshot");
+    const { logger, events } = makeSilentLogger();
+
+    const res = syncHostTreeDereferenced(srcDir, dstDir, { logger });
+
+    assert.equal(res.synced, true);
+    assert.equal(res.copiedFiles, 1);
+    assert.ok(res.skipped >= 1);
+    assert.ok(events.some((e) => e.level === "warn" && e.event === "sandbox_host_tree_max_depth"));
+  });
+
+  it("preserves prior snapshot without marking synced when source directory cannot be read", () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    const srcDir = makeTempDir("pi-src-unreadable-");
+    fs.writeFileSync(path.join(srcDir, "SKILL.md"), "v1");
+    const dstDir = path.join(makeTempDir("pi-dst-unreadable-"), "snapshot");
+    const { logger, events } = makeSilentLogger();
+
+    const first = syncHostTreeDereferenced(srcDir, dstDir, { logger });
+    assert.equal(first.synced, true);
+    assert.equal(fs.readFileSync(path.join(dstDir, "SKILL.md"), "utf8"), "v1");
+
+    fs.chmodSync(srcDir, 0o000);
+    try {
+      const second = syncHostTreeDereferenced(srcDir, dstDir, { logger });
+      assert.equal(second.synced, false);
+      assert.equal(second.incomplete, true);
+      assert.equal(fs.readFileSync(path.join(dstDir, "SKILL.md"), "utf8"), "v1");
+      assert.ok(events.some((e) => e.level === "warn" && e.event === "sandbox_host_tree_incomplete_preserved"));
+    } finally {
+      fs.chmodSync(srcDir, 0o755);
+    }
+  });
+
   it("returns synced false without throwing when optional host directory is absent", () => {
     const missing = path.join(makeTempDir("pi-missing-"), "does-not-exist");
     const dstDir = path.join(makeTempDir("pi-dst-missing-"), "stale-snapshot");
@@ -183,10 +228,13 @@ describe("Project .pi/{skills,agents,prompts} staging", () => {
     assert.equal(fs.realpathSync(roots[1]), fs.realpathSync(wtRoot));
   });
 
-  it("dereferences symlinked project .pi/{skills,agents,prompts} into sandbox workspace", () => {
-    const repo = makeTempDir("pi-proj-repo-");
-    const externalSkill = makeTempDir("pi-ext-proj-skill-");
-    const externalPromptDir = makeTempDir("pi-ext-proj-prompt-");
+  it("dereferences approved external symlinked project .pi/{skills,agents,prompts} into sandbox workspace", () => {
+    const fakeHome = makeTempDir("pi-fake-home-");
+    const repo = path.join(fakeHome, "git", "demo-repo");
+    const externalSkill = path.join(fakeHome, "personal", "skills", "pr-workflow");
+    const externalPromptDir = path.join(fakeHome, "personal", "prompts");
+    fs.mkdirSync(externalSkill, { recursive: true });
+    fs.mkdirSync(externalPromptDir, { recursive: true });
     fs.writeFileSync(path.join(externalSkill, "SKILL.md"), "# Symlinked Project Skill\n");
     fs.writeFileSync(path.join(externalPromptDir, "deploy.md"), "Deploy steps\n");
     initTempGitRepo(repo);
@@ -208,6 +256,8 @@ describe("Project .pi/{skills,agents,prompts} staging", () => {
       sourceCwd: repo,
       project: "proj",
       cname: "w1",
+      homeDir: fakeHome,
+      hostAgentDir: path.join(fakeHome, ".pi", "agent"),
       logger,
     });
 
@@ -233,6 +283,41 @@ describe("Project .pi/{skills,agents,prompts} staging", () => {
     );
   });
 
+  it("blocks project .pi symlinks pointing to host secret directories such as ~/.ssh", () => {
+    const fakeHome = makeTempDir("pi-home-sec-");
+    const fakeSshDir = path.join(fakeHome, ".ssh");
+    fs.mkdirSync(fakeSshDir, { recursive: true });
+    fs.writeFileSync(path.join(fakeSshDir, "id_ed25519"), "SECRET-KEY-DATA");
+    const fakeAuth = path.join(fakeHome, ".pi", "agent", "auth.json");
+    fs.mkdirSync(path.dirname(fakeAuth), { recursive: true });
+    fs.writeFileSync(fakeAuth, JSON.stringify({ token: "secret" }));
+
+    const repo = path.join(fakeHome, "git", "sec-repo");
+    initTempGitRepo(repo);
+    fs.mkdirSync(path.join(repo, ".pi", "skills"), { recursive: true });
+    fs.symlinkSync(fakeSshDir, path.join(repo, ".pi", "skills", "stolen-ssh"));
+    fs.symlinkSync(fakeAuth, path.join(repo, ".pi", "skills", "stolen-auth.json"));
+    fs.mkdirSync(path.join(repo, ".pi", "skills", "safe-skill"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".pi", "skills", "safe-skill", "SKILL.md"), "# Safe\n");
+
+    const sandboxDir = makeTempDir("pi-sb-sec-");
+    const { logger, events } = makeSilentLogger();
+    const { workspaceDir } = prepareSandboxWorkspace({
+      sandboxDir,
+      sourceCwd: repo,
+      project: "proj",
+      cname: "w1",
+      homeDir: fakeHome,
+      hostAgentDir: path.join(fakeHome, ".pi", "agent"),
+      logger,
+    });
+
+    assert.equal(fs.existsSync(path.join(workspaceDir, ".pi", "skills", "stolen-ssh")), false);
+    assert.equal(fs.existsSync(path.join(workspaceDir, ".pi", "skills", "stolen-auth.json")), false);
+    assert.equal(fs.readFileSync(path.join(workspaceDir, ".pi", "skills", "safe-skill", "SKILL.md"), "utf8"), "# Safe\n");
+    assert.ok(events.some((e) => e.level === "warn" && e.event === "sandbox_host_tree_target_rejected"));
+  });
+
   it("keeps git status clean after staging untracked project .pi resources", () => {
     const repo = makeTempDir("pi-proj-clean-");
     initTempGitRepo(repo);
@@ -256,6 +341,36 @@ describe("Project .pi/{skills,agents,prompts} staging", () => {
       encoding: "utf8",
     }).trim();
     assert.equal(porcelain, "");
+  });
+
+  it("leaves tracked project .pi symlinks intact without dirtying git status", () => {
+    const repo = makeTempDir("pi-proj-tracked-");
+    initTempGitRepo(repo);
+    fs.mkdirSync(path.join(repo, "shared", "in-repo-skill"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "shared", "in-repo-skill", "SKILL.md"), "# Tracked\n");
+    fs.mkdirSync(path.join(repo, ".pi", "skills"), { recursive: true });
+    fs.symlinkSync("../../shared/in-repo-skill", path.join(repo, ".pi", "skills", "tracked-link"));
+    execFileSync("git", ["add", "-f", "shared", ".pi/skills/tracked-link"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "track symlink"], { cwd: repo, stdio: "ignore" });
+
+    const sandboxDir = makeTempDir("pi-sb-tracked-");
+    const { logger } = makeSilentLogger();
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+
+    const porcelain = execFileSync("git", ["status", "--porcelain"], {
+      cwd: first.workspaceDir,
+      encoding: "utf8",
+    }).trim();
+    assert.equal(porcelain, "");
+    assert.equal(fs.lstatSync(path.join(first.workspaceDir, ".pi", "skills", "tracked-link")).isSymbolicLink(), true);
+
+    fs.writeFileSync(path.join(repo, "README.md"), "v2\n");
+    execFileSync("git", ["add", "README.md"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "v2"], { cwd: repo, stdio: "ignore" });
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+    assert.equal(second.cloned, true);
+    assert.equal(second.backupPath, null);
   });
 
   it("overlays linked worktree .pi resources over main repository root resources", () => {
@@ -294,7 +409,7 @@ describe("Project .pi/{skills,agents,prompts} staging", () => {
     assert.equal(fs.readFileSync(path.join(workspaceDir, ".pi", "prompts", "shared-cmd.md"), "utf8"), "worktree-prompt");
   });
 
-  it("refreshes project .pi skills when reusing an existing sandbox workspace", () => {
+  it("refreshes unchanged project .pi skills when reusing an existing sandbox workspace", () => {
     const repo = makeTempDir("pi-proj-refresh-");
     initTempGitRepo(repo);
     fs.mkdirSync(path.join(repo, ".pi", "skills", "s1"), { recursive: true });
@@ -315,7 +430,51 @@ describe("Project .pi/{skills,agents,prompts} staging", () => {
     assert.equal(fs.readFileSync(path.join(second.workspaceDir, ".pi", "skills", "s2", "SKILL.md"), "utf8"), "new-skill");
   });
 
-  it("avoids spurious workspace backups on HEAD advance when only staged .pi resources exist", () => {
+  it("preserves peer edits under .pi/skills across workspace reuse", () => {
+    const repo = makeTempDir("pi-proj-peer-edit-");
+    initTempGitRepo(repo);
+    fs.mkdirSync(path.join(repo, ".pi", "skills", "s1"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".pi", "skills", "s1", "SKILL.md"), "host-v1");
+
+    const sandboxDir = makeTempDir("pi-sb-peer-edit-");
+    const { logger } = makeSilentLogger();
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+
+    // Peer edits staged skill and creates a brand-new skill in its writable workspace
+    fs.writeFileSync(path.join(first.workspaceDir, ".pi", "skills", "s1", "SKILL.md"), "peer-modified");
+    fs.mkdirSync(path.join(first.workspaceDir, ".pi", "skills", "peer-created"), { recursive: true });
+    fs.writeFileSync(path.join(first.workspaceDir, ".pi", "skills", "peer-created", "SKILL.md"), "peer-only");
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+    assert.equal(fs.readFileSync(path.join(second.workspaceDir, ".pi", "skills", "s1", "SKILL.md"), "utf8"), "peer-modified");
+    assert.equal(fs.readFileSync(path.join(second.workspaceDir, ".pi", "skills", "peer-created", "SKILL.md"), "utf8"), "peer-only");
+  });
+
+  it("backs up workspace on HEAD advance when peer edited files under staged .pi/skills", () => {
+    const repo = makeTempDir("pi-proj-peer-bak-");
+    initTempGitRepo(repo, "file.txt", "v1\n");
+    fs.mkdirSync(path.join(repo, ".pi", "skills", "s1"), { recursive: true });
+    fs.writeFileSync(path.join(repo, ".pi", "skills", "s1", "SKILL.md"), "host-v1");
+
+    const sandboxDir = makeTempDir("pi-sb-peer-bak-");
+    const { logger } = makeSilentLogger();
+    const first = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+    fs.writeFileSync(path.join(first.workspaceDir, ".pi", "skills", "s1", "SKILL.md"), "peer-edited-skill");
+
+    fs.writeFileSync(path.join(repo, "file.txt"), "v2\n");
+    execFileSync("git", ["add", "file.txt"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "v2"], { cwd: repo, stdio: "ignore" });
+
+    const second = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
+    assert.equal(second.cloned, true);
+    assert.ok(second.backupPath && second.backupPath.endsWith(".bak"));
+    assert.equal(
+      fs.readFileSync(path.join(second.backupPath!, ".pi", "skills", "s1", "SKILL.md"), "utf8"),
+      "peer-edited-skill",
+    );
+  });
+
+  it("avoids spurious workspace backups on HEAD advance when only unmodified staged .pi resources exist", () => {
     const repo = makeTempDir("pi-proj-nobak-");
     initTempGitRepo(repo, "file.txt", "v1\n");
     fs.mkdirSync(path.join(repo, ".pi", "skills", "s1"), { recursive: true });
@@ -334,7 +493,7 @@ describe("Project .pi/{skills,agents,prompts} staging", () => {
     assert.equal(second.backupPath, null);
   });
 
-  it("removes stale untracked project .pi/prompts when deleted on host", () => {
+  it("removes unchanged staged project .pi/prompts when deleted on host", () => {
     const repo = makeTempDir("pi-proj-del-");
     initTempGitRepo(repo);
     fs.mkdirSync(path.join(repo, ".pi", "prompts"), { recursive: true });
@@ -345,8 +504,15 @@ describe("Project .pi/{skills,agents,prompts} staging", () => {
     const { workspaceDir } = prepareSandboxWorkspace({ sandboxDir, sourceCwd: repo, project: "proj", cname: "w1", logger });
     assert.equal(fs.existsSync(path.join(workspaceDir, ".pi", "prompts", "old.md")), true);
 
+    const marker = JSON.parse(fs.readFileSync(path.join(sandboxDir, "source.json"), "utf8"));
     fs.rmSync(path.join(repo, ".pi", "prompts"), { recursive: true, force: true });
-    syncProjectPiResources({ sandboxDir, workspaceDir, sourceCwd: repo, logger });
+    syncProjectPiResources({
+      sandboxDir,
+      workspaceDir,
+      sourceCwd: repo,
+      previousStagedFiles: marker.stagedProjectPiFiles,
+      logger,
+    });
     assert.equal(fs.existsSync(path.join(workspaceDir, ".pi", "prompts")), false);
   });
 });
@@ -394,6 +560,15 @@ describe("Host settings.json package resolution", () => {
 });
 
 describe("Host user resources with settings.json mirroring", () => {
+  function setupHostPackageFixture() {
+    const fakeHome = makeTempDir("pi-home-pkgs-");
+    const hostAgentDir = path.join(fakeHome, ".pi", "agent");
+    const fakePiConfigDir = makeTempDir("pi-local-piconfig-");
+    fs.mkdirSync(hostAgentDir, { recursive: true });
+    fs.writeFileSync(path.join(fakePiConfigDir, "package.json"), JSON.stringify({ name: "pi-orchestrator-config" }));
+    return { fakeHome, hostAgentDir, fakePiConfigDir, sandboxDir: makeTempDir("pi-sb-pkgs-") };
+  }
+
   it("stages dereferenced snapshots of host user skills, agents, prompts, ~/.agents/skills", () => {
     const fakeHome = makeTempDir("pi-home-");
     const hostAgentDir = path.join(fakeHome, ".pi", "agent");
@@ -424,13 +599,55 @@ describe("Host user resources with settings.json mirroring", () => {
     assert.equal(fs.readFileSync(path.join(res.hostPromptsDir!, "retro.md"), "utf8"), "Run retro\n");
   });
 
-  it("mirrors non-builtin host settings.json packages while skipping bundled packages", () => {
-    const fakeHome = makeTempDir("pi-home-pkgs-");
-    const hostAgentDir = path.join(fakeHome, ".pi", "agent");
-    const fakePiConfigDir = makeTempDir("pi-local-piconfig-");
-    fs.writeFileSync(path.join(fakePiConfigDir, "package.json"), JSON.stringify({ name: "pi-orchestrator-config" }));
+  it("retains last usable host skills snapshot when host skills directory becomes unreadable", () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
+    const hostSkills = path.join(hostAgentDir, "skills");
+    fs.mkdirSync(path.join(hostSkills, "qodo"), { recursive: true });
+    fs.writeFileSync(path.join(hostSkills, "qodo", "SKILL.md"), "v1");
+    const { logger } = makeSilentLogger();
 
-    // git: package (ponytail) with .git metadata that must be stripped
+    const first = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+    assert.ok(first.hostSkillsDir);
+
+    fs.chmodSync(hostSkills, 0o000);
+    try {
+      const second = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+      assert.equal(second.hostSkillsDir, first.hostSkillsDir);
+      assert.equal(fs.readFileSync(path.join(second.hostSkillsDir!, "qodo", "SKILL.md"), "utf8"), "v1");
+    } finally {
+      fs.chmodSync(hostSkills, 0o755);
+    }
+  });
+
+  it("skips bundled pi-config packages while retaining fixed /opt container mappings", () => {
+    const { fakeHome, hostAgentDir, fakePiConfigDir, sandboxDir } = setupHostPackageFixture();
+    fs.writeFileSync(
+      path.join(hostAgentDir, "settings.json"),
+      JSON.stringify({
+        packages: [
+          "npm:pi-orchestrator-config",
+          "npm:@myk-org/pi-vertex-claude",
+          "npm:pi-web-access",
+          fakePiConfigDir,
+        ],
+      }),
+    );
+    const { logger } = makeSilentLogger();
+
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, piConfigDir: fakePiConfigDir, logger });
+    const containerSettings = JSON.parse(fs.readFileSync(path.join(res.agentDir, "settings.json"), "utf8"));
+
+    assert.deepEqual(containerSettings.packages, [
+      "/opt/pi-config",
+      "/opt/node_modules/@myk-org/pi-vertex-claude",
+      "/opt/node_modules/pi-web-access",
+    ]);
+    assert.equal(res.hostPackageMounts.length, 0);
+  });
+
+  it("mirrors installed git packages without copying .git metadata", () => {
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
     const ponytailDir = path.join(hostAgentDir, "git", "github.com", "DietrichGebert", "ponytail");
     fs.mkdirSync(path.join(ponytailDir, ".git"), { recursive: true });
     fs.writeFileSync(path.join(ponytailDir, ".git", "HEAD"), "ref: refs/heads/main\n");
@@ -438,89 +655,183 @@ describe("Host user resources with settings.json mirroring", () => {
     fs.writeFileSync(path.join(ponytailDir, "extensions", "index.ts"), "export default () => {};\n");
     fs.mkdirSync(path.join(ponytailDir, "skills", "ponytail-mode"), { recursive: true });
     fs.writeFileSync(path.join(ponytailDir, "skills", "ponytail-mode", "SKILL.md"), "# Ponytail\n");
+    fs.writeFileSync(path.join(hostAgentDir, "settings.json"), JSON.stringify({ packages: ["git:github.com/DietrichGebert/ponytail"] }));
+    const { logger } = makeSilentLogger();
 
-    // npm: package
-    const npmPkgDir = path.join(hostAgentDir, "npm", "node_modules", "custom-helper");
-    fs.mkdirSync(npmPkgDir, { recursive: true });
-    fs.writeFileSync(path.join(npmPkgDir, "package.json"), JSON.stringify({ name: "custom-helper" }));
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+    const containerSettings = JSON.parse(fs.readFileSync(path.join(res.agentDir, "settings.json"), "utf8"));
+    const pkgPath = containerSettings.packages[3];
+    const mount = res.hostPackageMounts.find((m) => m.containerPath === pkgPath);
 
-    // local path package with object filter
+    assert.match(pkgPath, /^\/opt\/host-packages\/ponytail-[a-f0-9]{8}$/);
+    assert.ok(mount);
+    assert.equal(fs.existsSync(path.join(mount.hostPath, ".git")), false);
+    assert.equal(fs.existsSync(path.join(mount.hostPath, "extensions", "index.ts")), true);
+    assert.equal(fs.existsSync(path.join(mount.hostPath, "skills", "ponytail-mode", "SKILL.md")), true);
+  });
+
+  it("stages hoisted transitive runtime dependencies alongside mirrored npm packages", () => {
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
+    const npmRoot = path.join(hostAgentDir, "npm", "node_modules");
+    const pkgDir = path.join(npmRoot, "custom-helper");
+    const directDepDir = path.join(npmRoot, "hoisted-direct");
+    const transitiveDepDir = path.join(npmRoot, "@acme", "hoisted-leaf");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.mkdirSync(directDepDir, { recursive: true });
+    fs.mkdirSync(transitiveDepDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "custom-helper", main: "index.cjs", dependencies: { "hoisted-direct": "1.0.0" } }),
+    );
+    fs.writeFileSync(path.join(pkgDir, "index.cjs"), "module.exports = require('hoisted-direct')();\n");
+    fs.writeFileSync(
+      path.join(directDepDir, "package.json"),
+      JSON.stringify({ name: "hoisted-direct", main: "index.cjs", dependencies: { "@acme/hoisted-leaf": "1.0.0" } }),
+    );
+    fs.writeFileSync(path.join(directDepDir, "index.cjs"), "module.exports = () => require('@acme/hoisted-leaf').val;\n");
+    fs.writeFileSync(path.join(transitiveDepDir, "package.json"), JSON.stringify({ name: "@acme/hoisted-leaf", main: "index.cjs" }));
+    fs.writeFileSync(path.join(transitiveDepDir, "index.cjs"), "module.exports = { val: 'resolved-from-staged' };\n");
+
+    fs.writeFileSync(path.join(hostAgentDir, "settings.json"), JSON.stringify({ packages: ["npm:custom-helper@1.0.0"] }));
+    const { logger } = makeSilentLogger();
+
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+    const mount = res.hostPackageMounts[0];
+    assert.ok(mount);
+    const req = createRequire(path.join(mount.hostPath, "package.json"));
+    assert.equal(req("./index.cjs"), "resolved-from-staged");
+  });
+
+  it("preserves object package filter fields on mirrored local packages", () => {
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
     const localPkgDir = path.join(fakeHome, "my-local-pkg");
     fs.mkdirSync(localPkgDir, { recursive: true });
     fs.writeFileSync(path.join(localPkgDir, "package.json"), JSON.stringify({ name: "my-local-pkg" }));
+    fs.writeFileSync(
+      path.join(hostAgentDir, "settings.json"),
+      JSON.stringify({ packages: [{ source: "~/my-local-pkg", skills: [], extensions: ["!legacy.ts"] }] }),
+    );
+    const { logger } = makeSilentLogger();
 
-    // local single-file extension & prompt
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+    const containerSettings = JSON.parse(fs.readFileSync(path.join(res.agentDir, "settings.json"), "utf8"));
+
+    assert.equal(typeof containerSettings.packages[3], "object");
+    assert.match(containerSettings.packages[3].source, /^\/opt\/host-packages\/my-local-pkg-[a-f0-9]{8}$/);
+    assert.deepEqual(containerSettings.packages[3].skills, []);
+    assert.deepEqual(containerSettings.packages[3].extensions, ["!legacy.ts"]);
+  });
+
+  it("mirrors local single-file extensions while keeping builtin extension entries", () => {
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
     const customExtFile = path.join(fakeHome, "standalone-ext.ts");
     fs.writeFileSync(customExtFile, "export default () => {};\n");
+    fs.writeFileSync(
+      path.join(hostAgentDir, "settings.json"),
+      JSON.stringify({ extensions: ["builtin:mcp", "~/standalone-ext.ts"] }),
+    );
+    const { logger } = makeSilentLogger();
+
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+    const containerSettings = JSON.parse(fs.readFileSync(path.join(res.agentDir, "settings.json"), "utf8"));
+
+    assert.equal(containerSettings.extensions[0], "builtin:mcp");
+    assert.match(
+      containerSettings.extensions[1],
+      /^\/opt\/host-packages\/extensions-standalone-ext\.ts-[a-f0-9]{8}\/standalone-ext\.ts$/,
+    );
+  });
+
+  it("mirrors local single-file prompts into /opt/host-packages", () => {
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
     const customPromptFile = path.join(fakeHome, "quick-cmd.md");
     fs.writeFileSync(customPromptFile, "Quick command\n");
+    fs.writeFileSync(path.join(hostAgentDir, "settings.json"), JSON.stringify({ prompts: ["~/quick-cmd.md"] }));
+    const { logger } = makeSilentLogger();
 
-    fs.mkdirSync(hostAgentDir, { recursive: true });
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+    const containerSettings = JSON.parse(fs.readFileSync(path.join(res.agentDir, "settings.json"), "utf8"));
+
+    assert.match(containerSettings.prompts[0], /^\/opt\/host-packages\/prompts-quick-cmd\.md-[a-f0-9]{8}\/quick-cmd\.md$/);
+  });
+
+  it("omits uninstalled remote package specs from container settings.json", () => {
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
+    fs.writeFileSync(
+      path.join(hostAgentDir, "settings.json"),
+      JSON.stringify({ packages: ["git:github.com/uninstalled/missing-pkg"] }),
+    );
+    const { logger } = makeSilentLogger();
+
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+    const rawSettings = fs.readFileSync(path.join(res.agentDir, "settings.json"), "utf8");
+
+    assert.equal(rawSettings.includes("missing-pkg"), false);
+  });
+
+  it("translates extension exclusion filters for mirrored packages preserving order", () => {
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
+    const pkgDir = path.join(hostAgentDir, "git", "github.com", "org", "my-pkg");
+    fs.mkdirSync(path.join(pkgDir, "extensions"), { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, "extensions", "noisy.ts"), "export default () => {};\n");
     fs.writeFileSync(
       path.join(hostAgentDir, "settings.json"),
       JSON.stringify({
-        defaultProvider: "google",
-        defaultModel: "gemini-4-neon",
-        packages: [
-          "npm:pi-orchestrator-config",
-          "npm:@myk-org/pi-vertex-claude",
-          "npm:pi-web-access",
-          fakePiConfigDir,
-          "git:github.com/DietrichGebert/ponytail",
-          "npm:custom-helper@1.0.0",
-          { source: "~/my-local-pkg", skills: [] },
-          "git:github.com/uninstalled/missing-pkg",
+        packages: ["git:github.com/org/my-pkg"],
+        extensions: [
+          "builtin:mcp",
+          "-~/.pi/agent/git/github.com/org/my-pkg/extensions/noisy.ts",
+          "!**/deprecated.ts",
         ],
-        extensions: ["builtin:mcp", "~/standalone-ext.ts"],
-        prompts: ["~/quick-cmd.md"],
       }),
     );
-
-    const sandboxDir = makeTempDir("pi-sb-pkgs-");
     const { logger } = makeSilentLogger();
-    const res = prepareSandboxAgentDir({
-      sandboxDir,
-      hostAgentDir,
-      homeDir: fakeHome,
-      piConfigDir: fakePiConfigDir,
-      logger,
-    });
 
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
     const containerSettings = JSON.parse(fs.readFileSync(path.join(res.agentDir, "settings.json"), "utf8"));
-    assert.equal(containerSettings.packages[0], "/opt/pi-config");
-    assert.equal(containerSettings.packages[1], "/opt/node_modules/@myk-org/pi-vertex-claude");
-    assert.equal(containerSettings.packages[2], "/opt/node_modules/pi-web-access");
-    assert.equal(containerSettings.packages.length, 6);
+    const mirroredPkg = containerSettings.packages[3];
 
-    const ponytailContainerPath = containerSettings.packages[3];
-    assert.match(ponytailContainerPath, /^\/opt\/host-packages\/ponytail-[a-f0-9]{8}$/);
-    const ponytailMount = res.hostPackageMounts.find((m) => m.containerPath === ponytailContainerPath);
-    assert.ok(ponytailMount);
-    assert.equal(fs.existsSync(path.join(ponytailMount.hostPath, ".git")), false);
-    assert.equal(fs.existsSync(path.join(ponytailMount.hostPath, "extensions", "index.ts")), true);
-    assert.equal(fs.existsSync(path.join(ponytailMount.hostPath, "skills", "ponytail-mode", "SKILL.md")), true);
+    assert.deepEqual(containerSettings.extensions, [
+      "builtin:mcp",
+      `-${mirroredPkg}/extensions/noisy.ts`,
+      "!**/deprecated.ts",
+    ]);
+  });
 
-    assert.match(containerSettings.packages[4], /^\/opt\/host-packages\/custom-helper-[a-f0-9]{8}$/);
-    assert.equal(typeof containerSettings.packages[5], "object");
-    assert.match(containerSettings.packages[5].source, /^\/opt\/host-packages\/my-local-pkg-[a-f0-9]{8}$/);
-    assert.deepEqual(containerSettings.packages[5].skills, []);
+  it("stages base directory for wildcard resource entries while preserving glob suffix", () => {
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
+    const extraPrompts = path.join(fakeHome, "extra-prompts");
+    fs.mkdirSync(extraPrompts, { recursive: true });
+    fs.writeFileSync(path.join(extraPrompts, "triage.md"), "Triage\n");
+    fs.writeFileSync(path.join(hostAgentDir, "settings.json"), JSON.stringify({ prompts: ["~/extra-prompts/*.md"] }));
+    const { logger } = makeSilentLogger();
 
-    assert.equal(containerSettings.extensions[0], "builtin:mcp");
-    assert.match(containerSettings.extensions[1], /^\/opt\/host-packages\/extensions-standalone-ext\.ts-[a-f0-9]{8}\/standalone-ext\.ts$/);
-    assert.match(containerSettings.prompts[0], /^\/opt\/host-packages\/prompts-quick-cmd\.md-[a-f0-9]{8}\/quick-cmd\.md$/);
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+    const containerSettings = JSON.parse(fs.readFileSync(path.join(res.agentDir, "settings.json"), "utf8"));
 
-    // Uninstalled remote git spec must never leak into container settings.json
-    assert.equal(JSON.stringify(containerSettings).includes("missing-pkg"), false);
+    assert.match(containerSettings.prompts[0], /^\/opt\/host-packages\/prompts-extra-prompts-[a-f0-9]{8}\/\*\.md$/);
+    assert.equal(res.hostPackageMounts.length, 1);
+    assert.equal(fs.readFileSync(path.join(res.hostPackageMounts[0].hostPath, "triage.md"), "utf8"), "Triage\n");
+  });
+
+  it("forwards enableSkillCommands boolean from host settings.json", () => {
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
+    fs.writeFileSync(path.join(hostAgentDir, "settings.json"), JSON.stringify({ enableSkillCommands: false }));
+    const { logger } = makeSilentLogger();
+
+    const res = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
+    const containerSettings = JSON.parse(fs.readFileSync(path.join(res.agentDir, "settings.json"), "utf8"));
+
+    assert.equal(containerSettings.enableSkillCommands, false);
   });
 
   it("refreshes staged skills on respawn", () => {
-    const fakeHome = makeTempDir("pi-home-respawn-skills-");
-    const hostAgentDir = path.join(fakeHome, ".pi", "agent");
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
     fs.mkdirSync(path.join(hostAgentDir, "skills", "s1"), { recursive: true });
     fs.writeFileSync(path.join(hostAgentDir, "skills", "s1", "SKILL.md"), "v1");
-
-    const sandboxDir = makeTempDir("pi-sb-respawn-skills-");
     const { logger } = makeSilentLogger();
+
     prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
 
     fs.writeFileSync(path.join(hostAgentDir, "skills", "s1", "SKILL.md"), "v2");
@@ -529,30 +840,22 @@ describe("Host user resources with settings.json mirroring", () => {
   });
 
   it("removes stale staged host packages on respawn", () => {
-    const fakeHome = makeTempDir("pi-home-respawn-");
-    const hostAgentDir = path.join(fakeHome, ".pi", "agent");
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
     const pkgADir = path.join(hostAgentDir, "git", "github.com", "org", "pkg-a");
     const pkgBDir = path.join(hostAgentDir, "git", "github.com", "org", "pkg-b");
     fs.mkdirSync(pkgADir, { recursive: true });
     fs.writeFileSync(path.join(pkgADir, "a.ts"), "export const a = 1;");
     fs.mkdirSync(pkgBDir, { recursive: true });
     fs.writeFileSync(path.join(pkgBDir, "b.ts"), "export const b = 2;");
-    fs.writeFileSync(
-      path.join(hostAgentDir, "settings.json"),
-      JSON.stringify({ packages: ["git:github.com/org/pkg-a"] }),
-    );
-
-    const sandboxDir = makeTempDir("pi-sb-respawn-");
+    fs.writeFileSync(path.join(hostAgentDir, "settings.json"), JSON.stringify({ packages: ["git:github.com/org/pkg-a"] }));
     const { logger } = makeSilentLogger();
+
     const first = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
     assert.equal(first.hostPackageMounts.length, 1);
     const oldPkgHostDir = first.hostPackageMounts[0].hostPath;
     assert.equal(fs.existsSync(oldPkgHostDir), true);
 
-    fs.writeFileSync(
-      path.join(hostAgentDir, "settings.json"),
-      JSON.stringify({ packages: ["git:github.com/org/pkg-b"] }),
-    );
+    fs.writeFileSync(path.join(hostAgentDir, "settings.json"), JSON.stringify({ packages: ["git:github.com/org/pkg-b"] }));
 
     const second = prepareSandboxAgentDir({ sandboxDir, hostAgentDir, homeDir: fakeHome, logger });
     assert.equal(fs.existsSync(oldPkgHostDir), false);
@@ -561,10 +864,7 @@ describe("Host user resources with settings.json mirroring", () => {
   });
 
   it("seeds sandbox workspace trust in agent-dir/trust.json", () => {
-    const fakeHome = makeTempDir("pi-home-trust-");
-    const hostAgentDir = path.join(fakeHome, ".pi", "agent");
-    fs.mkdirSync(hostAgentDir, { recursive: true });
-    const sandboxDir = makeTempDir("pi-sb-trust-");
+    const { fakeHome, hostAgentDir, sandboxDir } = setupHostPackageFixture();
     const workspacePath = path.join(sandboxDir, "workspace");
     fs.mkdirSync(workspacePath, { recursive: true });
     const { logger } = makeSilentLogger();
@@ -577,7 +877,7 @@ describe("Host user resources with settings.json mirroring", () => {
 
 describe("buildPodmanRunArgs read-only host resource mounts", () => {
   const baseRunOpts = {
-    imageTag: "localhost/pi-peer:abcdef012345",
+    imageTag: "localhost/pi-peer:000000000001",
     uid: 12345,
     gid: 12345,
     selinuxEnforcing: true,
@@ -592,7 +892,7 @@ describe("buildPodmanRunArgs read-only host resource mounts", () => {
     hostAgentsDir: "/tmp/sandbox/host-agents",
     hostPromptsDir: "/tmp/sandbox/host-prompts",
     hostPackageMounts: [
-      { hostPath: "/tmp/sandbox/host-packages/ponytail-12345678", containerPath: "/opt/host-packages/ponytail-12345678" },
+      { hostPath: "/tmp/sandbox/host-packages/ponytail-00001111", containerPath: "/opt/host-packages/ponytail-00001111" }, // pragma: allowlist secret
     ],
     entrypointPath: "/opt/host/scripts/podman-peer-entrypoint.sh",
     gitconfigSeedPath: "/tmp/sandbox/gitconfig.seed",
@@ -609,7 +909,7 @@ describe("buildPodmanRunArgs read-only host resource mounts", () => {
     assert.ok(argv.includes("/tmp/sandbox/host-agents-skills:/home/peer/.agents/skills:ro"));
     assert.ok(argv.includes("/tmp/sandbox/host-agents:/home/peer/.pi/agent/agents:ro"));
     assert.ok(argv.includes("/tmp/sandbox/host-prompts:/home/peer/.pi/agent/prompts:ro"));
-    assert.ok(argv.includes("/tmp/sandbox/host-packages/ponytail-12345678:/opt/host-packages/ponytail-12345678:ro"));
+    assert.ok(argv.includes("/tmp/sandbox/host-packages/ponytail-00001111:/opt/host-packages/ponytail-00001111:ro")); // pragma: allowlist secret
   });
 
   it("never applies :Z or :z relabel suffixes on any mount", () => {

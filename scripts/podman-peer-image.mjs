@@ -32,9 +32,17 @@ export const BUNDLED_CONTAINER_PACKAGES = new Set([
   "@myk-org/pi-vertex-claude",
   "pi-web-access",
 ]);
+export const MAX_COPY_DEPTH = 32;
 
-const MAX_COPY_DEPTH = 32;
 const HOST_PACKAGES_CONTAINER_ROOT = "/opt/host-packages";
+const PI_PROVIDED_PEER_PACKAGES = new Set([
+  "@earendil-works/pi-ai",
+  "@earendil-works/pi-agent-core",
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-tui",
+  "typebox",
+  ...BUNDLED_CONTAINER_PACKAGES,
+]);
 
 /** Hardened git flags preventing repository-controlled `.git/config` hooks/fsmonitor execution on the host. */
 const SAFE_GIT_INSPECT_FLAGS = [
@@ -401,8 +409,12 @@ function isWithinRoot(candidatePath, rootPath) {
   return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
 }
 
-function isPatternOrFilterEntry(value) {
-  return value.startsWith("!") || value.startsWith("+") || value.startsWith("-") || value.includes("*") || value.includes("?");
+function toPosixRelPath(relPath) {
+  return relPath.split(path.sep).join("/");
+}
+
+function sha256File(filePath) {
+  return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
 function copyFilePreservingExec(srcFile, dstFile, stat) {
@@ -421,7 +433,7 @@ function copyFilePreservingExec(srcFile, dstFile, stat) {
   } catch { /* best-effort */ }
 }
 
-function copyDirDereferencedInner(srcDir, dstDir, ancestors, depth, skipNames, stats, log) {
+function copyDirDereferencedInner(srcDir, dstDir, ancestors, depth, skipNames, validateRealTarget, stats, log) {
   if (depth > MAX_COPY_DEPTH) {
     log.warn("sandbox_host_tree_max_depth", { srcDir, depth });
     stats.skipped += 1;
@@ -433,6 +445,7 @@ function copyDirDereferencedInner(srcDir, dstDir, ancestors, depth, skipNames, s
   } catch (err) {
     log.warn("sandbox_host_tree_readdir_failed", { srcDir, error: err?.code || err?.message || String(err) });
     stats.skipped += 1;
+    stats.dirReadErrors += 1;
     return;
   }
 
@@ -453,18 +466,25 @@ function copyDirDereferencedInner(srcDir, dstDir, ancestors, depth, skipNames, s
       continue;
     }
 
+    let realTarget;
+    try {
+      realTarget = fs.realpathSync(entrySrc);
+    } catch (err) {
+      log.warn("sandbox_host_tree_realpath_failed", {
+        path: entrySrc,
+        error: err?.code || err?.message || String(err),
+      });
+      stats.skipped += 1;
+      continue;
+    }
+
+    if (validateRealTarget && !validateRealTarget(realTarget, entrySrc)) {
+      log.warn("sandbox_host_tree_target_rejected", { path: entrySrc, target: realTarget });
+      stats.skipped += 1;
+      continue;
+    }
+
     if (entryStat.isDirectory()) {
-      let realTarget;
-      try {
-        realTarget = fs.realpathSync(entrySrc);
-      } catch (err) {
-        log.warn("sandbox_host_tree_realpath_failed", {
-          path: entrySrc,
-          error: err?.code || err?.message || String(err),
-        });
-        stats.skipped += 1;
-        continue;
-      }
       if (ancestors.has(realTarget)) {
         log.warn("sandbox_host_tree_symlink_loop", { path: entrySrc, target: realTarget });
         stats.skipped += 1;
@@ -479,7 +499,7 @@ function copyDirDereferencedInner(srcDir, dstDir, ancestors, depth, skipNames, s
       fs.mkdirSync(entryDst, { recursive: true, mode: 0o755 });
       const nextAncestors = new Set(ancestors);
       nextAncestors.add(realTarget);
-      copyDirDereferencedInner(entrySrc, entryDst, nextAncestors, depth + 1, skipNames, stats, log);
+      copyDirDereferencedInner(entrySrc, entryDst, nextAncestors, depth + 1, skipNames, validateRealTarget, stats, log);
     } else if (entryStat.isFile()) {
       try {
         copyFilePreservingExec(entrySrc, entryDst, entryStat);
@@ -501,7 +521,9 @@ function copyDirDereferencedInner(srcDir, dstDir, ancestors, depth, skipNames, s
 
 /**
  * Safely copy a host file or directory tree with symlink dereferencing.
- * - Guards against broken symlinks, ELOOP, and ancestor symlink loops.
+ * - Guards against broken symlinks, ELOOP, max depth, and ancestor symlink loops.
+ * - Optionally validates every resolved symlink/file target via `validateRealTarget(realTarget, srcPath)`.
+ * - Propagates directory read failures (`incomplete: true`) without overwriting an existing destination.
  * - Skips `.git` metadata by default and skips non-regular special files (FIFOs/sockets/devices).
  * - Never throws on missing optional host directories; logs skipped entries via `createLoggerCore`.
  */
@@ -511,6 +533,7 @@ export function syncHostTreeDereferenced(srcPath, dstPath, opts = {}) {
     ? opts.skipNames
     : new Set(Array.isArray(opts.skipNames) ? opts.skipNames : [".git"]);
   const cleanDestination = opts.cleanDestination !== false;
+  const validateRealTarget = typeof opts.validateRealTarget === "function" ? opts.validateRealTarget : null;
 
   const clearDstIfClean = () => {
     if (cleanDestination && fs.existsSync(dstPath)) {
@@ -522,52 +545,65 @@ export function syncHostTreeDereferenced(srcPath, dstPath, opts = {}) {
   try {
     rootStat = fs.statSync(srcPath);
   } catch (err) {
-    clearDstIfClean();
     if (err?.code === "ENOENT") {
+      clearDstIfClean();
       // Distinguish a genuinely absent path from a broken top-level symlink.
       let isBrokenSymlink = false;
       try { isBrokenSymlink = fs.lstatSync(srcPath).isSymbolicLink(); } catch { /* absent */ }
       if (isBrokenSymlink) {
         log.warn("sandbox_host_tree_broken_symlink", { srcPath });
-        return { synced: false, copiedFiles: 0, skipped: 1, isFile: false };
+        return { synced: false, copiedFiles: 0, skipped: 1, isFile: false, incomplete: false };
       }
       log.debug("sandbox_host_tree_missing", { srcPath });
-      return { synced: false, copiedFiles: 0, skipped: 0, isFile: false };
+      return { synced: false, copiedFiles: 0, skipped: 0, isFile: false, incomplete: false };
     }
     log.warn("sandbox_host_tree_unreadable", {
       srcPath,
       error: err?.code || err?.message || String(err),
     });
-    return { synced: false, copiedFiles: 0, skipped: 1, isFile: false };
+    return { synced: false, copiedFiles: 0, skipped: 1, isFile: false, incomplete: true };
+  }
+
+  const rootRealPath = safeRealPath(srcPath);
+  if (validateRealTarget && !validateRealTarget(rootRealPath, srcPath)) {
+    clearDstIfClean();
+    log.warn("sandbox_host_tree_target_rejected", { path: srcPath, target: rootRealPath });
+    return { synced: false, copiedFiles: 0, skipped: 1, isFile: rootStat.isFile(), incomplete: false };
   }
 
   if (rootStat.isFile()) {
     try {
       copyFilePreservingExec(srcPath, dstPath, rootStat);
-      return { synced: true, copiedFiles: 1, skipped: 0, isFile: true };
+      return { synced: true, copiedFiles: 1, skipped: 0, isFile: true, incomplete: false };
     } catch (err) {
       log.warn("sandbox_host_tree_file_copy_failed", {
         srcPath,
         dstPath,
         error: err?.code || err?.message || String(err),
       });
-      return { synced: false, copiedFiles: 0, skipped: 1, isFile: true };
+      return { synced: false, copiedFiles: 0, skipped: 1, isFile: true, incomplete: true };
     }
   }
 
   if (!rootStat.isDirectory()) {
     clearDstIfClean();
     log.warn("sandbox_host_tree_unsupported_type", { srcPath });
-    return { synced: false, copiedFiles: 0, skipped: 1, isFile: false };
+    return { synced: false, copiedFiles: 0, skipped: 1, isFile: false, incomplete: false };
   }
 
-  const rootRealPath = safeRealPath(srcPath);
-  const stats = { copiedFiles: 0, skipped: 0 };
+  const stats = { copiedFiles: 0, skipped: 0, dirReadErrors: 0 };
 
   if (!cleanDestination) {
     fs.mkdirSync(dstPath, { recursive: true, mode: 0o755 });
-    copyDirDereferencedInner(srcPath, dstPath, new Set([rootRealPath]), 0, skipNames, stats, log);
-    return { synced: true, copiedFiles: stats.copiedFiles, skipped: stats.skipped, isFile: false };
+    copyDirDereferencedInner(srcPath, dstPath, new Set([rootRealPath]), 0, skipNames, validateRealTarget, stats, log);
+    const incomplete = stats.dirReadErrors > 0;
+    return {
+      synced: !incomplete,
+      copiedFiles: stats.copiedFiles,
+      skipped: stats.skipped,
+      isFile: false,
+      incomplete,
+    };
   }
 
   const parentDir = path.dirname(dstPath);
@@ -576,10 +612,15 @@ export function syncHostTreeDereferenced(srcPath, dstPath, opts = {}) {
   fs.rmSync(stagingDir, { recursive: true, force: true });
   fs.mkdirSync(stagingDir, { recursive: true, mode: 0o755 });
   try {
-    copyDirDereferencedInner(srcPath, stagingDir, new Set([rootRealPath]), 0, skipNames, stats, log);
+    copyDirDereferencedInner(srcPath, stagingDir, new Set([rootRealPath]), 0, skipNames, validateRealTarget, stats, log);
+    if (stats.dirReadErrors > 0) {
+      try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      log.warn("sandbox_host_tree_incomplete_preserved", { srcPath, dstPath, dirReadErrors: stats.dirReadErrors });
+      return { synced: false, copiedFiles: 0, skipped: stats.skipped, isFile: false, incomplete: true };
+    }
     fs.rmSync(dstPath, { recursive: true, force: true });
     fs.renameSync(stagingDir, dstPath);
-    return { synced: true, copiedFiles: stats.copiedFiles, skipped: stats.skipped, isFile: false };
+    return { synced: true, copiedFiles: stats.copiedFiles, skipped: stats.skipped, isFile: false, incomplete: false };
   } catch (err) {
     try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
     log.warn("sandbox_host_tree_sync_failed", {
@@ -587,7 +628,7 @@ export function syncHostTreeDereferenced(srcPath, dstPath, opts = {}) {
       dstPath,
       error: err?.code || err?.message || String(err),
     });
-    return { synced: false, copiedFiles: 0, skipped: stats.skipped + 1, isFile: false };
+    return { synced: false, copiedFiles: 0, skipped: stats.skipped + 1, isFile: false, incomplete: true };
   }
 }
 
@@ -654,37 +695,139 @@ function ensureWorkspacePiExcluded(workspaceDir) {
   } catch { /* best-effort */ }
 }
 
-function hasTrackedFilesUnder(workspaceDir, relPath, execFn) {
+function listTrackedPathsUnder(repoDir, relPath, execFn) {
+  const tracked = new Set();
   try {
     const out = String(execFn(
       "git",
-      [...SAFE_GIT_INSPECT_FLAGS, "ls-files", "--", relPath],
-      { cwd: workspaceDir, encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
-    )).trim();
-    return out.length > 0;
-  } catch {
-    return false;
+      [...SAFE_GIT_INSPECT_FLAGS, "ls-files", "-z", "--", relPath],
+      { cwd: repoDir, encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
+    ));
+    for (const entry of out.split("\0")) {
+      const trimmed = entry.trim();
+      if (trimmed) tracked.add(trimmed);
+    }
+  } catch { /* best-effort */ }
+  return tracked;
+}
+
+function isPathTrackedOrNestedTracked(relPosix, trackedSet) {
+  if (trackedSet.size === 0) return false;
+  if (trackedSet.has(relPosix)) return true;
+  // Also cover when a tracked symlink is a directory target (e.g. tracked `.pi/skills/link` vs `.pi/skills/link/SKILL.md`).
+  const parts = relPosix.split("/");
+  for (let i = 1; i < parts.length; i++) {
+    if (trackedSet.has(parts.slice(0, i).join("/"))) return true;
   }
+  return false;
+}
+
+function collectRelativeRegularFiles(rootDir, relBase = "") {
+  const out = new Map();
+  if (!fs.existsSync(rootDir)) return out;
+  const walk = (dir, prefix) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        walk(abs, rel);
+      } else if (entry.isFile()) {
+        try {
+          out.set(rel, { absPath: abs, sha256: sha256File(abs), mode: fs.statSync(abs).mode });
+        } catch { /* ignore unreadable */ }
+      }
+    }
+  };
+  walk(rootDir, relBase);
+  return out;
+}
+
+function pruneEmptyDirsUpTo(startDir, stopDir) {
+  let current = path.resolve(startDir);
+  const resolvedStop = path.resolve(stopDir);
+  while (current !== resolvedStop && current.startsWith(`${resolvedStop}${path.sep}`)) {
+    try {
+      if (fs.readdirSync(current).length > 0) break;
+      fs.rmdirSync(current);
+    } catch {
+      break;
+    }
+    current = path.dirname(current);
+  }
+}
+
+function createProjectSymlinkValidator({ roots, homeDir, hostAgentDir, allowedExternalRoots }) {
+  const explicitApprovedRoots = [
+    ...roots,
+    path.join(hostAgentDir, "skills"),
+    path.join(hostAgentDir, "agents"),
+    path.join(hostAgentDir, "prompts"),
+    path.join(homeDir, ".agents", "skills"),
+    ...(Array.isArray(allowedExternalRoots) ? allowedExternalRoots : []),
+  ].map((p) => safeRealPath(p));
+  const realHome = safeRealPath(homeDir);
+
+  return (realTarget) => {
+    for (const approved of explicitApprovedRoots) {
+      if (isWithinRoot(realTarget, approved)) return true;
+    }
+    if (isWithinRoot(realTarget, realHome)) {
+      const relFromHome = path.relative(realHome, realTarget);
+      if (!relFromHome || relFromHome.startsWith("..")) return false;
+      const firstSegment = relFromHome.split(path.sep)[0];
+      // Block dotfiles/dot-directories directly under $HOME (~/.ssh, ~/.aws, ~/.gnupg, ~/.pi/agent/auth.json, ~/.config/gh, etc.).
+      if (!firstSegment || firstSegment.startsWith(".")) return false;
+      return true;
+    }
+    return false;
+  };
 }
 
 /**
  * Sync project `.pi/skills`, `.pi/agents`, and `.pi/prompts` from main repo root + worktree override
- * into `<workspaceDir>/.pi/{skills,agents,prompts}` with symlink dereferencing and clean `git status`.
+ * into `<workspaceDir>/.pi/{skills,agents,prompts}` with:
+ * - Approved symlink target validation (blocking links to host secret dirs like `~/.ssh` or `/etc`).
+ * - Preservation of tracked Git paths (never dirtying tracked `.pi` symlinks or files).
+ * - Content-hash tracking so peer edits/additions under `.pi/{skills,agents,prompts}` survive reuse/revive
+ *   and trigger workspace backup on re-clone.
  */
 export function syncProjectPiResources(opts) {
   const { sandboxDir, workspaceDir, sourceCwd } = opts;
   const execFn = opts.execFileSync ?? execFileSync;
   const log = opts.logger ?? createPodmanLogger();
+  const homeDir = opts.homeDir ?? os.homedir();
+  const hostAgentDir = opts.hostAgentDir ?? path.join(homeDir, ".pi", "agent");
+  const previousStagedFiles =
+    opts.previousStagedFiles && typeof opts.previousStagedFiles === "object"
+      ? opts.previousStagedFiles
+      : {};
 
   const roots = resolveProjectPiSourceRoots(sourceCwd, execFn);
   const resolvedWorkspace = path.resolve(workspaceDir);
+  const validateRealTarget = createProjectSymlinkValidator({
+    roots,
+    homeDir,
+    hostAgentDir,
+    allowedExternalRoots: opts.allowedExternalRoots,
+  });
+
   const stagedDirs = [];
+  const nextStagedFiles = {};
   let copiedFiles = 0;
   let skipped = 0;
 
   for (const kind of PROJECT_PI_RESOURCE_DIRS) {
+    const relKind = `.pi/${kind}`;
     const dstDir = path.join(workspaceDir, ".pi", kind);
     const resolvedDst = path.resolve(dstDir);
+    const trackedWorkspacePaths = listTrackedPathsUnder(workspaceDir, relKind, execFn);
     const existingSources = [];
 
     for (const root of roots) {
@@ -692,42 +835,119 @@ export function syncProjectPiResources(opts) {
       if (path.resolve(candidate) === resolvedDst) continue;
       try {
         if (fs.statSync(candidate).isDirectory()) {
-          existingSources.push(candidate);
+          existingSources.push({ root, candidate });
         }
       } catch { /* optional dir absent or broken */ }
     }
 
-    if (existingSources.length === 0) {
-      if (fs.existsSync(dstDir) && !hasTrackedFilesUnder(workspaceDir, `.pi/${kind}`, execFn)) {
-        try { fs.rmSync(dstDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    const stagingDir = path.join(sandboxDir, `.project-pi-${kind}.staging.${process.pid}.${Date.now()}`);
+    let nextSnapshotFiles = new Map();
+    let stageFailed = false;
+
+    if (existingSources.length > 0) {
+      fs.mkdirSync(sandboxDir, { recursive: true, mode: 0o700 });
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+      fs.mkdirSync(stagingDir, { recursive: true, mode: 0o755 });
+      try {
+        for (const { candidate } of existingSources) {
+          const res = syncHostTreeDereferenced(candidate, stagingDir, {
+            logger: log,
+            cleanDestination: false,
+            validateRealTarget,
+          });
+          copiedFiles += res.copiedFiles;
+          skipped += res.skipped;
+          if (res.incomplete) stageFailed = true;
+        }
+        if (!stageFailed) {
+          nextSnapshotFiles = collectRelativeRegularFiles(stagingDir, relKind);
+        }
+      } catch (err) {
+        stageFailed = true;
+        log.warn("sandbox_project_pi_sync_failed", {
+          kind,
+          workspaceDir: resolvedWorkspace,
+          error: err?.message ?? String(err),
+        });
       }
+    }
+
+    if (stageFailed) {
+      try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      // Preserve previous staged manifest entries for this kind on incomplete read.
+      for (const [k, v] of Object.entries(previousStagedFiles)) {
+        if (k.startsWith(`${relKind}/`)) nextStagedFiles[k] = v;
+      }
+      if (fs.existsSync(dstDir)) stagedDirs.push(kind);
       continue;
     }
 
-    fs.mkdirSync(sandboxDir, { recursive: true, mode: 0o700 });
-    const stagingDir = path.join(sandboxDir, `.project-pi-${kind}.staging.${process.pid}.${Date.now()}`);
-    fs.rmSync(stagingDir, { recursive: true, force: true });
-    fs.mkdirSync(stagingDir, { recursive: true, mode: 0o755 });
     try {
-      for (const srcDir of existingSources) {
-        const res = syncHostTreeDereferenced(srcDir, stagingDir, {
-          logger: log,
-          cleanDestination: false,
-        });
-        copiedFiles += res.copiedFiles;
-        skipped += res.skipped;
+      const currentWorkspaceFiles = collectRelativeRegularFiles(dstDir, relKind);
+      let wroteOrKeptStaged = false;
+
+      // 1. Reconcile existing workspace files: preserve peer-created & peer-modified files,
+      //    and remove only unchanged previously staged files that disappeared on host.
+      for (const [relPosix, current] of currentWorkspaceFiles.entries()) {
+        if (isPathTrackedOrNestedTracked(relPosix, trackedWorkspacePaths)) continue;
+        const prevHash = previousStagedFiles[relPosix];
+        const nextEntry = nextSnapshotFiles.get(relPosix);
+
+        if (prevHash === undefined) {
+          // Peer-created file (not previously staged): never overwrite or delete.
+          if (nextEntry && current.sha256 !== nextEntry.sha256) {
+            log.warn("sandbox_project_pi_peer_edit_preserved", { path: relPosix });
+          }
+          continue;
+        }
+
+        if (current.sha256 !== prevHash) {
+          // Previously staged file modified by peer: preserve peer's edit and leave out of
+          // nextStagedFiles so dirty-check backs it up on HEAD advance.
+          log.warn("sandbox_project_pi_peer_edit_preserved", { path: relPosix });
+          continue;
+        }
+
+        // File is unchanged from what we previously staged.
+        if (!nextEntry) {
+          try {
+            fs.unlinkSync(current.absPath);
+            pruneEmptyDirsUpTo(path.dirname(current.absPath), path.join(workspaceDir, ".pi"));
+          } catch { /* best-effort */ }
+          continue;
+        }
+
+        if (nextEntry.sha256 !== current.sha256) {
+          copyFilePreservingExec(nextEntry.absPath, current.absPath, { mode: nextEntry.mode });
+        }
+        nextStagedFiles[relPosix] = nextEntry.sha256;
+        wroteOrKeptStaged = true;
       }
-      fs.mkdirSync(path.join(workspaceDir, ".pi"), { recursive: true, mode: 0o700 });
-      fs.rmSync(dstDir, { recursive: true, force: true });
-      fs.renameSync(stagingDir, dstDir);
-      stagedDirs.push(kind);
-    } catch (err) {
+
+      // 2. Copy new untracked files from host snapshot into workspace.
+      for (const [relPosix, nextEntry] of nextSnapshotFiles.entries()) {
+        if (isPathTrackedOrNestedTracked(relPosix, trackedWorkspacePaths)) continue;
+        if (currentWorkspaceFiles.has(relPosix)) continue;
+        const targetAbs = path.join(workspaceDir, ...relPosix.split("/"));
+        // Also guard against a tracked symlink or symlink currently occupying targetAbs.
+        try {
+          if (fs.lstatSync(targetAbs).isSymbolicLink()) continue;
+        } catch { /* does not exist */ }
+        copyFilePreservingExec(nextEntry.absPath, targetAbs, { mode: nextEntry.mode });
+        nextStagedFiles[relPosix] = nextEntry.sha256;
+        wroteOrKeptStaged = true;
+      }
+
+      // Clean up empty `.pi/<kind>` if we deleted all previously staged files and nothing remains.
+      if (fs.existsSync(dstDir) && !isPathTrackedOrNestedTracked(relKind, trackedWorkspacePaths)) {
+        try {
+          if (fs.readdirSync(dstDir).length === 0) fs.rmdirSync(dstDir);
+        } catch { /* ignore */ }
+      }
+
+      if (wroteOrKeptStaged) stagedDirs.push(kind);
+    } finally {
       try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
-      log.warn("sandbox_project_pi_sync_failed", {
-        kind,
-        workspaceDir: resolvedWorkspace,
-        error: err?.message ?? String(err),
-      });
     }
   }
 
@@ -738,15 +958,50 @@ export function syncProjectPiResources(opts) {
     sourceCwd: path.resolve(sourceCwd),
     roots,
     stagedDirs,
+    stagedFileCount: Object.keys(nextStagedFiles).length,
     copiedFiles,
     skipped,
   });
-  return { roots, stagedDirs, copiedFiles, skipped };
+  return { roots, stagedDirs, stagedFiles: nextStagedFiles, copiedFiles, skipped };
 }
 
-function isDirtyBeyondStagedProjectPi(dirtyOutput, workspaceDir, stagedDirs) {
+function isDirtyBeyondStagedProjectPi(dirtyOutput, workspaceDir, stagedDirs, stagedFiles) {
   if (!dirtyOutput) return false;
   const stagedSet = new Set(Array.isArray(stagedDirs) ? stagedDirs : []);
+  const stagedFileMap = stagedFiles && typeof stagedFiles === "object" ? stagedFiles : null;
+
+  const verifyDirMatchesStagedManifest = (dirAbs, relPrefix) => {
+    if (!stagedFileMap) return false;
+    const walk = (dir, prefix) => {
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return false;
+      }
+      for (const entry of entries) {
+        const abs = path.join(dir, entry.name);
+        const rel = `${prefix}/${entry.name}`;
+        if (entry.isSymbolicLink()) return false;
+        if (entry.isDirectory()) {
+          if (!walk(abs, rel)) return false;
+        } else if (entry.isFile()) {
+          const expected = stagedFileMap[rel];
+          if (!expected) return false;
+          try {
+            if (sha256File(abs) !== expected) return false;
+          } catch {
+            return false;
+          }
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    return walk(dirAbs, relPrefix);
+  };
+
   const lines = dirtyOutput.split(/\r?\n/).filter((line) => line.trim().length > 0);
   for (const line of lines) {
     if (!line.startsWith("!! ")) return true;
@@ -758,6 +1013,11 @@ function isDirtyBeyondStagedProjectPi(dirtyOutput, workspaceDir, stagedDirs) {
         if (entries.length === 0 || entries.some((name) => !stagedSet.has(name))) {
           return true;
         }
+        for (const name of entries) {
+          if (!verifyDirMatchesStagedManifest(path.join(workspaceDir, ".pi", name), `.pi/${name}`)) {
+            return true;
+          }
+        }
       } catch {
         return true;
       }
@@ -765,6 +1025,9 @@ function isDirtyBeyondStagedProjectPi(dirtyOutput, workspaceDir, stagedDirs) {
     }
     const subMatch = rel.match(/^\.pi\/([^/]+)\/?$/);
     if (subMatch && stagedSet.has(subMatch[1])) {
+      if (!verifyDirMatchesStagedManifest(path.join(workspaceDir, ".pi", subMatch[1]), `.pi/${subMatch[1]}`)) {
+        return true;
+      }
       continue;
     }
     return true;
@@ -936,10 +1199,67 @@ function seedSandboxWorkspaceTrust(agentDir, workspacePath, log) {
   }
 }
 
+function stageHoistedNpmDependencies(hostPkgDir, npmNodeModulesRoot, stageDir, log) {
+  let rootPkg;
+  try {
+    rootPkg = JSON.parse(fs.readFileSync(path.join(hostPkgDir, "package.json"), "utf8"));
+  } catch {
+    return;
+  }
+  const readRuntimeDeps = (pkgObj) => {
+    const names = [];
+    for (const field of ["dependencies", "optionalDependencies"]) {
+      const section = pkgObj?.[field];
+      if (!section || typeof section !== "object") continue;
+      for (const dep of Object.keys(section)) names.push(dep);
+    }
+    return names;
+  };
+
+  const queue = readRuntimeDeps(rootPkg);
+  if (queue.length === 0) return;
+
+  const visited = new Set(typeof rootPkg?.name === "string" ? [rootPkg.name] : []);
+  while (queue.length > 0) {
+    const depName = queue.shift();
+    if (!depName || visited.has(depName) || PI_PROVIDED_PEER_PACKAGES.has(depName)) continue;
+    if (/[\x00\\]/.test(depName) || depName.split("/").some((seg) => !seg || seg === "." || seg === "..")) continue;
+    visited.add(depName);
+
+    const depSrc = path.resolve(npmNodeModulesRoot, depName);
+    if (!isWithinRoot(depSrc, npmNodeModulesRoot) || !fs.existsSync(depSrc)) continue;
+
+    const depDst = path.join(stageDir, "node_modules", ...depName.split("/"));
+    if (!fs.existsSync(depDst)) {
+      syncHostTreeDereferenced(depSrc, depDst, { logger: log, cleanDestination: true });
+    }
+    try {
+      const depPkg = JSON.parse(fs.readFileSync(path.join(depSrc, "package.json"), "utf8"));
+      for (const transitive of readRuntimeDeps(depPkg)) {
+        if (!visited.has(transitive)) queue.push(transitive);
+      }
+    } catch { /* no package.json or unreadable */ }
+  }
+}
+
+function splitGlobBaseAndSuffix(rawPath) {
+  const normalized = rawPath.replace(/\\/g, "/");
+  const segments = normalized.split("/");
+  const firstWildcardIdx = segments.findIndex((seg) => seg.includes("*") || seg.includes("?"));
+  if (firstWildcardIdx < 0) return { base: rawPath, globSuffix: null };
+  const baseSegments = segments.slice(0, firstWildcardIdx);
+  const suffixSegments = segments.slice(firstWildcardIdx);
+  return {
+    base: baseSegments.join("/"),
+    globSuffix: suffixSegments.join("/"),
+  };
+}
+
 /**
  * Prepare and refresh the isolated container `agent-dir/`, read-only host user snapshots
  * (`~/.pi/agent/{skills,agents,prompts}` + `~/.agents/skills`), read-only mirrored host
- * `settings.json` packages/extensions/skills/prompts, and sandbox workspace trust.
+ * `settings.json` packages/extensions/skills/prompts (including hoisted npm deps & filters),
+ * and sandbox workspace trust.
  */
 export function prepareSandboxAgentDir(opts) {
   const { sandboxDir, hostAgentDir } = opts;
@@ -951,24 +1271,27 @@ export function prepareSandboxAgentDir(opts) {
   const agentDir = path.join(sandboxDir, "agent-dir");
   fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
 
+  const resolveSnapshotMount = (srcDir, snapDir) => {
+    const res = syncHostTreeDereferenced(srcDir, snapDir, { logger: log });
+    if (res.synced) return snapDir;
+    // Retain last usable snapshot when a directory read failed rather than replacing or dropping it.
+    if (res.incomplete && fs.existsSync(snapDir)) return snapDir;
+    return null;
+  };
+
   // 1. Stage dereferenced read-only snapshots of host user skills, agents, and prompts.
-  const hostSkillsSnap = path.join(sandboxDir, "host-skills");
-  const skillsRes = syncHostTreeDereferenced(path.join(hostAgentDir, "skills"), hostSkillsSnap, { logger: log });
-  const hostSkillsDir = skillsRes.synced ? hostSkillsSnap : null;
+  const hostSkillsDir = resolveSnapshotMount(path.join(hostAgentDir, "skills"), path.join(sandboxDir, "host-skills"));
   if (hostSkillsDir) fs.mkdirSync(path.join(agentDir, "skills"), { recursive: true, mode: 0o700 });
 
-  const hostAgentsSkillsSnap = path.join(sandboxDir, "host-agents-skills");
-  const agentsSkillsRes = syncHostTreeDereferenced(path.join(homeDir, ".agents", "skills"), hostAgentsSkillsSnap, { logger: log });
-  const hostAgentsSkillsDir = agentsSkillsRes.synced ? hostAgentsSkillsSnap : null;
+  const hostAgentsSkillsDir = resolveSnapshotMount(
+    path.join(homeDir, ".agents", "skills"),
+    path.join(sandboxDir, "host-agents-skills"),
+  );
 
-  const hostAgentsSnap = path.join(sandboxDir, "host-agents");
-  const agentsRes = syncHostTreeDereferenced(path.join(hostAgentDir, "agents"), hostAgentsSnap, { logger: log });
-  const hostAgentsDir = agentsRes.synced ? hostAgentsSnap : null;
+  const hostAgentsDir = resolveSnapshotMount(path.join(hostAgentDir, "agents"), path.join(sandboxDir, "host-agents"));
   if (hostAgentsDir) fs.mkdirSync(path.join(agentDir, "agents"), { recursive: true, mode: 0o700 });
 
-  const hostPromptsSnap = path.join(sandboxDir, "host-prompts");
-  const promptsRes = syncHostTreeDereferenced(path.join(hostAgentDir, "prompts"), hostPromptsSnap, { logger: log });
-  const hostPromptsDir = promptsRes.synced ? hostPromptsSnap : null;
+  const hostPromptsDir = resolveSnapshotMount(path.join(hostAgentDir, "prompts"), path.join(sandboxDir, "host-prompts"));
   if (hostPromptsDir) fs.mkdirSync(path.join(agentDir, "prompts"), { recursive: true, mode: 0o700 });
 
   // 2. Read host settings.json (read-only) and mirror non-bundled packages + local resources.
@@ -983,11 +1306,42 @@ export function prepareSandboxAgentDir(opts) {
   }
 
   const hostPackagesRoot = path.join(sandboxDir, "host-packages");
+  const npmNodeModulesRoot = path.join(hostAgentDir, "npm", "node_modules");
   const activeSlugs = new Set();
   const stagedByRealPath = new Map();
   const hostPackageMounts = [];
+  const hostRootMappings = [];
 
-  const stageHostPackageSource = (hostPath, label) => {
+  const registerHostMapping = (hostRoot, containerRoot) => {
+    hostRootMappings.push({
+      hostRoot: path.resolve(hostRoot),
+      hostRealRoot: safeRealPath(hostRoot),
+      containerRoot,
+    });
+  };
+  if (piConfigDir) registerHostMapping(piConfigDir, "/opt/pi-config");
+  if (hostSkillsDir) registerHostMapping(path.join(hostAgentDir, "skills"), "/home/peer/.pi/agent/skills");
+  if (hostAgentsSkillsDir) registerHostMapping(path.join(homeDir, ".agents", "skills"), "/home/peer/.agents/skills");
+  if (hostAgentsDir) registerHostMapping(path.join(hostAgentDir, "agents"), "/home/peer/.pi/agent/agents");
+  if (hostPromptsDir) registerHostMapping(path.join(hostAgentDir, "prompts"), "/home/peer/.pi/agent/prompts");
+
+  const translateHostPathToContainer = (absHostPath) => {
+    const resolved = path.resolve(absHostPath);
+    const real = safeRealPath(absHostPath);
+    const ordered = [...hostRootMappings].sort((a, b) => b.hostRoot.length - a.hostRoot.length);
+    for (const mapping of ordered) {
+      for (const [candidate, root] of [[resolved, mapping.hostRoot], [real, mapping.hostRealRoot]]) {
+        if (candidate === root) return mapping.containerRoot;
+        if (candidate.startsWith(`${root}${path.sep}`)) {
+          const rel = toPosixRelPath(path.relative(root, candidate));
+          return `${mapping.containerRoot}/${rel}`;
+        }
+      }
+    }
+    return null;
+  };
+
+  const stageHostPackageSource = (hostPath, label, sourceKind = "local") => {
     let stat;
     try {
       stat = fs.statSync(hostPath);
@@ -1029,14 +1383,28 @@ export function prepareSandboxAgentDir(opts) {
       activeSlugs.add(slug);
       hostPackageMounts.push({ hostPath: stageDir, containerPath: mountContainerDir });
       stagedByRealPath.set(realKey, containerEntryPath);
+      registerHostMapping(hostPath, containerEntryPath);
       return containerEntryPath;
     }
 
     const res = syncHostTreeDereferenced(hostPath, stageDir, { logger: log, cleanDestination: true });
-    if (!res.synced) return null;
+    if (!res.synced) {
+      if (res.incomplete && fs.existsSync(stageDir)) {
+        activeSlugs.add(slug);
+        hostPackageMounts.push({ hostPath: stageDir, containerPath: mountContainerDir });
+        stagedByRealPath.set(realKey, mountContainerDir);
+        registerHostMapping(hostPath, mountContainerDir);
+        return mountContainerDir;
+      }
+      return null;
+    }
+    if (sourceKind === "npm") {
+      stageHoistedNpmDependencies(hostPath, npmNodeModulesRoot, stageDir, log);
+    }
     activeSlugs.add(slug);
     hostPackageMounts.push({ hostPath: stageDir, containerPath: mountContainerDir });
     stagedByRealPath.set(realKey, mountContainerDir);
+    registerHostMapping(hostPath, mountContainerDir);
     return mountContainerDir;
   };
 
@@ -1056,7 +1424,7 @@ export function prepareSandboxAgentDir(opts) {
         log.debug("sandbox_host_package_skipped_bundled", { source: rawSource });
         continue;
       }
-      const containerPath = stageHostPackageSource(resolved.hostPath, resolved.label);
+      const containerPath = stageHostPackageSource(resolved.hostPath, resolved.label, resolved.kind);
       if (!containerPath) continue;
       mirroredPackages.push(isObj ? { ...entry, source: containerPath } : containerPath);
     }
@@ -1069,14 +1437,81 @@ export function prepareSandboxAgentDir(opts) {
       if (typeof item !== "string") continue;
       const trimmed = item.trim();
       if (!trimmed) continue;
+
       if (resourceKind === "extensions" && trimmed.startsWith("builtin:")) {
         out.push(trimmed);
         continue;
       }
-      if (isPatternOrFilterEntry(trimmed)) continue;
+
+      // Filter / override entries (!pattern, +path, -path): translate host paths to container
+      // paths while preserving relative/glob patterns and exact evaluation order.
+      if (trimmed.startsWith("!") || trimmed.startsWith("+") || trimmed.startsWith("-")) {
+        const prefix = trimmed[0];
+        const body = trimmed.slice(1).trim();
+        if (!body) continue;
+        if (resourceKind === "extensions" && body.startsWith("builtin:")) {
+          out.push(`${prefix}${body}`);
+          continue;
+        }
+        const { base, globSuffix } = splitGlobBaseAndSuffix(body);
+        const looksPathLike =
+          body.startsWith("/") ||
+          body.startsWith("~") ||
+          body.startsWith("./") ||
+          body.startsWith("../");
+        if (base) {
+          const expandedBase = expandHomePath(base, homeDir);
+          const resolvedBase = path.isAbsolute(expandedBase)
+            ? path.resolve(expandedBase)
+            : path.resolve(hostAgentDir, expandedBase);
+          const translated = translateHostPathToContainer(resolvedBase);
+          if (translated) {
+            out.push(`${prefix}${globSuffix ? `${translated}/${globSuffix}` : translated}`);
+            continue;
+          }
+          if (prefix === "+" && !globSuffix && fs.existsSync(resolvedBase) && !isBundledHostPackagePath(resolvedBase, piConfigDir)) {
+            const containerPath = stageHostPackageSource(resolvedBase, `${resourceKind}-${path.basename(resolvedBase)}`);
+            if (containerPath) out.push(`+${containerPath}`);
+            continue;
+          }
+        }
+        if (!looksPathLike) {
+          out.push(`${prefix}${body}`);
+        }
+        continue;
+      }
+
+      // Wildcard glob resource entries (e.g. ~/extra-prompts/*.md): stage base dir & keep glob.
+      if (trimmed.includes("*") || trimmed.includes("?")) {
+        const { base, globSuffix } = splitGlobBaseAndSuffix(trimmed);
+        if (!base) {
+          out.push(trimmed);
+          continue;
+        }
+        const expandedBase = expandHomePath(base, homeDir);
+        const resolvedBase = path.isAbsolute(expandedBase)
+          ? path.resolve(expandedBase)
+          : path.resolve(hostAgentDir, expandedBase);
+        const translated = translateHostPathToContainer(resolvedBase);
+        if (translated) {
+          out.push(`${translated}/${globSuffix}`);
+          continue;
+        }
+        if (!isBundledHostPackagePath(resolvedBase, piConfigDir)) {
+          const containerBase = stageHostPackageSource(resolvedBase, `${resourceKind}-${path.basename(resolvedBase)}`);
+          if (containerBase) out.push(`${containerBase}/${globSuffix}`);
+        }
+        continue;
+      }
+
       const expanded = expandHomePath(trimmed, homeDir);
       const resolvedPath = path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(hostAgentDir, expanded);
       if (isBundledHostPackagePath(resolvedPath, piConfigDir)) continue;
+      const alreadyMapped = translateHostPathToContainer(resolvedPath);
+      if (alreadyMapped) {
+        out.push(alreadyMapped);
+        continue;
+      }
       const containerPath = stageHostPackageSource(resolvedPath, `${resourceKind}-${path.basename(resolvedPath)}`);
       if (containerPath) out.push(containerPath);
     }
@@ -1206,10 +1641,18 @@ export function prepareSandboxWorkspace(opts) {
         sandboxDir,
         workspaceDir,
         sourceCwd: existingMarker.sourceCwd,
+        homeDir: opts.homeDir,
+        hostAgentDir: opts.hostAgentDir,
+        allowedExternalRoots: opts.allowedExternalRoots,
+        previousStagedFiles: existingMarker?.stagedProjectPiFiles,
         execFileSync: execFn,
         logger: log,
       });
-      writeJsonAtomic(markerPath, { ...existingMarker, stagedProjectPiDirs: synced.stagedDirs });
+      writeJsonAtomic(markerPath, {
+        ...existingMarker,
+        stagedProjectPiDirs: synced.stagedDirs,
+        stagedProjectPiFiles: synced.stagedFiles,
+      });
     }
     log.info("sandbox_workspace_revived", { workspaceDir, project, cname });
     return { workspaceDir, cloned: false, revived: true };
@@ -1258,10 +1701,18 @@ export function prepareSandboxWorkspace(opts) {
       sandboxDir,
       workspaceDir,
       sourceCwd: resolvedSource,
+      homeDir: opts.homeDir,
+      hostAgentDir: opts.hostAgentDir,
+      allowedExternalRoots: opts.allowedExternalRoots,
+      previousStagedFiles: existingMarker?.stagedProjectPiFiles,
       execFileSync: execFn,
       logger: log,
     });
-    writeJsonAtomic(markerPath, { ...existingMarker, stagedProjectPiDirs: synced.stagedDirs });
+    writeJsonAtomic(markerPath, {
+      ...existingMarker,
+      stagedProjectPiDirs: synced.stagedDirs,
+      stagedProjectPiFiles: synced.stagedFiles,
+    });
     log.info("sandbox_workspace_reused", { sourceCwd: resolvedSource, workspaceDir, headSha: sourceHead });
     return { workspaceDir, cloned: false, revived: false, backupPath: null };
   }
@@ -1343,7 +1794,12 @@ export function prepareSandboxWorkspace(opts) {
             stdio: ["ignore", "pipe", "ignore"],
           })).trim();
           hasUnsavedWork =
-            isDirtyBeyondStagedProjectPi(dirty, workspaceDir, existingMarker?.stagedProjectPiDirs) ||
+            isDirtyBeyondStagedProjectPi(
+              dirty,
+              workspaceDir,
+              existingMarker?.stagedProjectPiDirs,
+              existingMarker?.stagedProjectPiFiles,
+            ) ||
             unpushed.length > 0;
         } catch {
           // If git inspection fails on an existing dir, preserve it as a backup rather than deleting blindly.
@@ -1408,6 +1864,9 @@ export function prepareSandboxWorkspace(opts) {
       sandboxDir,
       workspaceDir,
       sourceCwd: resolvedSource,
+      homeDir: opts.homeDir,
+      hostAgentDir: opts.hostAgentDir,
+      allowedExternalRoots: opts.allowedExternalRoots,
       execFileSync: execFn,
       logger: log,
     });
@@ -1418,6 +1877,7 @@ export function prepareSandboxWorkspace(opts) {
       project,
       cname,
       stagedProjectPiDirs: synced.stagedDirs,
+      stagedProjectPiFiles: synced.stagedFiles,
       clonedAt: new Date().toISOString(),
     });
     log.info("sandbox_workspace_cloned", {
