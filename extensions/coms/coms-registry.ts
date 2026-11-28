@@ -546,10 +546,11 @@ export class ComsRegistry {
 						allEndpoints.add(endpoint);
 						const pingEndpoint = `${endpoint}.ping`;
 						probeTasks.push(
-							probePingForStartupPrune(pingEndpoint).then((shouldUnlink) => {
-								if (shouldUnlink) {
-									try { fs.unlinkSync(fp); } catch { /* ignore */ }
-								}
+							probePingForStartupPrune(pingEndpoint).then(async (shouldUnlink) => {
+								if (!shouldUnlink) return;
+								// A just-booted peer's main socket is already listening while its ping worker thread starts up.
+								if (await probeAlive(endpoint, STARTUP_PING_TIMEOUT_MS)) return;
+								try { fs.unlinkSync(fp); } catch { /* ignore */ }
 							}),
 						);
 					} catch (e: unknown) {

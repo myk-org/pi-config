@@ -54,7 +54,7 @@ Interactive TUI sessions (`ctx.mode === "tui"` and `ctx.hasUI === true`) auto-re
 
 - **Default name and collision suffixing:** Uses the sanitized basename of `cwd` (for example `pi-config` or `rootcoz`), suffixing `-2`, `-3`, … only when a different live peer in the same project already holds that name. Stale dead registry entries do not cause suffixing.
 - **Session transitions (`/new`, `/resume`, `/fork`):** Re-registers cleanly on `session_start` for `startup`, `new`, `resume`, and `fork` after ensuring the prior session's socket and registry entry have finished tearing down so `/new` keeps `<repo>` instead of self-colliding to `<repo>-2`.
-- **Stopping and `/reload`:** Calling `coms_stop` tears down the peer and persists `active: false` in session state so `/reload` keeps COMS stopped instead of re-starting it.
+- **Stopping and `/reload`:** Calling `coms_stop` tears down the peer and persists stopped state (`active: false`) in session history so `/reload`, `/resume`, and `/fork` keep COMS stopped instead of re-starting it. Disabling `coms_auto_start` (`false` or `PI_COMS_AUTO_START=0`) also stops an auto-registered session on `/reload`.
 - **Skipped environments:** Never auto-starts for subagents (`PI_SUBAGENT_CHILD=1`), supervised headless RPC peers (`PI_COMS_SUPERVISED_PEER=1`), oneshot invocations (`pi -p` / `--mode json`), non-TUI modes, or sessions already started via `pi --coms`.
 
 This is what makes peer lists readable instead of showing only opaque session IDs. A user can target `planner`, `worker`, or another named peer directly rather than guessing which terminal to message.

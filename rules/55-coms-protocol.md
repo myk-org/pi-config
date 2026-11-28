@@ -9,14 +9,17 @@ P2P communication system for talking to other pi sessions on the same machine.
 
 | System | Activation | Tool prefix | Transport |
 | --- | --- | --- | --- |
-| **P2P** (coms) | `coms_start` tool (or `pi --coms`) | `coms_` | Direct peer-to-peer |
+| **P2P** (coms) | Auto-registered on interactive TUI startup (`coms_auto_start: true`, `PI_COMS_AUTO_START=0` to opt out); on demand via `coms_start` or `pi --coms` | `coms_` | Direct peer-to-peer |
 
 ## Activation
 
-Call `coms_start` yourself when a task needs another agent — an already-open session enables coms
-with no slash command and no new process. `coms_stop` ends it. `pi --coms --cname <name>
---project <p>` starts spawned sessions automatically. Humans inspect peers and the local inbound
-queue via the zero-arg `/coms` TUI (`f` scope, `q` queue, `m` message, `x` kill, `X` kill all).
+Interactive TUI sessions auto-register on COMS at startup (and across `/new`, `/resume`, `/fork`)
+when `coms_auto_start` is `true` (default; set `false` or `PI_COMS_AUTO_START=0` to disable). Call
+`coms_start` yourself when auto-start is disabled or skipped (for example in non-TUI sessions) — an
+already-open session enables coms with no slash command and no new process. `coms_stop` ends it and
+keeps it stopped across `/reload`, `/resume`, and `/fork`. `pi --coms --cname <name> --project <p>`
+starts spawned sessions automatically. Humans inspect peers and the local inbound queue via the
+zero-arg `/coms` TUI (`f` scope, `q` queue, `m` message, `x` kill, `X` kill all).
 
 ## Two different things — do not confuse them
 
