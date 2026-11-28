@@ -5,6 +5,9 @@ export declare const DEFAULT_PIDS_LIMIT: number;
 export declare const DEFAULT_PIDASH_HOST: string;
 export declare const DEFAULT_PIDIFF_HOST: string;
 export declare const MAX_SANDBOX_BACKUPS: number;
+export declare const PROJECT_PI_RESOURCE_DIRS: readonly string[];
+export declare const BUNDLED_CONTAINER_PACKAGES: Set<string>;
+export declare const MAX_COPY_DEPTH: number;
 export declare const VALID_PEER_CONTAINER_RE: RegExp;
 export declare const DEFAULT_PASSTHROUGH_ENV_KEYS: string[];
 
@@ -37,6 +40,11 @@ export interface PodmanRunArgsOptions {
   agentDir: string;
   hostAuthJsonPath?: string | null;
   hostModelsJsonPath?: string | null;
+  hostSkillsDir?: string | null;
+  hostAgentsSkillsDir?: string | null;
+  hostAgentsDir?: string | null;
+  hostPromptsDir?: string | null;
+  hostPackageMounts?: Array<{ hostPath: string; containerPath: string }>;
   entrypointPath: string;
   gitconfigSeedPath: string;
   workspacePath: string;
@@ -115,11 +123,86 @@ export declare function isSelinuxEnforcing(readFileFn?: (p: string, enc: BufferE
 export declare function rewriteRemoteToHttps(remoteUrl: unknown): string | null;
 export declare function resolveHostGitIdentity(cwd: string, execFn?: (...args: any[]) => any): { name: string; email: string };
 export declare function resolveHostOriginHttpsUrl(cwd: string, execFn?: (...args: any[]) => any): string | null;
+export interface SyncHostTreeResult {
+  synced: boolean;
+  copiedFiles: number;
+  skipped: number;
+  isFile: boolean;
+  incomplete: boolean;
+}
+
+export interface SyncProjectPiResourcesResult {
+  roots: string[];
+  stagedDirs: string[];
+  stagedFiles: Record<string, string>;
+  copiedFiles: number;
+  skipped: number;
+}
+
+export interface HostPackageInstallTarget {
+  kind: "npm" | "git" | "local";
+  bundled: boolean;
+  name: string;
+  hostPath: string;
+  label: string;
+}
+
+export interface SandboxAgentDirResult {
+  agentDir: string;
+  hostAuthJsonPath: string | null;
+  hostModelsJsonPath: string | null;
+  hostSkillsDir: string | null;
+  hostAgentsSkillsDir: string | null;
+  hostAgentsDir: string | null;
+  hostPromptsDir: string | null;
+  hostPackageMounts: Array<{ hostPath: string; containerPath: string }>;
+}
+
+export declare function syncHostTreeDereferenced(
+  srcPath: string,
+  dstPath: string,
+  opts?: {
+    logger?: ReturnType<typeof createPodmanLogger>;
+    skipNames?: Set<string> | string[];
+    cleanDestination?: boolean;
+    validateRealTarget?: (realTarget: string, srcPath: string) => boolean;
+  },
+): SyncHostTreeResult;
+export declare function resolveProjectPiSourceRoots(
+  sourceCwd: string,
+  execFn?: (...args: any[]) => any,
+): string[];
+export declare function syncProjectPiResources(opts: {
+  sandboxDir: string;
+  workspaceDir: string;
+  sourceCwd: string;
+  homeDir?: string;
+  hostAgentDir?: string;
+  allowedExternalRoots?: string[];
+  previousStagedFiles?: Record<string, string>;
+  execFileSync?: (...args: any[]) => any;
+  logger?: ReturnType<typeof createPodmanLogger>;
+}): SyncProjectPiResourcesResult;
+export declare function resolveHostPackageInstallPath(
+  source: string,
+  opts?: { hostAgentDir?: string; homeDir?: string },
+): HostPackageInstallTarget | null;
+export declare function prepareSandboxAgentDir(opts: {
+  sandboxDir: string;
+  hostAgentDir: string;
+  homeDir?: string;
+  workspacePath?: string | null;
+  piConfigDir?: string | null;
+  logger?: ReturnType<typeof createPodmanLogger>;
+}): SandboxAgentDirResult;
 export declare function prepareSandboxWorkspace(opts: {
   sandboxDir: string;
   sourceCwd: string;
   project: string;
   cname: string;
+  homeDir?: string;
+  hostAgentDir?: string;
+  allowedExternalRoots?: string[];
   maxBackups?: number;
   execFileSync?: (...args: any[]) => any;
   logger?: ReturnType<typeof createPodmanLogger>;
